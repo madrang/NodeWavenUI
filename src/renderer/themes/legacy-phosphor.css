@@ -1,0 +1,15 @@
+/* The "Legacy Phosphor" theme. Dark only: the amber monochrome displays of long ago,
+   with the green of the first phosphor as the accent. */
+:root[data-theme='legacy-phosphor'] {
+  color-scheme: dark;
+  accent-color: var(--accent);
+  --bg: #0e0b05;
+  --text: #ffb424;
+  --muted: #a67c1e;
+  --surface: #1c1507;
+  --field: #120d04;
+  --border: #43320f;
+  --accent: #45e066;
+  --on-accent: #0a1408;
+  --error: #ff5540;
+}

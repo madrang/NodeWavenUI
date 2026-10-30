@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- NodeWavenUI launcher window screens: launcher and setup wizard. The workspace window (main.html) opens separately. -->
+<html lang="en" data-theme="dark-gray">
+<head>
+  <meta charset="utf-8">
+  <title>NodeWavenUI</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="themes/dark-gray.css">
+  <link rel="stylesheet" href="themes/light-gray.css">
+  <script type="module" src="index.js"></script>
+</head>
+<body>
+  <main id="screen-launcher" class="screen screen-launcher">
+    <header class="launcher-header">
+      <h1>NodeWavenUI</h1>
+      <button id="launcher-close" class="icon-button" type="button" title="Close">×</button>
+    </header>
+    <div class="launcher-body">
+      <p class="subtitle launcher-tagline">AI Workspace</p>
+      <form id="unlock-form" class="unlock" hidden>
+        <input id="unlock-password" type="password" placeholder="Workspace password" autocomplete="current-password">
+        <button type="submit" class="primary">Unlock</button>
+      </form>
+      <p id="launcher-status" class="status" hidden></p>
+    </div>
+    <div class="launcher-actions">
+      <button id="launcher-close-text" class="corner-button" type="button">Close</button>
+      <button id="select-directory" class="corner-button primary" type="button">Select Working Directory…</button>
+    </div>
+  </main>
+  <section id="screen-wizard" class="screen" hidden>
+    <header class="wizard-header">
+      <div>
+        <h2>Initialize workspace</h2>
+        <p id="wizard-note" class="status" hidden></p>
+      </div>
+      <button id="wizard-close" class="icon-button" type="button" title="Close">×</button>
+    </header>
+    <form id="wizard-form">
+      <label class="field">Workspace name
+        <input id="wizard-name" type="text" autocomplete="off">
+      </label>
+      <label class="field">Setting storage
+        <select id="wizard-storage"></select>
+      </label>
+      <div id="wizard-storage-config"></div>
+      <p id="wizard-error" class="status error" hidden></p>
+    </form>
+    <footer class="wizard-footer">
+      <button id="wizard-back" class="corner-button" type="button">Back</button>
+      <button id="wizard-submit" class="corner-button primary" type="button">Initialize</button>
+    </footer>
+  </section>
+</body>
+</html>

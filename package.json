@@ -1,0 +1,33 @@
+{
+  "name": "nodewavenui",
+  "version": "0.1.0",
+  "description": "A NW.js AI Workspace UI",
+  "license": "MIT",
+  "author": "Marc-Andre Ferland",
+  "private": true,
+  "main": "dist/renderer/index.html",
+  "window": {
+    "title": "NodeWavenUI",
+    "width": 300,
+    "height": 120,
+    "position": "center",
+    "frame": false,
+    "transparent": true,
+    "resizable": false
+  },
+  "chromium-args": "--enable-logging=stderr",
+  "scripts": {
+    "build": "tsc -b && node scripts/copy-assets.mjs",
+    "watch": "node scripts/copy-assets.mjs && tsc -b --watch",
+    "clean": "node scripts/clean.mjs",
+    "start": "npm run build && nw ."
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "nw": "0.116.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,15 @@
+/* The "Dark Gray" theme. The default palette: it also styles the root without a data-theme attribute. */
+:root,
+:root[data-theme='dark-gray'] {
+  color-scheme: dark;
+  accent-color: var(--accent);
+  --bg: #15181d;
+  --text: #e6e9ee;
+  --muted: #9aa4b2;
+  --surface: #232830;
+  --field: #1b1f26;
+  --border: #363c47;
+  --accent: #4f8cff;
+  --on-accent: #ffffff;
+  --error: #ff7a7a;
+}

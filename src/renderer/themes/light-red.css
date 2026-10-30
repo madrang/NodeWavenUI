@@ -1,0 +1,14 @@
+/* The "Light Red" theme. */
+:root[data-theme='light-red'] {
+  color-scheme: light;
+  accent-color: var(--accent);
+  --bg: #fdf7f6;
+  --text: #341f1e;
+  --muted: #8a6a68;
+  --surface: #f5e8e7;
+  --field: #ffffff;
+  --border: #dcc4c2;
+  --accent: #c03530;
+  --on-accent: #ffffff;
+  --error: #8e1f1a;
+}

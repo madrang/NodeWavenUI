@@ -1,0 +1,1060 @@
+/* Minimalist styles with an app-owned palette. */
+/* The palette lives in themes/*.css, selected by the data-theme attribute that theme.ts sets on the root element. */
+
+/* The launcher and the wizard show before the workspace loads, so they carry a fixed sober dark-gray palette. */
+#screen-launcher,
+#screen-wizard {
+  --bg: #26282d;
+  --text: #d6d9de;
+  --muted: #8b919a;
+  --surface: #2e3137;
+  --field: #1b1e22;
+  --border: #3a3f46;
+  --accent: #4f8cff;
+  --on-accent: #ffffff;
+  --error: #ff7a7a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  /* The window is transparent, so each screen paints its own background. */
+  background: transparent;
+  color: var(--text);
+  font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+.screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+h1 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0.3px;
+}
+
+.subtitle {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The screen is flush with the window edges. The transparent window rounds the corners, and the screen clips its children to that radius. */
+.screen-launcher {
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* The drag strip: a full-width surface band, flush with the top edge. */
+.launcher-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 6px 5px 12px;
+  -webkit-app-region: drag;
+}
+
+.launcher-header h1 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.icon-button {
+  -webkit-app-region: no-drag;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: var(--text);
+}
+
+.launcher-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 8px 12px 6px;
+}
+
+.launcher-tagline {
+  margin: 0;
+}
+
+/* The two actions fill the bottom edge, flush left, right, and below. */
+.launcher-actions {
+  display: flex;
+}
+
+/* The close action carries a dark red tint. Each button rounds only its outer bottom corner. */
+.corner-button {
+  height: 42px;
+  border: none;
+  border-radius: 0 0 0 12px;
+  background: #3b2427;
+  color: #d69a9a;
+  font-size: 13px;
+  padding: 0 16px;
+  cursor: pointer;
+}
+
+.corner-button:hover {
+  background: #4c2e31;
+  color: #e8b4b4;
+}
+
+.corner-button.primary {
+  border-radius: 0 0 12px 0;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+/* Only the launcher stretches its primary corner button across the bar. */
+.launcher-actions .corner-button.primary {
+  flex: 1;
+}
+
+.corner-button.primary:hover {
+  background: var(--accent);
+  filter: brightness(1.1);
+}
+
+.unlock {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.unlock input {
+  flex: 1;
+}
+
+/* The MCP host token row of the settings pane: one readonly token field with its controls. */
+.token-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.token-row input {
+  flex: 1;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 14px;
+  cursor: pointer;
+}
+
+button.primary {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  width: 100%;
+}
+
+/* The auto focus ring carries a fixed blue that ignores accent-color, so the theme accent colors it. */
+:focus-visible {
+  outline-color: var(--accent);
+}
+
+.status {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 8px 0 0;
+  word-break: break-word;
+}
+
+.error {
+  color: var(--error);
+}
+
+/* Wizard screen: the header and the footer stay fixed, the form scrolls between them. */
+#screen-wizard {
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.wizard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 6px 8px 10px;
+  -webkit-app-region: drag;
+}
+
+.wizard-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.wizard-header .status {
+  margin-top: 2px;
+}
+
+#wizard-form {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+}
+
+/* The wizard bottom bar: corner buttons with a gap between them. */
+.wizard-footer {
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+}
+
+.field {
+  display: block;
+  margin: 10px 0;
+}
+
+.field input,
+.field select {
+  margin-top: 4px;
+}
+
+fieldset.field {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+legend {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 0 4px;
+}
+
+.choice {
+  display: block;
+  margin: 4px 0;
+}
+
+.choice input {
+  width: auto;
+  margin-right: 6px;
+}
+
+/* Main screen: tab bar */
+#screen-main {
+  background: var(--bg);
+  color: var(--text);
+}
+
+#tab-bar {
+  display: flex;
+  /* Tabs stand on the bottom edge of the bar, and the active one covers the bar border. */
+  align-items: flex-end;
+  gap: 4px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+
+#tab-bar .tab,
+#tab-bar .close,
+#tab-bar .icon-button {
+  -webkit-app-region: no-drag;
+}
+
+/* The framed workspace window: the system titlebar replaces the custom controls and the drag region. */
+body.framed #app-minimize,
+body.framed #app-close {
+  display: none;
+}
+
+body.framed #tab-bar {
+  -webkit-app-region: no-drag;
+}
+
+/* The framed window drags through the system titlebar, so the strip grab area has no job. */
+body.framed #chat-tabs::after {
+  display: none;
+}
+
+/* The tab shape: rounded top corners, a box that joins the pane below when active.
+   Idle tabs keep a faint tint and border, so they read as tabs before selection. */
+.tab,
+.tab-group {
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: var(--muted);
+}
+
+.tab {
+  padding: 6px 14px;
+  white-space: nowrap;
+}
+
+.tab:hover,
+.tab-group:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.tab.active,
+.tab-group.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+
+.tab-icon {
+  padding: 6px 10px;
+  color: var(--muted);
+  flex: none;
+}
+
+#chat-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  /* Grows so the minimize and close buttons land on the right edge of the bar.
+     It shrinks inside the bar, so a full strip cannot push them out of the window. */
+  flex: 1;
+  min-width: 0;
+}
+
+/* The grab area after the strip: a bare full-height band, so a full strip keeps a drag surface. */
+#chat-tabs::after {
+  content: '';
+  flex: none;
+  width: 48px;
+  align-self: stretch;
+}
+
+#chat-tab-list {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  /* The strip scrolls instead of growing past the bar, with the scrollbar hidden like a browser tab strip. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+#chat-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-group {
+  display: flex;
+  align-items: center;
+  /* A group keeps its size but may shrink, so its label truncates inside the scrolling strip. */
+  flex: none;
+  min-width: 0;
+}
+
+.tab-group .tab {
+  padding: 6px 4px 6px 12px;
+  /* A long chat title truncates, so one tab cannot crowd the strip. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Buttons carry their own color, so the group states must reach the inner tab. */
+.tab-group:hover .tab,
+.tab-group.active .tab {
+  color: var(--text);
+}
+
+.tab-group .close {
+  padding: 2px 5px 2px 2px;
+  color: var(--muted);
+  border: none;
+  background: none;
+  font-size: 11px;
+  flex: none;
+}
+
+.tab-group .close:hover {
+  color: var(--error);
+}
+
+/* The unread dot marks a background tab that took traffic since the user last saw it. */
+.tab-group.unread .tab::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* A tab with pending permission requests reads as the strongest state: the error tint frames it.
+   The Settings tab carries the badge while chat agent requests wait, because they answer in every chat tab. */
+.tab-group.permissions,
+.tab-group.permissions .tab,
+#tab-settings.permissions {
+  border-color: color-mix(in srgb, var(--error) 65%, var(--border));
+  color: var(--text);
+}
+
+.tab-group.permissions .tab,
+#tab-settings.permissions {
+  font-weight: 600;
+}
+
+/* The badge replaces the unread dot while requests wait. */
+.tab-group.permissions .tab::before,
+#tab-settings.permissions::before {
+  content: '!';
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  line-height: 12px;
+  border-radius: 50%;
+  background: var(--error);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  text-align: center;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+/* Main screen: panes */
+.pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 16px;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+}
+
+#provider-form {
+  max-width: 420px;
+}
+
+#provider-form h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+
+/* Main screen: chat */
+.pane-chat {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+#chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message {
+  max-width: 80%;
+  padding: 7px 11px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.message.assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.message.notice {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  background: none;
+}
+
+.message.error {
+  align-self: center;
+  color: var(--error);
+  font-size: 12px;
+  background: none;
+}
+
+/* The reasoning disclosure of an assistant reply: collapsed until the user opens it. */
+.reasoning {
+  margin: 0 0 4px;
+}
+
+.reasoning > summary {
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.reasoning > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The disclosure chevron turns from the closed to the open direction. */
+.reasoning > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.reasoning[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.reasoning-body {
+  margin: 2px 0 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* One request/response pair: one framed group card holds the labeled request section and the
+   labeled reply section, so the two never read as loose messages. */
+.tool-pair {
+  align-self: stretch;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.tool-pair-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.tool-pair-tool {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.tool-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+/* The filled badge marks the request; the outlined one marks the reply. */
+.tool-badge.request {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.tool-badge.reply {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.tool-badge.reply.error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* The payload sections sit on the dark field inside the group card. */
+.tool-pair-section {
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--field);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tool-pair-section.error {
+  color: var(--error);
+}
+
+/* The group card is the frame, so the viewer drops its own. */
+.tool-pair-section json-viewer {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+}
+
+.tool-pair-pending {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* One tool reply, of the chat agent or of an MCP session tab: the tool name head over the result
+   text, or over the json-viewer when the reply carries a JSON object. The dim accent edge keeps the
+   reply in the pair family under the full accent of the request. */
+.message.tool-result {
+  align-self: flex-start;
+  max-width: 80%;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.tool-result-name {
+  margin: 0 0 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* A failed reply carries the error tint on its frame and head. */
+.message.tool-result.tool-error {
+  border: 1px solid color-mix(in srgb, var(--error) 60%, var(--border));
+}
+
+.message.tool-result.tool-error .tool-result-name {
+  color: var(--error);
+}
+
+/* A standalone tool reply keeps its own frame and the quiet ← marker in its head. */
+.tool-result-name::before {
+  content: '← ';
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* The MCP endpoint cards of the settings pane. */
+.mcp-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px 10px;
+  margin: 0 0 8px;
+}
+
+.mcp-endpoint-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mcp-endpoint-transport {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-endpoint-state {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.mcp-endpoint-state.connected {
+  color: var(--accent);
+}
+
+.mcp-endpoint-state.error {
+  color: var(--error);
+}
+
+.mcp-endpoint-mode {
+  width: auto;
+}
+
+/* The json-viewer custom element: one collapsible JSON display.
+   The token colors derive from the theme palette, so every theme carries the viewer. */
+json-viewer {
+  display: block;
+  font: 12px/1.5 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.json-node > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.json-node > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The disclosure chevron turns from the closed to the open direction. */
+.json-node > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.json-node[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* The open brace of the summary keeps its closing partner only while the node stays collapsed. */
+.json-node[open] > summary .json-closed {
+  display: none;
+}
+
+.json-children {
+  padding-left: 14px;
+}
+
+/* Every child except the last carries the separator comma of formatted JSON. */
+.json-children > :not(:last-child)::after {
+  content: ',';
+  color: var(--muted);
+}
+
+.json-key {
+  color: var(--accent);
+}
+
+.json-string {
+  color: color-mix(in srgb, var(--accent) 30%, var(--text));
+  /* String values keep their inner spacing and still wrap inside a narrow pane. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-number {
+  color: color-mix(in srgb, var(--error) 50%, var(--text));
+}
+
+.json-boolean,
+.json-null {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.json-punct,
+.json-count {
+  color: var(--muted);
+}
+
+.json-count {
+  margin: 0 4px;
+}
+
+#permission-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* One pending permission request card, from the permission-request custom element. */
+permission-request {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--field);
+}
+
+.permission-request-line {
+  margin: 0 0 2px;
+  font-weight: 600;
+}
+
+.permission-request-detail {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.permission-request-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.permission-request-remember {
+  flex: 1;
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The global input width rule stretches a checkbox across the whole row, so the box stays inline with its text. */
+.permission-request-remember input {
+  width: auto;
+  flex: none;
+}
+
+/* The provider cards of the settings pane: one collapsible disclosure per account.
+   The summary row is the closed state; the body holds the fields and opens on click. */
+.provider-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-card > summary,
+.provider-add > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.provider-card > summary::-webkit-details-marker,
+.provider-add > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The disclosure chevron turns from the closed to the open direction. */
+.provider-card > summary::before,
+.provider-add > summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 11px;
+  flex: none;
+}
+
+.provider-card[open] > summary::before,
+.provider-add[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.provider-card-title {
+  flex: 1;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The dirty dot marks a card with edits that the disabled Save has not stored yet. */
+.provider-card.dirty .provider-card-title::after {
+  content: ' •';
+  color: var(--accent);
+}
+
+.provider-card-meta {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.provider-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* A clean Save reads as unavailable; a dirty one lights up with the accent. */
+.provider-save:disabled,
+#provider-add-submit:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* The add form: the same disclosure shape as a provider card, around the static form. */
+.provider-add {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+  margin: 14px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-add > summary {
+  font-weight: 600;
+}
+
+.provider-default {
+  font-size: 11px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.provider-models {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.provider-model {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-model-name {
+  flex: 1;
+}
+
+.provider-add-model {
+  display: flex;
+  gap: 6px;
+}
+
+.provider-add-model input {
+  flex: 1;
+}
+
+#chat-form {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+#chat-input {
+  flex: 1;
+}
+
+/* The chat status bar: the provider and model of the tab, and the token usage.
+   The provider and model stand as selects until the first send binds the chat, then as labels. */
+#chat-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chat-status-label {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+#chat-status select {
+  width: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.chat-status-usage {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+[hidden] {
+  display: none !important;
+}

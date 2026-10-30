@@ -1,0 +1,14 @@
+/* The "Dark Red" theme. */
+:root[data-theme='dark-red'] {
+  color-scheme: dark;
+  accent-color: var(--accent);
+  --bg: #201517;
+  --text: #ecdfdf;
+  --muted: #ad9497;
+  --surface: #302224;
+  --field: #251a1c;
+  --border: #453237;
+  --accent: #e05f55;
+  --on-accent: #ffffff;
+  --error: #ff8d80;
+}

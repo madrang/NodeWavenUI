@@ -1,0 +1,116 @@
+/* The Graphs window: an SVG surface whose drawing colors resolve from the active theme palette. */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  position: relative;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+#graph-root {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+#graph-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+/* Drawing classes reference the palette variables, so a theme change recolors a drawn graph at once. */
+.graph-title {
+  fill: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.legend-text {
+  fill: var(--muted);
+  font-size: 12px;
+}
+
+.axis {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.grid {
+  stroke: color-mix(in srgb, var(--border) 55%, transparent);
+  stroke-width: 1;
+}
+
+.axis-label {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+/* Six series colors cycle: two palette hues, their mixes with the text color, the muted gray, and a hue blend. */
+.line-series-0 {
+  stroke: var(--accent);
+}
+
+.line-series-1 {
+  stroke: var(--error);
+}
+
+.line-series-2 {
+  stroke: color-mix(in srgb, var(--accent) 45%, var(--text));
+}
+
+.line-series-3 {
+  stroke: color-mix(in srgb, var(--error) 45%, var(--text));
+}
+
+.line-series-4 {
+  stroke: var(--muted);
+}
+
+.line-series-5 {
+  stroke: color-mix(in srgb, var(--accent) 50%, var(--error));
+}
+
+.fill-series-0 {
+  fill: var(--accent);
+}
+
+.fill-series-1 {
+  fill: var(--error);
+}
+
+.fill-series-2 {
+  fill: color-mix(in srgb, var(--accent) 45%, var(--text));
+}
+
+.fill-series-3 {
+  fill: color-mix(in srgb, var(--error) 45%, var(--text));
+}
+
+.fill-series-4 {
+  fill: var(--muted);
+}
+
+.fill-series-5 {
+  fill: color-mix(in srgb, var(--accent) 50%, var(--error));
+}
+
+[hidden] {
+  display: none !important;
+}

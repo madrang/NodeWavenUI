@@ -1,0 +1,14 @@
+/* The "Dark Green" theme. */
+:root[data-theme='dark-green'] {
+  color-scheme: dark;
+  accent-color: var(--accent);
+  --bg: #161f19;
+  --text: #dfe9e0;
+  --muted: #96a89a;
+  --surface: #233026;
+  --field: #1a251d;
+  --border: #37473b;
+  --accent: #58bd85;
+  --on-accent: #0a1810;
+  --error: #ff8d80;
+}

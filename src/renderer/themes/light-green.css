@@ -1,0 +1,14 @@
+/* The "Light Green" theme. */
+:root[data-theme='light-green'] {
+  color-scheme: light;
+  accent-color: var(--accent);
+  --bg: #f4faf5;
+  --text: #1f2f24;
+  --muted: #68806d;
+  --surface: #e5f0e6;
+  --field: #ffffff;
+  --border: #c2d4c5;
+  --accent: #1e7a4a;
+  --on-accent: #ffffff;
+  --error: #8e1f1a;
+}

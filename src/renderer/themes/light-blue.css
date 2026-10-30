@@ -1,0 +1,14 @@
+/* The "Light Blue" theme. */
+:root[data-theme='light-blue'] {
+  color-scheme: light;
+  accent-color: var(--accent);
+  --bg: #f3f7fc;
+  --text: #1e293b;
+  --muted: #64748b;
+  --surface: #e5ecf5;
+  --field: #ffffff;
+  --border: #c2cede;
+  --accent: #2160c4;
+  --on-accent: #ffffff;
+  --error: #8e1f1a;
+}

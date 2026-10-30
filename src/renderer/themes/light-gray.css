@@ -1,0 +1,14 @@
+/* The "Light Gray" theme. */
+:root[data-theme='light-gray'] {
+  color-scheme: light;
+  accent-color: var(--accent);
+  --bg: #ffffff;
+  --text: #1b1d21;
+  --muted: #6a7280;
+  --surface: #eef0f3;
+  --field: #ffffff;
+  --border: #c8cdd5;
+  --accent: #2563eb;
+  --on-accent: #ffffff;
+  --error: #b3261e;
+}
