@@ -215,6 +215,8 @@ export interface ChildWindowOpenOptions {
   readonly height: number;
   readonly frame?: boolean;
   readonly transparent?: boolean;
+  /** The window icon path, relative to the app root. The default is the app icon. */
+  readonly icon?: string;
 }
 
 /**
@@ -272,7 +274,11 @@ export function openChildWindow(url: string, options: ChildWindowOpenOptions): P
   if (typeof open !== 'function') {
     return Promise.resolve(null);
   }
-  const openOptions: Record<string, unknown> = { width: options.width, height: options.height };
+  const openOptions: Record<string, unknown> = {
+    width: options.width,
+    height: options.height,
+    icon: options.icon ?? 'icons/icon.png',
+  };
   if (options.frame !== undefined) {
     openOptions.frame = options.frame;
   }

@@ -8,6 +8,7 @@
   "main": "dist/renderer/index.html",
   "window": {
     "title": "NodeWavenUI",
+    "icon": "icons/icon.png",
     "width": 300,
     "height": 120,
     "position": "center",
