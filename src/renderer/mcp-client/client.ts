@@ -3,6 +3,7 @@
  * The results pass runtime guards at this boundary, so the manager works with typed values only.
  */
 
+import { asRecord } from '../../shared/records.js';
 import type { McpEndpoint } from '../../shared/mcp-endpoints.js';
 import type { McpTransport } from './transport.js';
 
@@ -40,10 +41,6 @@ export interface McpResourceContent {
 export interface McpCallResult {
   readonly text: string;
   readonly isError: boolean;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 }
 
 function asString(value: unknown): string | null {

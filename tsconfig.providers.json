@@ -6,5 +6,6 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/providers"]
+  "include": ["src/providers"],
+  "references": [{ "path": "./tsconfig.shared.json" }]
 }

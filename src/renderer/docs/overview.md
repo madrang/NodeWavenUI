@@ -21,3 +21,5 @@ NodeWavenUI is an NW.js desktop app: one Chromium renderer with Node.js in one p
 - `harness:///nodewavenui/read-uris.md` — the read URI schemes
 - `harness:///nodewavenui/nodewavenmcp-api.md` — the page API for evaluated code
 - `harness:///nodewavenui/graphs.md` — the Graphs window and its drawing API
+- `harness:///nodewavenui/editor.md` — the Editor window and its text API
+- `harness:///nodewavenui/project-layout.md` — the source tree: what lives where

@@ -6,8 +6,9 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/renderer", "src/shared"],
+  "include": ["src/renderer"],
   "references": [
+    { "path": "./tsconfig.shared.json" },
     { "path": "./tsconfig.providers.json" },
     { "path": "./tsconfig.storage.json" }
   ]

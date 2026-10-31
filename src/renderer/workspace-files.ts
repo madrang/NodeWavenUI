@@ -4,26 +4,7 @@
  */
 
 import { WORKSPACE_MARKER_FILE, isWorkspaceSettings, type WorkspaceSettings } from '../shared/workspace.js';
-import { requireNodeModule } from './node-context.js';
-
-/** The slice of the Node fs module this file uses. */
-interface NodeFs {
-  readdirSync?: (path: string) => string[];
-  readFileSync?: (path: string, encoding: string) => string;
-  writeFileSync?: (path: string, contents: string) => void;
-}
-
-function fs(): NodeFs | null {
-  const module = requireNodeModule('fs');
-  if (typeof module !== 'object' || module === null) {
-    return null;
-  }
-  return module as NodeFs;
-}
-
-function joinPath(directory: string, file: string): string {
-  return `${directory.replace(/[\\/]+$/, '')}/${file}`;
-}
+import { fileSystem, joinPath } from './file-system.js';
 
 /**
  * Lists the entries of a folder.
@@ -32,12 +13,12 @@ function joinPath(directory: string, file: string): string {
  * @returns The entry names, or null when the filesystem is unreachable or the folder cannot be read.
  */
 export function readDirectoryEntries(directory: string): string[] | null {
-  const nodeFs = fs();
-  if (nodeFs === null || typeof nodeFs.readdirSync !== 'function') {
+  const nodeFs = fileSystem();
+  if (nodeFs === null) {
     return null;
   }
   try {
-    return nodeFs.readdirSync(directory);
+    return [...nodeFs.readdirSync(directory)];
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[NodeWavenUI] the folder "${directory}" could not be read: ${message}`);
@@ -52,13 +33,13 @@ export function readDirectoryEntries(directory: string): string[] | null {
  * @returns The workspace settings from the marker, or null when no valid marker exists.
  */
 export function readWorkspaceMarker(directory: string): WorkspaceSettings | null {
-  const nodeFs = fs();
-  if (nodeFs === null || typeof nodeFs.readFileSync !== 'function') {
+  const nodeFs = fileSystem();
+  if (nodeFs === null) {
     return null;
   }
   let contents: string;
   try {
-    contents = nodeFs.readFileSync(joinPath(directory, WORKSPACE_MARKER_FILE), 'utf8');
+    contents = nodeFs.readFileSync(joinPath(directory, WORKSPACE_MARKER_FILE), 'utf-8');
   } catch (error) {
     // A missing marker is the normal state of a fresh folder. Every other failure hides a real problem.
     if ((error as { code?: unknown }).code === 'ENOENT') {
@@ -90,8 +71,8 @@ export function readWorkspaceMarker(directory: string): WorkspaceSettings | null
  * @returns An error message, or null on success.
  */
 export function writeWorkspaceMarker(directory: string, settings: WorkspaceSettings): string | null {
-  const nodeFs = fs();
-  if (nodeFs === null || typeof nodeFs.writeFileSync !== 'function') {
+  const nodeFs = fileSystem();
+  if (nodeFs === null) {
     return 'The filesystem is not reachable. Start the app under NW.js.';
   }
   try {

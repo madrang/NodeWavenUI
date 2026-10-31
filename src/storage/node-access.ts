@@ -1,7 +1,9 @@
 /**
- * Access to Node modules from the NW.js page context, for the storage layer.
- * This file mirrors `src/renderer/node-context.ts`, because the storage project compiles standalone and must not import renderer modules.
+ * Access to the Node crypto and fs modules for the storage layer.
+ * The require global read comes from `src/shared/node-access.ts`, which every compile context shares.
  */
+
+import { requireNodeModule } from '../shared/node-access.js';
 
 /** The slice of the Node crypto module the storage layer uses. */
 export interface NodeCrypto {
@@ -48,26 +50,6 @@ export interface NodeFileSystem {
   writeFileSync(path: string, contents: string): void;
   renameSync(from: string, to: string): void;
   existsSync(path: string): boolean;
-}
-
-/**
- * Loads one Node module through the NW.js require global.
- *
- * @param id The module id, for example "crypto".
- * @returns The module exports, or null when require is missing or the module fails to load.
- */
-export function requireNodeModule(id: string): unknown {
-  const require = (globalThis as { require?: unknown }).require;
-  if (typeof require !== 'function') {
-    return null;
-  }
-  try {
-    return (require as (moduleId: string) => unknown)(id);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[NodeWavenUI] the Node module "${id}" could not be loaded: ${message}`);
-    return null;
-  }
 }
 
 /**

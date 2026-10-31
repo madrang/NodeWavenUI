@@ -4,6 +4,7 @@
  * Any endpoint that speaks the OpenAI chat-completions schema works, for example Moonshot, Venice, or a local vLLM server.
  */
 
+import { isRecord } from '../shared/records.js';
 import {
   ProviderError,
   type CompletionDelta,
@@ -33,10 +34,6 @@ const RETRY_COUNT = 3;
  * (see the vault note `Kimi Code/Reasoning.md`). Module scope, so the dialect survives per-call provider instances.
  */
 let lastReasoningField: 'reasoning_content' | 'reasoning' = 'reasoning_content';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {

@@ -6,6 +6,8 @@
  */
 
 import { isInferenceProvider, type InferenceProvider } from './providers/provider.js';
+import { currentPlatform, nodeRequire } from './shared/node-access.js';
+import { isRecord } from './shared/records.js';
 import { isStorageBackend, type StorageBackend } from './storage/storage.js';
 
 /** What a plugin module exports. CommonJS form: `module.exports = descriptor`. */
@@ -101,22 +103,6 @@ export class PluginError extends Error {
     super(message, options);
     this.name = 'PluginError';
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-/** Reads the platform of the running process. NW.js pages run with Node integration, so process exists. */
-function currentPlatform(): string {
-  const process = (globalThis as { process?: { platform?: unknown } }).process;
-  return typeof process?.platform === 'string' ? process.platform : 'unknown';
-}
-
-/** Reads the Node require of the NW.js page context. */
-function nodeRequire(): ((id: string) => unknown) | null {
-  const candidate = (globalThis as { require?: unknown }).require;
-  return typeof candidate === 'function' ? (candidate as (id: string) => unknown) : null;
 }
 
 /**

@@ -5,6 +5,8 @@
  * mint a session id that every later POST echoes (see the vault note `Projects/Scoped Vault MCP/MCP Standard.md`).
  */
 
+import { asRecord } from '../../shared/records.js';
+
 /** One JSON-RPC reply of a server. */
 export interface JsonRpcReply {
   readonly id?: number | string;
@@ -20,10 +22,6 @@ export interface McpTransport {
   notify(method: string, params?: Record<string, unknown>): void;
   /** Closes the transport and fails every pending request. */
   close(): void;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 }
 
 /** Reads one JSON-RPC reply and returns its result or throws its error. */

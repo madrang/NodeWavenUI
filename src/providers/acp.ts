@@ -12,6 +12,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process';
+import { isRecord } from '../shared/records.js';
 import {
   ProviderError,
   type ChatMessage,
@@ -38,10 +39,6 @@ export interface AcpProviderConfig {
    * The default is the current working directory of this process.
    */
   readonly cwd?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 /**

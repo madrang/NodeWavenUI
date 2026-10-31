@@ -11,6 +11,7 @@ import { StorageError, type StorageBackend } from './storage.js';
 import {
   createKdfParameters,
   decodeKdf,
+  DEFAULT_ITERATIONS,
   deriveKey,
   encodeKdf,
   openRecord,
@@ -36,7 +37,6 @@ export interface PasswordEncryptedStorageConfig {
   readonly iterations?: number;
 }
 
-const DEFAULT_ITERATIONS = 600000;
 const KDF_KEY = '__nodewavenui/kdf__';
 const CHECK_KEY = '__nodewavenui/check__';
 const CHECK_VALUE = 'nodewavenui-password-check';

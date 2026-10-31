@@ -62,7 +62,9 @@ interface EncryptionSuite {
 }
 
 const DEFAULT_SUITE: EncryptionSuiteId = 'aes-gcm+pbkdf2';
-const DEFAULT_ITERATIONS = 600000;
+
+/** The default PBKDF2 iteration count, shared by every storage module that derives a key from a password. */
+export const DEFAULT_ITERATIONS = 600000;
 const DEFAULT_SCRYPT = { N: 65536, r: 8, p: 1 } as const;
 const SCRYPT_MAX_MEMORY = 128 * 1024 * 1024;
 const KEY_BYTES = 32;

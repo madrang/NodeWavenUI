@@ -7,8 +7,9 @@
 
 import { listHarnessDocs, readHarnessDoc, HARNESS_DOC_MIME_TYPE } from './doc-resources.js';
 import { FRAME_MODES, isKnownFrameMode } from './frame-mode.js';
-import { requireNodeModule } from './node-context.js';
 import type { ChildWindowManager, WindowCaller } from './window-manager.js';
+import { requireNodeModule } from '../shared/node-access.js';
+import { asRecord } from '../shared/records.js';
 
 /** Every tool of the host acts as this principal. */
 const HOST_PRINCIPAL = 'mcp' as const;
@@ -152,10 +153,6 @@ interface McpRequestContext {
 }
 
 const bodyDecoder = new TextDecoder();
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
-}
 
 function createAccessToken(): string {
   const bytes = new Uint8Array(32);

@@ -52,6 +52,18 @@ const DOCS: readonly HarnessDoc[] = [
     name: 'graphs',
     description: 'The Graphs window: open it and draw SVG graphs through nodewavenGraphs.',
   },
+  {
+    uri: 'harness:///nodewavenui/editor.md',
+    file: 'docs/editor.md',
+    name: 'editor',
+    description: 'The Editor window: open it and edit text through nodewavenEditor.',
+  },
+  {
+    uri: 'harness:///nodewavenui/project-layout.md',
+    file: 'docs/project-layout.md',
+    name: 'project-layout',
+    description: 'The source tree: what lives where in the NodeWavenUI project.',
+  },
 ];
 
 /** The MIME type of every harness document. */

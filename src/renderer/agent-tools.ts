@@ -9,9 +9,9 @@
 import type { ToolDefinition } from '../providers/provider.js';
 import type { PrincipalKind, PermissionTarget } from '../shared/permissions.js';
 import { readHarnessDoc } from './doc-resources.js';
+import { fileSystem } from './file-system.js';
 import { createTools, type McpToolResult } from './mcp-host.js';
 import type { McpClientManager } from './mcp-client/manager.js';
-import { requireNodeModule } from './node-context.js';
 import type { StorageShareRegistry } from './storage-shares.js';
 import type { ChildWindowManager, WindowCaller } from './window-manager.js';
 
@@ -51,18 +51,12 @@ export interface AgentToolDeps {
   readonly storageShares: StorageShareRegistry;
 }
 
-/** The slice of the Node fs module the read tool uses. */
-interface NodeFs {
-  readFileSync?: (path: string, encoding: string) => string;
-}
-
 function readWorkspaceFile(path: string): string {
-  const module = requireNodeModule('fs');
-  const nodeFs = typeof module === 'object' && module !== null ? (module as NodeFs) : null;
-  if (nodeFs === null || typeof nodeFs.readFileSync !== 'function') {
+  const nodeFs = fileSystem();
+  if (nodeFs === null) {
     throw new Error('The filesystem is not reachable. Start the app under NW.js.');
   }
-  return nodeFs.readFileSync(path, 'utf8');
+  return nodeFs.readFileSync(path, 'utf-8');
 }
 
 /** Reads one file URI, after the permission pipeline allows the path. */

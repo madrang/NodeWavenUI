@@ -1,0 +1,21 @@
+<!doctype html>
+<!-- NodeWavenUI Editor window: a plain-text editor on the EditContext API that agents drive through the nodewavenEditor page global (see docs/editor.md). -->
+<html lang="en" data-theme="dark-gray">
+<head>
+  <meta charset="utf-8">
+  <title>Editor — NodeWavenUI</title>
+  <!-- The default theme boots the page. theme.js discovers every theme, built-in and user-added, and injects the rest. -->
+  <link rel="stylesheet" href="themes/dark-gray.css">
+  <link rel="stylesheet" href="editor.css">
+  <script type="module" src="editor.js"></script>
+</head>
+<body>
+  <header id="editor-title" hidden></header>
+  <main id="editor-scroll">
+    <div id="editor-gutter" aria-hidden="true"></div>
+    <div id="editor-root" spellcheck="false"></div>
+  </main>
+  <footer id="editor-status"></footer>
+  <p id="editor-unsupported" hidden>This Chromium build carries no EditContext API. The editor needs Chromium 133 or later.</p>
+</body>
+</html>

@@ -7,5 +7,8 @@
     "outDir": "dist"
   },
   "include": ["src/storage", "src/plugins.ts"],
-  "references": [{ "path": "./tsconfig.providers.json" }]
+  "references": [
+    { "path": "./tsconfig.shared.json" },
+    { "path": "./tsconfig.providers.json" }
+  ]
 }
