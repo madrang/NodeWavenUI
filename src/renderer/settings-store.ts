@@ -10,8 +10,8 @@ import { isPermissionRule, type PermissionRule } from '../shared/permissions.js'
 import { EMPTY_SHARED_STORAGES, isSharedStoragesRecord, type SharedStoragesRecord } from './storage-shares.js';
 import {
   emptyProviderRegistry,
-  isProviderRegistry,
   isProviderSettings,
+  readProviderRegistry,
   type ProviderAccount,
   type ProviderRegistry,
   type ProviderSettings,
@@ -57,8 +57,9 @@ export class WorkspaceSettingsStore {
     if (raw !== null) {
       try {
         const parsed: unknown = JSON.parse(raw);
-        if (isProviderRegistry(parsed)) {
-          return parsed;
+        const registry = readProviderRegistry(parsed);
+        if (registry !== null) {
+          return registry;
         }
         console.warn('[NodeWavenUI] the stored provider registry carries an invalid shape. It is ignored.');
       } catch (error) {
@@ -75,7 +76,7 @@ export class WorkspaceSettingsStore {
       label: labelForBaseUrl(legacy.baseUrl),
       baseUrl: legacy.baseUrl,
       apiKey: legacy.apiKey,
-      models: [legacy.model],
+      models: [{ id: legacy.model, vision: false }],
     };
     console.info('[NodeWavenUI] the provider settings moved into the provider registry as one account.');
     return { accounts: [account], defaultProviderId: account.id, defaultModel: legacy.model };

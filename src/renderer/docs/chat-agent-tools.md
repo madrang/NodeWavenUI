@@ -8,9 +8,15 @@ The chat assistant is a tool-calling agent. A message may spend up to 12 provide
 | `read` | `uri` | Reads one URI. See `harness:///nodewavenui/read-uris.md`. |
 | `<label>.<tool>` | per the tool | Every MCP endpoint in Native mode contributes its tools under its sanitized label, for example `vault.search`. |
 
+# Images
+
+Each model in the settings carries a Vision flag: on when the model reads image parts. The flag decides what the chat does with pictures.
+
+The user pastes or drops images into the chat: they arrive as thumbnails above the input, at most four per message, each scaled down to a 1280 pixel box. On a model without the flag, a send with images refuses: the chat shows a notice, and the text and the thumbnails stay ready. Tool image results — the `screenshot` window tool, or image content of native MCP tools — reach a flagged model as image parts of one follow-up message; a model without the flag reads an omission note in the tool result instead. Images ride again with every later request of the conversation, so they cost context tokens each turn.
+
 # Window tools
 
-The agent carries the same window tools the MCP host serves: `list_windows`, `open_window`, `close_window`, `attach_session`, `detach_session`, `screenshot`, `console_entries`, `clear_console`, `navigate`, and `open_devtools`. The arguments match `harness:///nodewavenui/mcp-host-tools.md`. They act as the `agent` principal, so the mutating ones show the same approval cards in the chat. `screenshot` answers with a note instead of the image data, because the chat carries text only.
+The agent carries the same window tools the MCP host serves: `list_windows`, `open_window`, `close_window`, `attach_session`, `detach_session`, `screenshot`, `console_entries`, `clear_console`, `navigate`, and `open_devtools`. The arguments match `harness:///nodewavenui/mcp-host-tools.md`. They act as the `agent` principal, so the mutating ones show the same approval cards in the chat. `screenshot` returns the image to a vision model as an image part; a text-only model reads the note in the result text.
 
 # Approval cards
 

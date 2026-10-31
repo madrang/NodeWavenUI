@@ -82,6 +82,14 @@ export interface ProviderSettings {
   readonly model: string;
 }
 
+/** One model an account offers, with its vision capability. */
+export interface ModelEntry {
+  /** The model id the endpoint knows. */
+  readonly id: string;
+  /** True when the model reads image parts. The chat gates images on this flag. */
+  readonly vision: boolean;
+}
+
 /** One configured provider account with its own model list. */
 export interface ProviderAccount {
   /** Stable identifier of the account. */
@@ -92,8 +100,8 @@ export interface ProviderAccount {
   readonly baseUrl: string;
   /** Bearer key of the endpoint. */
   readonly apiKey: string;
-  /** The model ids the account offers. */
-  readonly models: readonly string[];
+  /** The models the account offers. */
+  readonly models: readonly ModelEntry[];
 }
 
 /** Every configured provider account plus the chat defaults. */
@@ -110,11 +118,26 @@ export function emptyProviderRegistry(): ProviderRegistry {
   return { accounts: [], defaultProviderId: null, defaultModel: null };
 }
 
+/** Reads one stored model entry: the current object form, or a plain id string from before the vision flag. */
+function readModelEntry(value: unknown): ModelEntry | null {
+  if (typeof value === 'string' && value.length > 0) {
+    return { id: value, vision: false };
+  }
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.id !== 'string' || candidate.id.length === 0 || typeof candidate.vision !== 'boolean') {
+    return null;
+  }
+  return { id: candidate.id, vision: candidate.vision };
+}
+
 /**
  * Checks that a value is a valid ProviderAccount.
  *
  * @param value The value to check. It can have any type.
- * @returns True when the value carries the account strings and a model string list.
+ * @returns True when the value carries the account strings and a model entry list.
  */
 function isProviderAccount(value: unknown): value is ProviderAccount {
   if (typeof value !== 'object' || value === null) {
@@ -128,7 +151,7 @@ function isProviderAccount(value: unknown): value is ProviderAccount {
     typeof candidate.baseUrl === 'string' &&
     typeof candidate.apiKey === 'string' &&
     Array.isArray(candidate.models) &&
-    candidate.models.every((model) => typeof model === 'string')
+    candidate.models.every((model) => readModelEntry(model) !== null)
   );
 }
 
@@ -157,8 +180,29 @@ export function isProviderRegistry(value: unknown): value is ProviderRegistry {
 }
 
 /**
- * Checks that a value is a valid ProviderSettings.
+ * Reads one stored provider registry and normalizes it.
+ * The model list may hold the plain id strings from before the vision flag; they become
+ * entries with the vision flag off. Use this where the registry loads from storage.
  *
+ * @param value The value to read. It can have any type.
+ * @returns The registry, or null when the value carries no valid registry.
+ */
+export function readProviderRegistry(value: unknown): ProviderRegistry | null {
+  if (!isProviderRegistry(value)) {
+    return null;
+  }
+  return {
+    accounts: value.accounts.map((account) => ({
+      ...account,
+      models: account.models.map((model) => readModelEntry(model) ?? { id: String(model), vision: false }),
+    })),
+    defaultProviderId: value.defaultProviderId,
+    defaultModel: value.defaultModel,
+  };
+}
+
+/**
+ * Checks that a value is a valid ProviderSettings.
  * @param value The value to check. It can have any type.
  * @returns True when the value carries the three strings of the provider connection.
  */

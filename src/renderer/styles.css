@@ -1005,13 +1005,84 @@ permission-request {
   flex: 1;
 }
 
+/* The vision flag of one model row, and the same flag on the add-model row. */
+.model-vision {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  user-select: none;
+  cursor: pointer;
+}
+
+.model-vision input {
+  accent-color: var(--accent);
+}
+
 .provider-add-model {
   display: flex;
+  align-items: center;
   gap: 6px;
 }
 
 .provider-add-model input {
   flex: 1;
+}
+
+/* The pending image attachments between the permission cards and the composer. */
+#chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.attachment-chip img {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.attachment-chip button {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.attachment-chip button:hover {
+  color: var(--text);
+}
+
+/* The image thumbnails of a message bubble or a tool card. */
+.image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.image-strip img {
+  display: block;
+  max-width: 180px;
+  max-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
 #chat-form {

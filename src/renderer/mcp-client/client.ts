@@ -4,6 +4,7 @@
  */
 
 import { asRecord } from '../../shared/records.js';
+import type { ChatImage } from '../../providers/provider.js';
 import type { McpEndpoint } from '../../shared/mcp-endpoints.js';
 import type { McpTransport } from './transport.js';
 
@@ -37,10 +38,11 @@ export interface McpResourceContent {
   readonly blob: string | null;
 }
 
-/** One tool call result of a remote server. */
+/** One tool call result of a remote server: the text and the image blocks. */
 export interface McpCallResult {
   readonly text: string;
   readonly isError: boolean;
+  readonly images: readonly ChatImage[];
 }
 
 function asString(value: unknown): string | null {
@@ -79,11 +81,12 @@ function readListPage(
   return { entries, nextCursor: asString(record.nextCursor) };
 }
 
-/** Renders the content blocks of one tool call into one text result for the agent. */
+/** Renders the content blocks of one tool call into one result for the agent: text parts and image blocks. */
 function renderCallContent(result: unknown): McpCallResult {
   const record = asRecord(result) ?? {};
   const blocks = Array.isArray(record.content) ? record.content : [];
   const parts: string[] = [];
+  const images: ChatImage[] = [];
   for (const block of blocks) {
     const entry = asRecord(block);
     if (entry === null) {
@@ -91,8 +94,13 @@ function renderCallContent(result: unknown): McpCallResult {
     }
     if (entry.type === 'text') {
       parts.push(readString(entry.text));
-    } else if (entry.type === 'image' || entry.type === 'audio') {
-      parts.push(`[${readString(entry.mimeType, 'unknown')} ${String(entry.type)}]`);
+    } else if (entry.type === 'image') {
+      const data = asString(entry.data);
+      if (data !== null && data.length > 0) {
+        images.push({ data, mimeType: readString(entry.mimeType, 'image/png') });
+      }
+    } else if (entry.type === 'audio') {
+      parts.push(`[${readString(entry.mimeType, 'unknown')} audio]`);
     } else if (entry.type === 'resource_link') {
       parts.push(`[resource ${readString(entry.uri)}]`);
     } else if (entry.type === 'resource') {
@@ -102,7 +110,7 @@ function renderCallContent(result: unknown): McpCallResult {
     }
   }
   const text = parts.length > 0 ? parts.join('\n') : JSON.stringify(result);
-  return { text, isError: readBoolean(record.isError) };
+  return { text, isError: readBoolean(record.isError), images };
 }
 
 /** One connected MCP server. */

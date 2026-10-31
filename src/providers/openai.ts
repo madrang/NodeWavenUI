@@ -7,6 +7,7 @@
 import { isRecord } from '../shared/records.js';
 import {
   ProviderError,
+  type ChatMessage,
   type CompletionDelta,
   type CompletionRequest,
   type CompletionResult,
@@ -34,6 +35,28 @@ const RETRY_COUNT = 3;
  * (see the vault note `Kimi Code/Reasoning.md`). Module scope, so the dialect survives per-call provider instances.
  */
 let lastReasoningField: 'reasoning_content' | 'reasoning' = 'reasoning_content';
+
+/**
+ * Reads one message content as the wire value.
+ * A message with images carries content parts, so a vision model sees the pictures.
+ * Every other message stays a plain string.
+ *
+ * @param message The message to serialize.
+ * @returns The string or the content-part array of the wire body.
+ */
+function wireContent(message: ChatMessage): string | readonly unknown[] {
+  if (!message.images || message.images.length === 0) {
+    return message.content;
+  }
+  const parts: Record<string, unknown>[] = [];
+  if (message.content.length > 0) {
+    parts.push({ type: 'text', text: message.content });
+  }
+  for (const image of message.images) {
+    parts.push({ type: 'image_url', image_url: { url: `data:${image.mimeType};base64,${image.data}` } });
+  }
+  return parts;
+}
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => {
@@ -371,7 +394,7 @@ export class OpenAiInferenceProvider implements InferenceProvider {
     const body: Record<string, unknown> = {
       model: request.model,
       messages: request.messages.map((message) => {
-        const wire: Record<string, unknown> = { role: message.role, content: message.content };
+        const wire: Record<string, unknown> = { role: message.role, content: wireContent(message) };
         if (message.role === 'assistant') {
           if (message.reasoning) {
             wire[lastReasoningField] = message.reasoning;

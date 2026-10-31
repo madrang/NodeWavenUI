@@ -5,18 +5,19 @@
  */
 
 import { OpenAiInferenceProvider } from '../providers/openai.js';
-import type { ChatMessage, CompletionDelta, ToolCall } from '../providers/provider.js';
+import type { ChatImage, ChatMessage, CompletionDelta, ToolCall } from '../providers/provider.js';
 import type { StorageSetup } from '../plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { closeWindow, minimizeWindow } from '../shared/nw.js';
 import type {
+  ModelEntry,
   ProviderAccount,
   ProviderRegistry,
   WorkspaceSettings,
 } from '../shared/workspace.js';
 import { emptyProviderRegistry } from '../shared/workspace.js';
-import { agentToolDefinition, buildAgentTools, CHAT_AGENT_SOURCE, type AgentTool } from './agent-tools.js';
+import { agentToolDefinition, buildAgentTools, CHAT_AGENT_SOURCE, type AgentTool, type AgentToolOutput } from './agent-tools.js';
 import { JsonViewerElement } from './json-viewer-element.js';
 import type { McpClientManager } from './mcp-client/manager.js';
 import type { McpHostHandle, McpSessionSink } from './mcp-host.js';
@@ -39,6 +40,20 @@ import type { ChildWindowManager } from './window-manager.js';
 
 /** How many provider turns one chat message may spend on tool calls. */
 const MAX_AGENT_TURNS = 12;
+
+/** The longest edge of a pasted or dropped image, in pixels. Bigger pictures scale down. */
+const MAX_IMAGE_EDGE = 1280;
+
+/** How many images one chat message may carry. */
+const MAX_ATTACHMENTS = 4;
+
+/** Reads the image files out of one clipboard or drag file list. */
+function imageFilesOf(files: FileList | null): readonly File[] {
+  if (files === null) {
+    return [];
+  }
+  return Array.from(files).filter((file) => file.type.startsWith('image/'));
+}
 
 /** Splits one command line into the executable and its arguments, honoring double-quoted pieces. */
 function splitCommandLine(line: string): { readonly command: string; readonly args: readonly string[] } {
@@ -71,6 +86,8 @@ interface ChatEntry {
   readonly toolCallId?: string;
   /** The display name of the tool that produced this entry, on tool replies. */
   readonly toolName?: string;
+  /** The images of the entry: attachments on user entries, image results on tool entries. */
+  readonly images?: readonly ChatImage[];
 }
 
 /** One chat tab with its conversation. */
@@ -126,6 +143,8 @@ export class MainApp implements McpSessionSink {
   private readonly chats: Chat[] = [];
   private activeChatId: number | null = null;
   private nextChatId = 1;
+  /** The images that ride along with the next message, from paste or drop. */
+  private pendingImages: ChatImage[] = [];
 
   private readonly tabSettings = requireElement<HTMLButtonElement>('#tab-settings');
   private readonly chatTabs = requireElement<HTMLElement>('#chat-tab-list');
@@ -135,6 +154,7 @@ export class MainApp implements McpSessionSink {
   private readonly chatMessages = requireElement<HTMLOListElement>('#chat-messages');
   private readonly chatForm = requireElement<HTMLFormElement>('#chat-form');
   private readonly chatInput = requireElement<HTMLInputElement>('#chat-input');
+  private readonly chatAttachments = requireElement<HTMLElement>('#chat-attachments');
   private readonly chatSend = requireElement<HTMLButtonElement>('#chat-send');
   private readonly chatStatus = requireElement<HTMLElement>('#chat-status');
   private readonly providerList = requireElement<HTMLElement>('#provider-list');
@@ -285,6 +305,21 @@ export class MainApp implements McpSessionSink {
     this.chatForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.send();
+    });
+    this.chatInput.addEventListener('paste', (event) => {
+      const files = imageFilesOf(event.clipboardData?.files ?? null);
+      if (files.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      void this.addImageFiles(files);
+    });
+    this.paneChat.addEventListener('dragover', (event) => {
+      event.preventDefault();
+    });
+    this.paneChat.addEventListener('drop', (event) => {
+      event.preventDefault();
+      void this.addImageFiles(imageFilesOf(event.dataTransfer?.files ?? null));
     });
     this.newChat();
   }
@@ -866,10 +901,23 @@ export class MainApp implements McpSessionSink {
   /** The model the chats use: the chosen default when it belongs to the account, or the account's first. */
   private effectiveDefaultModel(account: ProviderAccount): string | null {
     const wanted = this.registry.defaultModel;
-    if (wanted && account.models.includes(wanted)) {
+    if (wanted && account.models.some((model) => model.id === wanted)) {
       return wanted;
     }
-    return account.models[0] ?? null;
+    return account.models[0]?.id ?? null;
+  }
+
+  /** Reads the vision flag of one model of an account. An unknown model reads text only. */
+  private modelVision(account: ProviderAccount, modelId: string | null): boolean {
+    if (modelId === null) {
+      return false;
+    }
+    return account.models.find((model) => model.id === modelId)?.vision ?? false;
+  }
+
+  /** The status-bar display name of one model: the id, plus the vision marker when the model sees images. */
+  private modelDisplayName(account: ProviderAccount, modelId: string): string {
+    return this.modelVision(account, modelId) ? `${modelId} · vision` : modelId;
   }
 
   /** Stores the next registry, re-renders the cards, and reports the outcome. */
@@ -968,9 +1016,12 @@ export class MainApp implements McpSessionSink {
 
     const models = document.createElement('div');
     models.className = 'provider-models';
-    const defaultModel = this.effectiveDefaultModel(account);
+    // Only the default model of the default account reads "In use": every other model offers its Use button,
+    // so the default pair can move anywhere, one-model accounts included.
+    const defaultAccount = this.effectiveDefaultAccount();
+    const defaultModel = defaultAccount !== null ? this.effectiveDefaultModel(defaultAccount) : null;
     for (const model of account.models) {
-      models.append(this.buildModelRow(account, model, model === defaultModel));
+      models.append(this.buildModelRow(account, model, defaultAccount?.id === account.id && model.id === defaultModel));
     }
     if (account.models.length === 0) {
       const empty = document.createElement('p');
@@ -984,14 +1035,21 @@ export class MainApp implements McpSessionSink {
     modelInput.type = 'text';
     modelInput.placeholder = 'kimi-k2.6';
     modelInput.spellcheck = false;
+    const visionLabel = document.createElement('label');
+    visionLabel.className = 'model-vision';
+    const visionInput = document.createElement('input');
+    visionInput.type = 'checkbox';
+    visionInput.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
+    visionLabel.append(visionInput, document.createTextNode('Vision'));
     const addModelButton = document.createElement('button');
     addModelButton.type = 'button';
     addModelButton.textContent = 'Add model';
     addModelButton.addEventListener('click', () => {
-      this.addModel(account.id, modelInput.value);
+      this.addModel(account.id, modelInput.value, visionInput.checked);
       modelInput.value = '';
+      visionInput.checked = false;
     });
-    addModelRow.append(modelInput, addModelButton);
+    addModelRow.append(modelInput, visionLabel, addModelButton);
 
     const actions = document.createElement('div');
     actions.className = 'provider-card-actions';
@@ -1003,13 +1061,22 @@ export class MainApp implements McpSessionSink {
     saveButton.addEventListener('click', () => {
       this.saveAccount(account.id, labelInput.value.trim() || 'Provider', urlInput.value.trim(), keyInput.value);
     });
+    const isDefaultAccount = this.effectiveDefaultAccount()?.id === account.id;
+    const defaultButton = document.createElement('button');
+    defaultButton.type = 'button';
+    defaultButton.textContent = isDefaultAccount ? 'Default' : 'Set default';
+    defaultButton.disabled = isDefaultAccount;
+    defaultButton.title = 'New chats pick this provider and its current default model.';
+    defaultButton.addEventListener('click', () => {
+      this.makeDefaultProvider(account.id);
+    });
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
     removeButton.textContent = 'Remove';
     removeButton.addEventListener('click', () => {
       this.removeProvider(account.id);
     });
-    actions.append(saveButton, removeButton);
+    actions.append(saveButton, defaultButton, removeButton);
 
     /** The save action enables while an edited value differs from the stored account. */
     const updateSaveState = (): void => {
@@ -1029,27 +1096,37 @@ export class MainApp implements McpSessionSink {
     return card;
   }
 
-  private buildModelRow(account: ProviderAccount, model: string, isDefault: boolean): HTMLElement {
+  private buildModelRow(account: ProviderAccount, model: ModelEntry, isDefault: boolean): HTMLElement {
     const row = document.createElement('div');
     row.className = 'provider-model';
     const name = document.createElement('span');
     name.className = 'provider-model-name';
-    name.textContent = model;
+    name.textContent = model.id;
+    const visionLabel = document.createElement('label');
+    visionLabel.className = 'model-vision';
+    const visionInput = document.createElement('input');
+    visionInput.type = 'checkbox';
+    visionInput.checked = model.vision;
+    visionInput.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
+    visionInput.addEventListener('change', () => {
+      this.setModelVision(account.id, model.id, visionInput.checked);
+    });
+    visionLabel.append(visionInput, document.createTextNode('Vision'));
     const useButton = document.createElement('button');
     useButton.type = 'button';
     useButton.textContent = isDefault ? 'In use' : 'Use';
     useButton.disabled = isDefault;
     useButton.addEventListener('click', () => {
-      this.makeDefault(account.id, model);
+      this.makeDefault(account.id, model.id);
     });
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
     removeButton.textContent = '×';
-    removeButton.title = `Remove ${model}`;
+    removeButton.title = `Remove ${model.id}`;
     removeButton.addEventListener('click', () => {
-      this.removeModel(account.id, model);
+      this.removeModel(account.id, model.id);
     });
-    row.append(name, useButton, removeButton);
+    row.append(name, visionLabel, useButton, removeButton);
     return row;
   }
 
@@ -1077,7 +1154,7 @@ export class MainApp implements McpSessionSink {
     this.withAccount(id, (account) => ({ ...account, label, baseUrl, apiKey }), 'Saved.');
   }
 
-  private addModel(id: string, model: string): void {
+  private addModel(id: string, model: string, vision: boolean): void {
     const trimmed = model.trim();
     if (trimmed.length === 0) {
       this.showProviderStatus('The model id is required.', true);
@@ -1087,14 +1164,14 @@ export class MainApp implements McpSessionSink {
     if (!account) {
       return;
     }
-    if (account.models.includes(trimmed)) {
+    if (account.models.some((candidate) => candidate.id === trimmed)) {
       this.showProviderStatus(`The model "${trimmed}" already exists on this account.`, true);
       return;
     }
     this.persistRegistry(
       {
         accounts: this.registry.accounts.map((candidate) =>
-          candidate.id === id ? { ...candidate, models: [...candidate.models, trimmed] } : candidate,
+          candidate.id === id ? { ...candidate, models: [...candidate.models, { id: trimmed, vision }] } : candidate,
         ),
         defaultProviderId: this.registry.defaultProviderId ?? id,
         defaultModel: this.registry.defaultModel ?? trimmed,
@@ -1103,14 +1180,26 @@ export class MainApp implements McpSessionSink {
     );
   }
 
+  /** Flips the vision flag of one model. The chats of the model follow at their next send. */
+  private setModelVision(id: string, modelId: string, vision: boolean): void {
+    this.withAccount(
+      id,
+      (account) => ({
+        ...account,
+        models: account.models.map((model) => (model.id === modelId ? { ...model, vision } : model)),
+      }),
+      vision ? 'Vision on.' : 'Vision off.',
+    );
+  }
+
   private removeModel(id: string, model: string): void {
     const account = this.accountById(id);
     if (!account) {
       return;
     }
-    const models = account.models.filter((candidate) => candidate !== model);
+    const models = account.models.filter((candidate) => candidate.id !== model);
     const wasDefault = this.registry.defaultModel === model;
-    const nextDefault = wasDefault ? (models[0] ?? null) : this.registry.defaultModel;
+    const nextDefault = wasDefault ? (models[0]?.id ?? null) : this.registry.defaultModel;
     this.persistRegistry(
       {
         ...this.registry,
@@ -1123,6 +1212,18 @@ export class MainApp implements McpSessionSink {
 
   private makeDefault(id: string, model: string): void {
     this.persistRegistry({ ...this.registry, defaultProviderId: id, defaultModel: model }, 'Default set.');
+  }
+
+  /** Makes one account the default provider, with its effective model as the default model. */
+  private makeDefaultProvider(id: string): void {
+    const account = this.accountById(id);
+    if (!account) {
+      return;
+    }
+    this.persistRegistry(
+      { ...this.registry, defaultProviderId: id, defaultModel: this.effectiveDefaultModel(account) },
+      'Default set.',
+    );
   }
 
   private removeProvider(id: string): void {
@@ -1142,13 +1243,13 @@ export class MainApp implements McpSessionSink {
 
   /** The connection one chat runs on: its bound provider and model, or the status bar selection.
    * Null when the chat has no usable provider, or when its bound provider no longer exists. */
-  private resolveChatConnection(chat: Chat): { account: ProviderAccount; model: string } | null {
+  private resolveChatConnection(chat: Chat): { account: ProviderAccount; model: string; vision: boolean } | null {
     if (chat.boundProviderId) {
       const account = this.registry.accounts.find((candidate) => candidate.id === chat.boundProviderId);
       if (!account || !chat.boundModel) {
         return null;
       }
-      return { account, model: chat.boundModel };
+      return { account, model: chat.boundModel, vision: this.modelVision(account, chat.boundModel) };
     }
     const account =
       this.registry.accounts.find((candidate) => candidate.id === chat.pendingProviderId) ??
@@ -1157,13 +1258,13 @@ export class MainApp implements McpSessionSink {
       return null;
     }
     const model =
-      chat.pendingModel && account.models.includes(chat.pendingModel)
+      chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel)
         ? chat.pendingModel
         : this.effectiveDefaultModel(account);
     if (!model) {
       return null;
     }
-    return { account, model };
+    return { account, model, vision: this.modelVision(account, model) };
   }
 
   private showProviderStatus(message: string, isError: boolean): void {
@@ -1175,12 +1276,24 @@ export class MainApp implements McpSessionSink {
   private async send(): Promise<void> {
     const chat = this.activeChat();
     const text = this.chatInput.value.trim();
-    if (!chat || text.length === 0 || this.chatSend.disabled) {
+    const images = this.pendingImages;
+    if (!chat || (text.length === 0 && images.length === 0) || this.chatSend.disabled) {
       return;
     }
-    chat.entries.push({ role: 'user', content: text });
-    this.chatInput.value = '';
     const connection = this.resolveChatConnection(chat);
+    if (connection && images.length > 0 && !connection.vision) {
+      // Nothing is consumed: the text stays typed and the chips stay pending, so the user can switch model or remove the images.
+      chat.entries.push({
+        role: 'notice',
+        content: `The model "${connection.model}" reads text only. Turn on its Vision flag in the settings, or remove the images.`,
+      });
+      this.renderMessages();
+      return;
+    }
+    chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images: [...images] } : {}) });
+    this.chatInput.value = '';
+    this.pendingImages = [];
+    this.renderAttachments();
     if (!connection) {
       chat.entries.push({
         role: chat.boundProviderId ? 'error' : 'notice',
@@ -1204,7 +1317,7 @@ export class MainApp implements McpSessionSink {
     this.renderMessages();
     this.setChatBusy(true);
     try {
-      await this.runAgentTurn(chat, provider, connection.model);
+      await this.runAgentTurn(chat, provider, connection.model, connection.vision);
     } catch (error) {
       chat.entries.push({
         role: 'error',
@@ -1214,6 +1327,80 @@ export class MainApp implements McpSessionSink {
       this.setChatBusy(false);
       this.renderMessages();
     }
+  }
+
+  /** Adds image files from paste or drop to the pending attachments, downscaled and capped. */
+  private async addImageFiles(files: readonly File[]): Promise<void> {
+    if (files.length === 0) {
+      return;
+    }
+    const room = MAX_ATTACHMENTS - this.pendingImages.length;
+    if (room <= 0) {
+      this.activeChat()?.entries.push({
+        role: 'notice',
+        content: `One message carries at most ${MAX_ATTACHMENTS} images.`,
+      });
+      this.renderMessages();
+      return;
+    }
+    if (files.length > room) {
+      this.activeChat()?.entries.push({
+        role: 'notice',
+        content: `One message carries at most ${MAX_ATTACHMENTS} images. The first ${room} ${room === 1 ? 'stays' : 'stay'}, the rest drop.`,
+      });
+      this.renderMessages();
+    }
+    for (const file of files.slice(0, room)) {
+      try {
+        this.pendingImages.push(await this.readImageFile(file));
+      } catch (error) {
+        console.warn(`[NodeWavenUI] the image "${file.name}" could not be read: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    this.renderAttachments();
+  }
+
+  /** Reads one image file as chat image data, scaled down to the attachment size box. */
+  private async readImageFile(file: File): Promise<ChatImage> {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (context === null) {
+      throw new Error('The page could not create a drawing context.');
+    }
+    context.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    const prefix = 'data:image/png;base64,';
+    const dataUrl = canvas.toDataURL('image/png');
+    return { data: dataUrl.slice(prefix.length), mimeType: 'image/png' };
+  }
+
+  /** Renders the pending attachments as thumbnails with a remove button each. */
+  private renderAttachments(): void {
+    this.chatAttachments.hidden = this.pendingImages.length === 0;
+    this.chatAttachments.replaceChildren();
+    this.pendingImages.forEach((image, index) => {
+      const chip = document.createElement('span');
+      chip.className = 'attachment-chip';
+      const thumbnail = document.createElement('img');
+      thumbnail.src = `data:${image.mimeType};base64,${image.data}`;
+      thumbnail.alt = 'attachment';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '×';
+      remove.title = 'Remove';
+      remove.addEventListener('click', () => {
+        this.pendingImages.splice(index, 1);
+        this.renderAttachments();
+      });
+      chip.append(thumbnail, remove);
+      this.chatAttachments.append(chip);
+    });
   }
 
   /** The tools the agent may call this turn, the built-ins plus the native MCP tools. */
@@ -1233,10 +1420,10 @@ export class MainApp implements McpSessionSink {
   }
 
   /** Runs the tool-calling loop of one user message, until the model answers in text or hits the turn cap. */
-  private async runAgentTurn(chat: Chat, provider: OpenAiInferenceProvider, model: string): Promise<void> {
+  private async runAgentTurn(chat: Chat, provider: OpenAiInferenceProvider, model: string, vision: boolean): Promise<void> {
     for (let turn = 0; turn < MAX_AGENT_TURNS; turn += 1) {
       const tools = this.agentTools();
-      const messages = this.agentMessages(chat);
+      const messages = this.agentMessages(chat, vision);
       const streaming = this.beginStreamingEntry(chat);
       const result = await provider.complete({
         model,
@@ -1283,29 +1470,30 @@ export class MainApp implements McpSessionSink {
     } catch {
       args = { _raw: call.arguments };
     }
-    let output: string;
+    let output: AgentToolOutput;
     const tool = tools.find((candidate) => candidate.name === call.name);
     if (!tool) {
-      output = `Error: no tool named "${call.name}" exists.`;
+      output = { text: `Error: no tool named "${call.name}" exists.` };
     } else {
       try {
         output = await tool.run(args);
       } catch (error) {
-        output = `Error: ${error instanceof Error ? error.message : String(error)}`;
+        output = { text: `Error: ${error instanceof Error ? error.message : String(error)}` };
       }
     }
     // A JSON object or array reply rides along as a payload, so the tab shows it in the viewer.
     let json: unknown;
     try {
-      const parsed: unknown = JSON.parse(output);
+      const parsed: unknown = JSON.parse(output.text);
       json = typeof parsed === 'object' && parsed !== null ? parsed : undefined;
     } catch {
       json = undefined;
     }
     chat.entries.push({
       role: 'tool',
-      content: output,
+      content: output.text,
       ...(json ? { json } : {}),
+      ...(output.images && output.images.length > 0 ? { images: output.images } : {}),
       toolCallId: call.id,
       toolName: call.name,
     });
@@ -1313,12 +1501,30 @@ export class MainApp implements McpSessionSink {
   }
 
   /** Reads the entries of one chat as the message list of the next provider request. */
-  private agentMessages(chat: Chat): ChatMessage[] {
+  private agentMessages(chat: Chat, vision: boolean): ChatMessage[] {
     const messages: ChatMessage[] = [];
+    // Tool images travel as one user message after the tool batch, because tool messages carry text only.
+    // A model without vision reads an omission note instead.
+    const toolImages: ChatImage[] = [];
+    const flushToolImages = (): void => {
+      if (toolImages.length === 0) {
+        return;
+      }
+      if (vision) {
+        messages.push({ role: 'user', content: 'The images of the tool results above, in order.', images: [...toolImages] });
+      }
+      toolImages.length = 0;
+    };
     for (const entry of chat.entries) {
       if (entry.role === 'user') {
-        messages.push({ role: 'user', content: entry.content });
+        flushToolImages();
+        messages.push({
+          role: 'user',
+          content: entry.content,
+          ...(vision && entry.images && entry.images.length > 0 ? { images: entry.images } : {}),
+        });
       } else if (entry.role === 'assistant') {
+        flushToolImages();
         messages.push({
           role: 'assistant',
           content: entry.content,
@@ -1326,13 +1532,21 @@ export class MainApp implements McpSessionSink {
           ...(entry.toolCalls && entry.toolCalls.length > 0 ? { toolCalls: entry.toolCalls } : {}),
         });
       } else if (entry.role === 'tool') {
+        let content = entry.content;
+        if (!vision && entry.images && entry.images.length > 0) {
+          content += `\n[${entry.images.length} ${entry.images.length === 1 ? 'image' : 'images'} omitted: the model reads text only]`;
+        }
         messages.push({
           role: 'tool',
-          content: entry.content,
+          content,
           ...(entry.toolCallId ? { toolCallId: entry.toolCallId } : {}),
         });
+        if (entry.images) {
+          toolImages.push(...entry.images);
+        }
       }
     }
+    flushToolImages();
     return messages;
   }
 
@@ -1501,7 +1715,8 @@ export class MainApp implements McpSessionSink {
       providerLabel.textContent = account?.label ?? 'unknown provider';
       const modelLabel = document.createElement('span');
       modelLabel.className = 'chat-status-label';
-      modelLabel.textContent = chat.boundModel ?? '–';
+      modelLabel.textContent =
+        account && chat.boundModel ? this.modelDisplayName(account, chat.boundModel) : (chat.boundModel ?? '–');
       this.chatStatus.append(providerLabel, modelLabel, usage);
       return;
     }
@@ -1533,12 +1748,12 @@ export class MainApp implements McpSessionSink {
       modelSelect.replaceChildren();
       for (const model of account.models) {
         const option = document.createElement('option');
-        option.value = model;
-        option.textContent = model;
+        option.value = model.id;
+        option.textContent = this.modelDisplayName(account, model.id);
         modelSelect.append(option);
       }
       const pending =
-        chat.pendingModel && account.models.includes(chat.pendingModel)
+        chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel)
           ? chat.pendingModel
           : this.effectiveDefaultModel(account);
       if (pending) {
@@ -1638,6 +1853,9 @@ export class MainApp implements McpSessionSink {
     }
     item.className = `message ${entry.role}`;
     item.textContent = entry.content;
+    if (entry.images && entry.images.length > 0) {
+      item.append(this.buildImageStrip(entry.images));
+    }
     return item;
   }
 
@@ -1706,7 +1924,23 @@ export class MainApp implements McpSessionSink {
       body.textContent = entry.content;
       card.append(body);
     }
+    if (entry.images && entry.images.length > 0) {
+      card.append(this.buildImageStrip(entry.images));
+    }
     return card;
+  }
+
+  /** Builds the thumbnail strip of one entry: one small image per attached picture. */
+  private buildImageStrip(images: readonly ChatImage[]): HTMLElement {
+    const strip = document.createElement('div');
+    strip.className = 'image-strip';
+    for (const image of images) {
+      const thumbnail = document.createElement('img');
+      thumbnail.src = `data:${image.mimeType};base64,${image.data}`;
+      thumbnail.alt = 'image';
+      strip.append(thumbnail);
+    }
+    return strip;
   }
 
   /** Appends one agent turn: the intro bubble of the assistant reply, one request/response rail per

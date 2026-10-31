@@ -6,7 +6,7 @@
  * so it runs in child windows only unless `--expose-main-window` was passed at launch.
  */
 
-import type { ToolDefinition } from '../providers/provider.js';
+import type { ChatImage, ToolDefinition } from '../providers/provider.js';
 import type { PrincipalKind, PermissionTarget } from '../shared/permissions.js';
 import { readHarnessDoc } from './doc-resources.js';
 import { fileSystem } from './file-system.js';
@@ -32,12 +32,18 @@ export const CHAT_AGENT_SOURCE = 'chat-agent';
 /** The caller every chat-agent tool acts as. */
 const CHAT_AGENT_CALLER: WindowCaller = { principal: 'agent', source: CHAT_AGENT_SOURCE };
 
+/** One tool result: the text the model reads and the images a vision model sees. */
+export interface AgentToolOutput {
+  readonly text: string;
+  readonly images?: readonly ChatImage[];
+}
+
 /** One tool the chat agent may call. */
 export interface AgentTool {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: Record<string, unknown>;
-  run(args: Record<string, unknown>): Promise<string>;
+  run(args: Record<string, unknown>): Promise<AgentToolOutput>;
 }
 
 /** The dependencies the built-in tools need. */
@@ -107,15 +113,15 @@ function createReadTool(deps: AgentToolDeps): AgentTool {
         throw new Error('The read tool needs a uri string.');
       }
       if (uri.startsWith('harness:')) {
-        return readHarnessDoc(uri);
+        return { text: await readHarnessDoc(uri) };
       }
       if (uri.startsWith('file:')) {
-        return readFileUri(uri, deps);
+        return { text: await readFileUri(uri, deps) };
       }
       if (uri.startsWith('storage:')) {
-        return readStorageUri(uri, deps);
+        return { text: await readStorageUri(uri, deps) };
       }
-      return deps.mcpClients.readResource(uri);
+      return { text: await deps.mcpClients.readResource(uri) };
     },
   };
 }
@@ -145,22 +151,23 @@ function createEvaluateTool(deps: AgentToolDeps): AgentTool {
       }
       deps.windowManager.ensurePageGlobals(childId);
       const result = await deps.windowManager.evaluate(CHAT_AGENT_CALLER, childId, expression);
-      return JSON.stringify(result);
+      return { text: JSON.stringify(result) };
     },
   };
 }
 
-/** Renders one window tool result as the text the chat agent reads. Image data stays out of the chat. */
-function windowToolText(result: McpToolResult): string {
+/** Renders one window tool result as the output the chat agent reads: the text blocks and the image blocks. */
+function windowToolOutput(result: McpToolResult): AgentToolOutput {
   const parts: string[] = [];
+  const images: ChatImage[] = [];
   for (const block of result.content) {
     if (block.type === 'text') {
       parts.push(block.text);
     } else {
-      parts.push(`[${block.mimeType} image, ${block.data.length} characters of base64 data omitted]`);
+      images.push({ data: block.data, mimeType: block.mimeType });
     }
   }
-  return parts.join('\n');
+  return { text: parts.join('\n'), ...(images.length > 0 ? { images } : {}) };
 }
 
 /**
@@ -182,7 +189,7 @@ export function buildAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
       name: descriptor.name,
       description: descriptor.description,
       inputSchema: descriptor.inputSchema,
-      run: (args) => descriptor.handler(args, CHAT_AGENT_CALLER).then(windowToolText),
+      run: (args) => descriptor.handler(args, CHAT_AGENT_CALLER).then(windowToolOutput),
     });
   }
   for (const native of deps.mcpClients.nativeTools()) {
@@ -191,9 +198,10 @@ export function buildAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
       description: native.description,
       inputSchema: native.inputSchema,
       run: (args) =>
-        deps.mcpClients
-          .runNativeTool(native.name, args)
-          .then((result) => (result.isError ? `The tool reported an error: ${result.text}` : result.text)),
+        deps.mcpClients.runNativeTool(native.name, args).then((result) => ({
+          text: result.isError ? `The tool reported an error: ${result.text}` : result.text,
+          ...(result.images.length > 0 ? { images: result.images } : {}),
+        })),
     });
   }
   return tools;

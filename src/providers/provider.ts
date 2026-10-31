@@ -23,10 +23,18 @@ export interface ToolCall {
   readonly arguments: string;
 }
 
+/** One image a vision model sees, as base64 data without the data-url prefix. */
+export interface ChatImage {
+  readonly data: string;
+  readonly mimeType: string;
+}
+
 /** One message in a conversation. */
 export interface ChatMessage {
   readonly role: ChatRole;
   readonly content: string;
+  /** The images of a user message, when the model sees pictures. The ACP backend ignores them. */
+  readonly images?: readonly ChatImage[];
   /** The reasoning of an assistant reply. Backends that replay reasoning send it again with the next request. */
   readonly reasoning?: string;
   /** The tool calls of an assistant reply, when the model requests tools instead of text. */
