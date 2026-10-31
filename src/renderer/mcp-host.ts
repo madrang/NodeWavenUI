@@ -14,10 +14,22 @@ import { asRecord } from '../shared/records.js';
 /** Every tool of the host acts as this principal. */
 const HOST_PRINCIPAL = 'mcp' as const;
 
+/** The facts of one MCP host connection, for the connection post of the host tab. */
+export interface McpConnectionInfo {
+  /** The client name from the initialize params, when the client sent one. */
+  readonly clientName: string | null;
+  /** The client version from the initialize params, when the client sent one. */
+  readonly clientVersion: string | null;
+  /** The protocol version the initialize asked for, when present. */
+  readonly protocolVersion: string | null;
+  /** The HTTP user agent header, when present. */
+  readonly userAgent: string | null;
+}
+
 /** Receives the session lifecycle and the tool traffic of the host, so the main app can log it into chat tabs. */
 export interface McpSessionSink {
-  /** A session the host has not seen before opened. */
-  sessionOpened(sessionId: string): void;
+  /** A session the host has not seen before opened, with the facts of its connection. */
+  sessionOpened(sessionId: string, info: McpConnectionInfo): void;
   /** A session started one tool call. */
   toolCall(sessionId: string, toolName: string, args: Record<string, unknown>): void;
   /** A session finished one tool call. The json payload carries the parsed object of one JSON reply, when present. */
@@ -578,7 +590,15 @@ async function handleMcpRequest(
     }
     if (!knownSessions.has(sessionId)) {
       knownSessions.add(sessionId);
-      sink.sessionOpened(sessionId);
+      const params = asRecord(asRecord(message)?.['params']);
+      const clientInfo = asRecord(params?.['clientInfo']);
+      const readInfoString = (value: unknown): string | null => (typeof value === 'string' && value.length > 0 ? value : null);
+      sink.sessionOpened(sessionId, {
+        clientName: readInfoString(clientInfo?.['name']),
+        clientVersion: readInfoString(clientInfo?.['version']),
+        protocolVersion: readInfoString(params?.['protocolVersion']),
+        userAgent: readHeader(request.headers['user-agent']),
+      });
     }
     const reply = await dispatchMcpMessage(message, tools, { sessionId, sink });
     response.setHeader('Mcp-Session-Id', sessionId);

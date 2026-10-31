@@ -559,16 +559,27 @@ body.framed #chat-tabs::after {
   background: none;
 }
 
-/* The reasoning disclosure of an assistant reply: collapsed until the user opens it. */
+/* The reasoning disclosure of an assistant reply: collapsed until the user opens it.
+   The summary spans the full row, so the click target stays comfortable. */
 .reasoning {
   margin: 0 0 4px;
 }
 
 .reasoning > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 2px;
+  margin-left: -8px;
   color: var(--muted);
   font-size: 11px;
   cursor: pointer;
   list-style: none;
+  user-select: none;
+}
+
+.reasoning > summary:hover {
+  color: var(--text);
 }
 
 .reasoning > summary::-webkit-details-marker {
@@ -613,11 +624,20 @@ body.framed #chat-tabs::after {
   padding: 8px 10px;
 }
 
+/* The session chip of one MCP request card: the short id of the connection that made the call. */
+.tool-pair-session {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .tool-pair-title {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0;
+  gap: 6px;
+  margin: 0 0 4px;
 }
 
 .tool-pair-tool {

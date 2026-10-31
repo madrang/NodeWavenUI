@@ -20,7 +20,7 @@ import { emptyProviderRegistry } from '../shared/workspace.js';
 import { agentToolDefinition, buildAgentTools, CHAT_AGENT_SOURCE, type AgentTool, type AgentToolOutput } from './agent-tools.js';
 import { JsonViewerElement } from './json-viewer-element.js';
 import type { McpClientManager } from './mcp-client/manager.js';
-import type { McpHostHandle, McpSessionSink } from './mcp-host.js';
+import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from './mcp-host.js';
 import type { NotificationHub } from './notification-hub.js';
 import type { PermissionGate } from './permission-gate.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
@@ -88,6 +88,8 @@ interface ChatEntry {
   readonly toolName?: string;
   /** The images of the entry: attachments on user entries, image results on tool entries. */
   readonly images?: readonly ChatImage[];
+  /** The short MCP session id that produced this entry, on entries of the host tab. */
+  readonly mcpSession?: string;
 }
 
 /** One chat tab with its conversation. */
@@ -95,8 +97,8 @@ interface Chat {
   readonly id: number;
   readonly title: string;
   readonly entries: ChatEntry[];
-  /** The MCP session this tab belongs to, when the tab logs an MCP session. */
-  readonly mcpSessionId?: string;
+  /** True when this tab is the one MCP host tab that logs every session. */
+  readonly isMcpHostLog?: boolean;
   /** True while the tab sits in the background and took traffic the user has not seen. */
   unread?: boolean;
   /** The provider selection the status bar holds while the chat has sent no message. */
@@ -679,25 +681,57 @@ export class MainApp implements McpSessionSink {
     return select;
   }
 
-  /** McpSessionSink: one MCP session gets its own chat tab that logs its tool traffic. */
-  sessionOpened(sessionId: string): void {
-    const chat: Chat = {
-      id: this.nextChatId,
-      title: `MCP ${sessionId.slice(0, 8)}`,
-      entries: [],
-      mcpSessionId: sessionId,
-    };
-    this.nextChatId += 1;
-    this.chats.push(chat);
-    this.activateChat(chat.id);
+  /** McpSessionSink: every MCP session logs into one shared host tab, and each new connection posts its facts. */
+  sessionOpened(sessionId: string, info: McpConnectionInfo): void {
+    const chat = this.mcpHostTab() ?? this.createMcpHostTab();
+    const facts: string[] = [];
+    if (info.clientName) {
+      facts.push(`client "${info.clientVersion ? `${info.clientName} ${info.clientVersion}` : info.clientName}"`);
+    }
+    if (info.protocolVersion) {
+      facts.push(`protocol ${info.protocolVersion}`);
+    }
+    if (info.userAgent) {
+      facts.push(`user agent "${info.userAgent}"`);
+    }
+    const detail = facts.length > 0 ? facts.join(', ') : 'no client facts';
+    chat.entries.push({
+      role: 'notice',
+      content: `Connection ${sessionId.slice(0, 8)} at ${new Date().toLocaleTimeString()} — ${detail}.`,
+    });
+    if (chat.id === this.activeChatId) {
+      this.renderMessages();
+      return;
+    }
+    chat.unread = true;
+    this.renderTabs();
   }
 
-  /** McpSessionSink: one tool call of a session lands in its tab, its arguments in the JSON viewer. */
+  /** Reads the one host tab, or null before the first connection. */
+  private mcpHostTab(): Chat | null {
+    return this.chats.find((candidate) => candidate.isMcpHostLog) ?? null;
+  }
+
+  /** Creates the host tab and activates it, the first time a client connects. It sits before every chat tab. */
+  private createMcpHostTab(): Chat {
+    const chat: Chat = {
+      id: this.nextChatId,
+      title: 'MCP Host',
+      entries: [],
+      isMcpHostLog: true,
+    };
+    this.nextChatId += 1;
+    this.chats.unshift(chat);
+    this.activateChat(chat.id);
+    return chat;
+  }
+
+  /** McpSessionSink: one tool call of a session lands in the host tab, its arguments in the JSON viewer. */
   toolCall(sessionId: string, toolName: string, args: Record<string, unknown>): void {
     this.appendMcpEntry(sessionId, 'user', toolName, args, toolName);
   }
 
-  /** McpSessionSink: one tool result of a session lands in its tab, a JSON reply in the viewer. */
+  /** McpSessionSink: one tool result of a session lands in the host tab, a JSON reply in the viewer. */
   toolResult(sessionId: string, toolName: string, summary: string, isError: boolean, json?: unknown): void {
     this.appendMcpEntry(sessionId, isError ? 'error' : 'assistant', summary, json, toolName);
   }
@@ -708,19 +742,13 @@ export class MainApp implements McpSessionSink {
   }
 
   private appendMcpEntry(sessionId: string, role: ChatEntry['role'], content: string, json?: unknown, toolName?: string): void {
-    let chat = this.chats.find((candidate) => candidate.mcpSessionId === sessionId);
-    if (!chat) {
-      this.sessionOpened(sessionId);
-      chat = this.chats.find((candidate) => candidate.mcpSessionId === sessionId);
-      if (!chat) {
-        return;
-      }
-    }
+    const chat = this.mcpHostTab() ?? this.createMcpHostTab();
     chat.entries.push({
       role,
       content,
       ...(json ? { json } : {}),
       ...(toolName ? { toolName } : {}),
+      mcpSession: sessionId.slice(0, 8),
     });
     if (chat.id === this.activeChatId) {
       this.renderMessages();
@@ -747,8 +775,8 @@ export class MainApp implements McpSessionSink {
   }
 
   /** Renders the pending permission requests of the active chat tab above the chat input.
-   * An MCP session tab shows its session's requests, a plain chat tab shows the chat agent's requests.
-   * Requests of other chats stay in their tabs; the bar names them, so a waiting request is never invisible. */
+   * The host tab shows every host session's requests, a plain chat tab shows the chat agent's requests.
+   * Requests of the other side stay behind their tabs; the bar names them, so a waiting request is never invisible. */
   private renderPermissionRequests(): void {
     this.permissionRequests.replaceChildren();
     const gate = this.permissionGate;
@@ -757,9 +785,9 @@ export class MainApp implements McpSessionSink {
       return;
     }
     const chat = this.activeChat();
-    const wantedSource = chat?.mcpSessionId ?? CHAT_AGENT_SOURCE;
+    const hostTabActive = Boolean(chat?.isMcpHostLog);
     const all = gate.pendingRequests();
-    const requests = all.filter((request) => request.source === wantedSource);
+    const requests = all.filter((request) => (request.source === CHAT_AGENT_SOURCE) !== hostTabActive);
     for (const request of requests) {
       const card = document.createElement('permission-request') as PermissionRequestElement;
       card.request = request;
@@ -769,20 +797,13 @@ export class MainApp implements McpSessionSink {
       });
       this.permissionRequests.append(card);
     }
-    if (requests.length === 0) {
-      const sources = new Set(all.filter((request) => request.source !== wantedSource).map((request) => request.source));
-      const titles = this.chats
-        .filter((candidate) => sources.has(candidate.mcpSessionId ?? CHAT_AGENT_SOURCE))
-        .map((candidate) => candidate.title);
-      if (titles.length > 0) {
-        const notice = document.createElement('p');
-        notice.className = 'permission-request-waiting';
-        notice.textContent =
-          titles.length === 1
-            ? `A permission request waits in ${titles[0]}. Open the tab to answer it.`
-            : `Permission requests wait in ${titles.join(', ')}. Open a tab to answer them.`;
-        this.permissionRequests.append(notice);
-      }
+    if (requests.length === 0 && all.length > 0) {
+      const notice = document.createElement('p');
+      notice.className = 'permission-request-waiting';
+      notice.textContent = hostTabActive
+        ? 'A permission request waits in a chat tab. Open the tab to answer it.'
+        : 'A permission request waits in the MCP Host tab. Open the tab to answer it.';
+      this.permissionRequests.append(notice);
     }
     this.permissionRequests.hidden = this.permissionRequests.childElementCount === 0;
   }
@@ -1019,7 +1040,7 @@ export class MainApp implements McpSessionSink {
     // Only the default model of the default account reads "In use": every other model offers its Use button,
     // so the default pair can move anywhere, one-model accounts included.
     const defaultAccount = this.effectiveDefaultAccount();
-    const defaultModel = defaultAccount !== null ? this.effectiveDefaultModel(defaultAccount) : null;
+    const defaultModel = defaultAccount ? this.effectiveDefaultModel(defaultAccount) : null;
     for (const model of account.models) {
       models.append(this.buildModelRow(account, model, defaultAccount?.id === account.id && model.id === defaultModel));
     }
@@ -1563,7 +1584,7 @@ export class MainApp implements McpSessionSink {
       const now = Date.now();
       if (force || now - lastStreamRender >= 80) {
         lastStreamRender = now;
-        this.renderMessages();
+        this.patchStreamingEntry(chat);
       }
     };
     renderStreamed(true);
@@ -1584,9 +1605,33 @@ export class MainApp implements McpSessionSink {
       },
       settle: (entry: ChatEntry): void => {
         chat.entries[chat.entries.length - 1] = entry;
-        renderStreamed(true);
+        this.renderMessages();
       },
     };
+  }
+
+  /**
+   * Patches the streaming entry into the live list item instead of rebuilding the whole list,
+   * so a click or an open disclosure never fights the stream renders.
+   * A missing or replaced list item falls back to one full render.
+   */
+  private patchStreamingEntry(chat: Chat): void {
+    const index = chat.entries.length - 1;
+    const entry = chat.entries[index];
+    const item = this.chatMessages.lastElementChild;
+    if (!entry || entry.role !== 'assistant' || !(item instanceof HTMLElement) || item.dataset.entryIndex !== String(index)) {
+      this.renderMessages();
+      return;
+    }
+    const text = item.querySelector(':scope > .message-text');
+    const body = item.querySelector(':scope > details.reasoning > .reasoning-body');
+    if (!(text instanceof HTMLElement) || !(body instanceof HTMLElement)) {
+      this.renderMessages();
+      return;
+    }
+    text.textContent = entry.content;
+    body.textContent = entry.reasoning ?? '';
+    this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
   }
 
   private setChatBusy(busy: boolean): void {
@@ -1625,9 +1670,9 @@ export class MainApp implements McpSessionSink {
     }
     this.paneSettings.hidden = true;
     this.paneChat.hidden = false;
-    // An MCP session tab logs traffic. The host cannot push a message to the connected client,
+    // The MCP host tab logs traffic. The host cannot push a message to the connected clients,
     // so the tab carries no message input and no status bar of a chat that cannot send.
-    const sessionLog = Boolean(chat?.mcpSessionId);
+    const sessionLog = Boolean(chat?.isMcpHostLog);
     this.chatForm.hidden = sessionLog;
     this.chatStatus.hidden = sessionLog;
     this.renderTabs();
@@ -1658,6 +1703,9 @@ export class MainApp implements McpSessionSink {
   private renderTabs(): void {
     // The sources of the queued permission requests, so the tabs that hold one stand out.
     const pendingSources = new Set(this.permissionGate?.pendingRequests().map((request) => request.source) ?? []);
+    // The host tab badges when any host session waits; a plain chat badges when the chat agent waits.
+    const hostWaits = [...pendingSources].some((source) => source !== CHAT_AGENT_SOURCE);
+    const chatWaits = pendingSources.has(CHAT_AGENT_SOURCE);
     this.chatTabs.replaceChildren();
     for (const chat of this.chats) {
       const group = document.createElement('span');
@@ -1668,7 +1716,7 @@ export class MainApp implements McpSessionSink {
       if (chat.unread) {
         classes.push('unread');
       }
-      if (pendingSources.has(chat.mcpSessionId ?? CHAT_AGENT_SOURCE)) {
+      if (chat.isMcpHostLog ? hostWaits : chatWaits) {
         classes.push('permissions');
       }
       group.className = classes.join(' ');
@@ -1828,8 +1876,24 @@ export class MainApp implements McpSessionSink {
     return groups;
   }
 
+  /** Builds the reasoning disclosure of one assistant entry, empty until reasoning arrives. */
+  private buildReasoningDisclosure(index: number, openReasoning: ReadonlySet<string>): {
+    disclosure: HTMLDetailsElement;
+    body: HTMLDivElement;
+  } {
+    const disclosure = document.createElement('details');
+    disclosure.className = 'reasoning';
+    disclosure.open = openReasoning.has(String(index));
+    const summary = document.createElement('summary');
+    summary.textContent = 'Reasoning';
+    const body = document.createElement('div');
+    body.className = 'reasoning-body';
+    disclosure.append(summary, body);
+    return { disclosure, body };
+  }
+
   /** Builds one message item of a single entry: the bubble, the tool cards, or the reasoning disclosure. */
-  private buildMessageItem(slot: EntrySlot, openReasoning: ReadonlySet<string>): HTMLLIElement {
+  private buildMessageItem(slot: EntrySlot, openReasoning: ReadonlySet<string>, isStreaming = false): HTMLLIElement {
     const { index, entry } = slot;
     const item = document.createElement('li');
     item.dataset.entryIndex = String(index);
@@ -1837,18 +1901,15 @@ export class MainApp implements McpSessionSink {
       item.append(this.buildToolReplyCard(entry));
       return item;
     }
-    if (entry.role === 'assistant' && entry.reasoning) {
+    if (entry.role === 'assistant' && (entry.reasoning || isStreaming)) {
+      // The streaming entry carries the disclosure from the start, so its collapsed state shows before the first reasoning.
       item.className = 'message assistant';
-      const disclosure = document.createElement('details');
-      disclosure.className = 'reasoning';
-      disclosure.open = openReasoning.has(String(index));
-      const summary = document.createElement('summary');
-      summary.textContent = 'Reasoning';
-      const body = document.createElement('div');
-      body.className = 'reasoning-body';
-      body.textContent = entry.reasoning;
-      disclosure.append(summary, body);
-      item.append(disclosure, document.createTextNode(entry.content));
+      const { disclosure, body } = this.buildReasoningDisclosure(index, openReasoning);
+      body.textContent = entry.reasoning ?? '';
+      const text = document.createElement('span');
+      text.className = 'message-text';
+      text.textContent = entry.content;
+      item.append(disclosure, text);
       return item;
     }
     item.className = `message ${entry.role}`;
@@ -1861,7 +1922,7 @@ export class MainApp implements McpSessionSink {
 
   /** One request/response pair: the framed group card with the labeled request section over the
    * labeled reply section. A missing reply shows the wait hint. */
-  private buildToolPair(toolName: string, args: unknown, reply: ChatEntry | null): HTMLElement {
+  private buildToolPair(toolName: string, args: unknown, reply: ChatEntry | null, session?: string): HTMLElement {
     const item = document.createElement('li');
     item.className = 'tool-pair';
     const requestTitle = document.createElement('p');
@@ -1873,6 +1934,12 @@ export class MainApp implements McpSessionSink {
     nameLabel.className = 'tool-pair-tool';
     nameLabel.textContent = toolName;
     requestTitle.append(requestBadge, nameLabel);
+    if (session) {
+      const sessionChip = document.createElement('span');
+      sessionChip.className = 'tool-pair-session';
+      sessionChip.textContent = session;
+      requestTitle.append(sessionChip);
+    }
     const requestSection = document.createElement('div');
     requestSection.className = 'tool-pair-section';
     const viewer = document.createElement('json-viewer') as JsonViewerElement;
@@ -1945,12 +2012,24 @@ export class MainApp implements McpSessionSink {
 
   /** Appends one agent turn: the intro bubble of the assistant reply, one request/response rail per
    * tool call — paired over the tool call id — and any result that lost its call. */
-  private appendAgentTurn(group: Extract<MessageGroup, { kind: 'agent' }>): void {
+  private appendAgentTurn(group: Extract<MessageGroup, { kind: 'agent' }>, openReasoning: ReadonlySet<string>): void {
     const entry = group.request.entry;
-    if (entry.content.length > 0) {
+    if (entry.reasoning || entry.content.length > 0) {
       const intro = document.createElement('li');
+      intro.dataset.entryIndex = String(group.request.index);
       intro.className = 'message assistant';
-      intro.textContent = entry.content;
+      if (entry.reasoning) {
+        // The reasoning of a tool-calling reply stays visible once the turn completes.
+        const { disclosure, body } = this.buildReasoningDisclosure(group.request.index, openReasoning);
+        body.textContent = entry.reasoning;
+        intro.append(disclosure);
+      }
+      if (entry.content.length > 0) {
+        const text = document.createElement('span');
+        text.className = 'message-text';
+        text.textContent = entry.content;
+        intro.append(text);
+      }
       this.chatMessages.append(intro);
     }
     const calls = entry.toolCalls ?? [];
@@ -2002,18 +2081,25 @@ export class MainApp implements McpSessionSink {
     if (!chat) {
       return;
     }
+    // The last assistant entry of a busy chat streams: it carries the reasoning disclosure from the start.
+    const streamingIndex = this.chatSend.disabled ? chat.entries.length - 1 : -1;
     for (const group of this.groupChatEntries(chat)) {
       if (group.kind === 'single') {
-        this.chatMessages.append(this.buildMessageItem(group.slot, openReasoning));
+        this.chatMessages.append(this.buildMessageItem(group.slot, openReasoning, group.slot.index === streamingIndex));
         continue;
       }
       if (group.kind === 'agent') {
-        this.appendAgentTurn(group);
+        this.appendAgentTurn(group, openReasoning);
         continue;
       }
       const reply = group.reply ? group.reply.entry : null;
       this.chatMessages.append(
-        this.buildToolPair(group.request.entry.toolName ?? group.request.entry.content, group.request.entry.json, reply),
+        this.buildToolPair(
+          group.request.entry.toolName ?? group.request.entry.content,
+          group.request.entry.json,
+          reply,
+          group.request.entry.mcpSession,
+        ),
       );
     }
     this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
