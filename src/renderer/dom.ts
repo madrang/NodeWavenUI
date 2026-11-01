@@ -9,7 +9,7 @@
  * @returns The element.
  * @throws Error when the document does not contain the element.
  */
-export function requireElement<T extends HTMLElement>(selector: string): T {
+export function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (element === null) {
     throw new Error(`Renderer bootstrap failed: missing required element ${selector}.`);

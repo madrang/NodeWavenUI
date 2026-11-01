@@ -17,9 +17,18 @@ The chat agent carries the same window tools, so it opens the Graphs window, att
 Every drawing method replaces the current graph and answers with a confirmation string. An invalid spec throws with a message that names the problem. All numbers must be finite.
 
 - `nodewavenGraphs.clear()` — empties the surface.
+- `nodewavenGraphs.live({ title?, window, mean?, unit? })` — starts one live scrolling chart: a rolling window of `window` points. `mean: true` draws a dashed line at the mean of the visible points, `unit` labels it.
+- `nodewavenGraphs.append(value)` — appends one point (a number or `{ y }`) to the running live chart. The line grows from the left, scrolls when the window fills, and the axes rescale as the values move. The frame redraws only when its tick values change.
 - `nodewavenGraphs.line({ title?, series })` — polylines. `series: [{ name?, points: [[x, y], ...] }]`.
 - `nodewavenGraphs.scatter({ title?, series })` — point markers. Same shape as `line`.
 - `nodewavenGraphs.bars({ title?, bars })` — vertical bars on a zero baseline. `bars: [{ label, value }]`.
+
+Example: a live latency chart that scrolls one point per second.
+
+```js
+nodewavenGraphs.live({ title: 'Router latency', window: 180, mean: true, unit: ' ms' })
+setInterval(() => nodewavenGraphs.append(Math.random() * 20 + 5), 1000)
+```
 
 Example: one line graph with two named series.
 

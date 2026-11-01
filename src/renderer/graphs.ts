@@ -38,7 +38,7 @@ export interface BarGraphSpec {
 }
 
 /** The drawing surface and the empty hint of the page. */
-const surface = requireElement<HTMLElement>('#graph-root');
+const surface = requireElement<SVGSVGElement>('#graph-root');
 const emptyHint = requireElement<HTMLElement>('#graph-empty');
 
 /** The view box of the drawing surface. */
@@ -186,18 +186,23 @@ interface LegendEntry {
   readonly seriesIndex: number;
 }
 
-/** Draws the grid lines, the axes, and the tick labels of one plot. */
-function drawFrame(plot: Plot, yScale: Scale, xLabels: readonly { readonly at: number; readonly text: string }[]): void {
+/** Draws the grid lines, the axes, and the tick labels of one plot into the given parent. */
+function drawFrame(
+  parent: SVGElement,
+  plot: Plot,
+  yScale: Scale,
+  xLabels: readonly { readonly at: number; readonly text: string }[],
+): void {
   const yStep = niceStep(yScale.max - yScale.min);
   for (const tick of ticksFor(yScale.min, yScale.max)) {
     const y = map(yScale, tick);
-    surface.append(svgElement('line', { x1: plot.x0, y1: y, x2: plot.x1, y2: y, class: tick === 0 ? 'axis' : 'grid' }));
-    surface.append(svgText(plot.x0 - 8, y + 4, formatTick(tick, yStep), 'axis-label', 'end'));
+    parent.append(svgElement('line', { x1: plot.x0, y1: y, x2: plot.x1, y2: y, class: tick === 0 ? 'axis' : 'grid' }));
+    parent.append(svgText(plot.x0 - 8, y + 4, formatTick(tick, yStep), 'axis-label', 'end'));
   }
-  surface.append(svgElement('line', { x1: plot.x0, y1: plot.y0, x2: plot.x0, y2: plot.y1, class: 'axis' }));
-  surface.append(svgElement('line', { x1: plot.x0, y1: plot.y1, x2: plot.x1, y2: plot.y1, class: 'axis' }));
+  parent.append(svgElement('line', { x1: plot.x0, y1: plot.y0, x2: plot.x0, y2: plot.y1, class: 'axis' }));
+  parent.append(svgElement('line', { x1: plot.x0, y1: plot.y1, x2: plot.x1, y2: plot.y1, class: 'axis' }));
   for (const label of xLabels) {
-    surface.append(svgText(label.at, plot.y1 + 18, label.text, 'axis-label'));
+    parent.append(svgText(label.at, plot.y1 + 18, label.text, 'axis-label'));
   }
 }
 
@@ -247,7 +252,7 @@ function drawSeriesPlot(spec: LineGraphSpec | ScatterGraphSpec, markers: boolean
   const yScale = scaleOf(Math.min(...ys), Math.max(...ys), VIEW_HEIGHT - MARGIN.bottom, y0);
   const xStep = niceStep(xScale.max - xScale.min);
   const xLabels = ticksFor(xScale.min, xScale.max).map((tick) => ({ at: map(xScale, tick), text: formatTick(tick, xStep) }));
-  drawFrame(plot, yScale, xLabels);
+  drawFrame(surface, plot, yScale, xLabels);
   spec.series.forEach((series, index) => {
     if (markers) {
       for (const point of series.points) {
@@ -286,7 +291,7 @@ function drawBars(spec: BarGraphSpec): string {
   const xLabels = spec.bars
     .map((bar, index) => ({ at: plot.x0 + band * (index + 0.5), text: bar.label, index }))
     .filter((label) => label.index % labelEvery === 0);
-  drawFrame(plot, yScale, xLabels);
+  drawFrame(surface, plot, yScale, xLabels);
   const zero = map(yScale, 0);
   spec.bars.forEach((bar, index) => {
     const x = plot.x0 + band * index + band * 0.15;
@@ -309,16 +314,160 @@ function drawBars(spec: BarGraphSpec): string {
   return `bar graph: ${spec.bars.length} bars`;
 }
 
+/** The spec of one live scrolling chart: a rolling window that `append` fills over time. */
+export interface LiveGraphSpec {
+  readonly title?: string;
+  /** How many points stay visible. The oldest drops off when one more arrives. */
+  readonly window: number;
+  /** True to draw a dashed line at the mean of the visible points, with its value as the label. */
+  readonly mean?: boolean;
+  /** The value unit, shown on the mean label, for example " ms". */
+  readonly unit?: string;
+}
+
+/** One live chart: the rolling values, the drawing elements, and the axis ticks of the last draw. */
+interface LiveChart {
+  readonly spec: LiveGraphSpec;
+  readonly values: number[];
+  readonly line: SVGPolylineElement;
+  readonly meanLine: SVGLineElement;
+  readonly meanLabel: SVGTextElement;
+  frame: SVGGElement;
+  frameKey: string;
+}
+
+/** The running live chart, or null before `live` starts and after any other drawing. */
+let liveChart: LiveChart | null = null;
+
+/** Reads the y of one appended point: a finite number or an object with a finite y. */
+function readLiveY(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const y = (value as Record<string, unknown>)['y'];
+    if (typeof y === 'number' && Number.isFinite(y)) {
+      return y;
+    }
+  }
+  throw new Error('The appended point must be a finite number or an object { y }.');
+}
+
+/**
+ * Starts one live scrolling chart. Every `append` lands one point at the right edge;
+ * the window scrolls when it fills, and the axes rescale as the values move.
+ *
+ * @param spec The chart spec: { title?, window, mean?, unit? }.
+ * @returns A confirmation string.
+ * @throws Error when the window is not an integer between 2 and 100000.
+ */
+function startLive(spec: unknown): string {
+  if (typeof spec !== 'object' || spec === null) {
+    throw new Error('The live graph needs a spec object: { title?, window, mean?, unit? }.');
+  }
+  const record = spec as Record<string, unknown>;
+  if (typeof record['window'] !== 'number' || !Number.isInteger(record['window']) || record['window'] < 2 || record['window'] > 100000) {
+    throw new Error('The live graph needs a window: an integer between 2 and 100000 points.');
+  }
+  const title = readTitle(record);
+  const unit = record['unit'] === undefined || record['unit'] === null ? '' : String(record['unit']);
+  const wantMean = record['mean'] === undefined || record['mean'] === null ? false : record['mean'] === true;
+  surface.replaceChildren();
+  emptyHint.hidden = true;
+  const plot: Plot = { x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0: title !== null ? 62 : 26, y1: VIEW_HEIGHT - MARGIN.bottom };
+  drawHead({ ...plot, y0: 0 }, title, []);
+  const frame = svgElement('g', {});
+  const line = svgElement('polyline', { fill: 'none', class: 'line-series-0' });
+  const meanLine = svgElement('line', { class: 'mean-line' });
+  const meanLabel = svgText(plot.x1, 0, '', 'mean-label', 'end');
+  surface.append(frame, line, meanLine, meanLabel);
+  liveChart = {
+    spec: { ...(title !== null ? { title } : {}), window: record['window'], ...(wantMean ? { mean: true } : {}), unit },
+    values: [],
+    line,
+    meanLine,
+    meanLabel,
+    frame,
+    frameKey: '',
+  };
+  updateLive();
+  return `live chart: window of ${record['window']} points${wantMean ? ', mean line on' : ''}`;
+}
+
+/** Redraws the live chart from its rolling values: the frame only when its ticks move, the line and mean every time. */
+function updateLive(): void {
+  const chart = liveChart;
+  if (!chart) {
+    return;
+  }
+  const plot: Plot = { x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0: chart.spec.title ? 62 : 26, y1: VIEW_HEIGHT - MARGIN.bottom };
+  // The x axis spans the whole window, so the line grows from the left edge and scrolls once the window fills.
+  const xScale = scaleOf(0, chart.spec.window - 1, plot.x0, plot.x1);
+  const ys = chart.values;
+  const yScale = ys.length > 0 ? scaleOf(Math.min(...ys), Math.max(...ys), plot.y1, plot.y0) : scaleOf(0, 1, plot.y1, plot.y0);
+  const xStep = niceStep(xScale.max - xScale.min);
+  const xLabels = ticksFor(xScale.min, xScale.max).map((tick) => ({ at: map(xScale, tick), text: formatTick(tick, xStep) }));
+  const yTicks = ticksFor(yScale.min, yScale.max);
+  const frameKey = `${xLabels.map((label) => label.text).join(',')}|${yTicks.join(',')}`;
+  if (frameKey !== chart.frameKey) {
+    chart.frame.remove();
+    chart.frame = svgElement('g', {});
+    drawFrame(chart.frame, plot, yScale, xLabels);
+    surface.prepend(chart.frame);
+    chart.frameKey = frameKey;
+  }
+  chart.line.setAttribute(
+    'points',
+    ys.map((y, index) => `${map(xScale, index)},${map(yScale, y)}`).join(' '),
+  );
+  if (ys.length > 0 && chart.spec.mean) {
+    const mean = ys.reduce((sum, value) => sum + value, 0) / ys.length;
+    const at = map(yScale, mean);
+    chart.meanLine.setAttribute('x1', String(plot.x0));
+    chart.meanLine.setAttribute('x2', String(plot.x1));
+    chart.meanLine.setAttribute('y1', String(at));
+    chart.meanLine.setAttribute('y2', String(at));
+    chart.meanLabel.setAttribute('y', String(at - 5));
+    // One decimal fits values of ten and up; small magnitudes, like sub-millisecond latencies, keep two.
+    chart.meanLabel.textContent = `mean ${mean.toFixed(Math.abs(mean) < 10 ? 2 : 1)}${chart.spec.unit}`;
+  } else {
+    chart.meanLine.removeAttribute('x1');
+    chart.meanLabel.textContent = '';
+  }
+}
+
+/**
+ * Appends one point to the running live chart.
+ *
+ * @param point The value: a finite number or an object { y }.
+ * @returns A confirmation string with the visible point count.
+ * @throws Error when no live chart runs or the value is invalid.
+ */
+function appendLive(point: unknown): string {
+  const value = readLiveY(point);
+  if (!liveChart) {
+    throw new Error('No live chart runs. Start one with nodewavenGraphs.live first.');
+  }
+  liveChart.values.push(value);
+  if (liveChart.values.length > liveChart.spec.window) {
+    liveChart.values.shift();
+  }
+  updateLive();
+  return `appended ${value}: ${liveChart.values.length} points visible`;
+}
+
 /** Empties the surface and shows the empty hint again. */
 function clearSurface(): string {
   surface.replaceChildren();
   emptyHint.hidden = false;
+  liveChart = null;
   return 'cleared';
 }
 
-/** Runs one drawing after its spec passed the guard. Every drawing replaces the current graph. */
+/** Runs one drawing after its spec passed the guard. Every drawing replaces the current graph and ends a live chart. */
 function draw(action: () => string): string {
   surface.replaceChildren();
+  liveChart = null;
   const result = action();
   emptyHint.hidden = true;
   return result;
@@ -327,6 +476,10 @@ function draw(action: () => string): string {
 /** The page global the agents drive. Every method validates its spec, draws, and answers with a confirmation. */
 export const nodewavenGraphs = {
   clear: (): string => clearSurface(),
+  /** Starts one live scrolling chart that `append` fills. */
+  live: (spec: unknown): string => startLive(spec),
+  /** Appends one point to the running live chart. */
+  append: (point: unknown): string => appendLive(point),
   line: (spec: unknown): string =>
     draw(() => {
       if (typeof spec !== 'object' || spec === null) {
