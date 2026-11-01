@@ -582,6 +582,22 @@ body.framed #chat-tabs::after {
   color: var(--text);
 }
 
+/* The collapsed activity tail: the latest reasoning words, faded, clipped to one line. */
+.reasoning-tail {
+  flex: 1;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--muted) 65%, transparent);
+}
+
+/* An open disclosure shows the full reasoning, so the tail hides. */
+.reasoning[open] > summary .reasoning-tail {
+  display: none;
+}
+
 .reasoning > summary::-webkit-details-marker {
   display: none;
 }
@@ -948,18 +964,41 @@ permission-request {
   transform: rotate(90deg);
 }
 
-.provider-card-title {
+/* The title of the card is the name editor: it reads as a title and reveals its field on hover or focus. */
+.provider-title-input {
   flex: 1;
+  min-width: 0;
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
+  color: var(--text);
+  background: none;
+  border-color: transparent;
+  padding: 1px 4px;
   text-overflow: ellipsis;
 }
 
+.provider-title-input:hover {
+  border-color: var(--border);
+}
+
+.provider-title-input:focus {
+  border-color: var(--accent);
+  background: var(--field);
+  outline: none;
+}
+
 /* The dirty dot marks a card with edits that the disabled Save has not stored yet. */
-.provider-card.dirty .provider-card-title::after {
-  content: ' •';
+.provider-card.dirty .provider-card-meta::before {
+  content: '• ';
   color: var(--accent);
+}
+
+/* One labeled input of the card body. */
+.provider-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .provider-card-meta {
@@ -1003,10 +1042,57 @@ permission-request {
   font-weight: 600;
 }
 
-.provider-default {
+/* Two-color toggle pills: latched fills with the accent, free stays a quiet outline. */
+.model-vision-toggle,
+.model-use,
+.provider-default-toggle {
+  padding: 2px 10px;
   font-size: 11px;
-  color: var(--accent);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
   white-space: nowrap;
+}
+
+.model-vision-toggle[aria-pressed='false']:hover,
+.model-use[aria-pressed='false']:hover,
+.provider-default-toggle[aria-pressed='false']:hover {
+  color: var(--text);
+}
+
+.model-vision-toggle[aria-pressed='true'],
+.model-use[aria-pressed='true'],
+.provider-default-toggle[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+/* Fixed pill widths keep the Vision and Use columns aligned across the model rows. */
+.model-vision-toggle,
+.model-use {
+  min-width: 64px;
+}
+
+/* The provider default pill sits at the end of the collapsed head row and is the default indicator. */
+.provider-default-toggle {
+  margin-left: auto;
+}
+
+/* Remove actions carry a red tint: quiet at rest, red on hover. */
+.provider-remove {
+  color: color-mix(in srgb, var(--error) 55%, var(--muted));
+  border-color: color-mix(in srgb, var(--error) 30%, var(--border));
+}
+
+.provider-remove:hover {
+  background: color-mix(in srgb, var(--error) 16%, var(--surface));
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 60%, var(--border));
+}
+
+.provider-model .provider-remove {
+  padding: 2px 9px;
 }
 
 .provider-models {
@@ -1016,38 +1102,47 @@ permission-request {
 }
 
 .provider-model {
-  display: flex;
-  align-items: center;
+  display: grid;
+  /* The columns fix the pill lanes, so the Vision and Use columns stay aligned across rows. */
+  grid-template-columns: minmax(0, 1fr) 64px 64px 26px;
   gap: 8px;
+  align-items: center;
 }
 
 .provider-model-name {
-  flex: 1;
-}
-
-/* The vision flag of one model row, and the same flag on the add-model row. */
-.model-vision {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted);
-  font-size: 12px;
-  user-select: none;
-  cursor: pointer;
-}
-
-.model-vision input {
-  accent-color: var(--accent);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .provider-add-model {
-  display: flex;
+  display: grid;
+  /* The same lanes as the model rows, with the last column spanning Use and ×, so the Vision pill lands in the Vision lane. */
+  grid-template-columns: minmax(0, 1fr) 64px 98px;
+  gap: 8px;
   align-items: center;
-  gap: 6px;
 }
 
-.provider-add-model input {
-  flex: 1;
+/* The jump-down arrow between the attachments and the composer: visible only while the chat sits above its latest message. */
+#chat-jump-down {
+  align-self: center;
+  margin: 4px 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#chat-jump-down:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 /* The pending image attachments between the permission cards and the composer. */

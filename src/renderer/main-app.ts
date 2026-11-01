@@ -47,6 +47,23 @@ const MAX_IMAGE_EDGE = 1280;
 /** How many images one chat message may carry. */
 const MAX_ATTACHMENTS = 4;
 
+/** How far from the bottom, in pixels, the chat still counts as pinned to the latest message. */
+const CHAT_PIN_THRESHOLD = 8;
+
+/** How long the collapsed reasoning tail stays after the last reasoning delta, in milliseconds. */
+const REASONING_TAIL_TIMEOUT = 1200;
+
+/** Reads the trailing words of a reasoning text, for the collapsed activity tail. */
+function reasoningTailOf(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  if (flat.length <= 80) {
+    return flat;
+  }
+  const cut = flat.slice(-80);
+  const firstSpace = cut.indexOf(' ');
+  return firstSpace >= 0 ? cut.slice(firstSpace + 1) : cut;
+}
+
 /** Reads the image files out of one clipboard or drag file list. */
 function imageFilesOf(files: FileList | null): readonly File[] {
   if (files === null) {
@@ -147,6 +164,10 @@ export class MainApp implements McpSessionSink {
   private nextChatId = 1;
   /** The images that ride along with the next message, from paste or drop. */
   private pendingImages: ChatImage[] = [];
+  /** True while the chat view sits at the latest message, so new content keeps it in view. */
+  private chatPinned = true;
+  /** The pending clear of the collapsed reasoning tail, armed on every reasoning delta. */
+  private reasoningTailTimer: number | null = null;
 
   private readonly tabSettings = requireElement<HTMLButtonElement>('#tab-settings');
   private readonly chatTabs = requireElement<HTMLElement>('#chat-tab-list');
@@ -157,6 +178,7 @@ export class MainApp implements McpSessionSink {
   private readonly chatForm = requireElement<HTMLFormElement>('#chat-form');
   private readonly chatInput = requireElement<HTMLInputElement>('#chat-input');
   private readonly chatAttachments = requireElement<HTMLElement>('#chat-attachments');
+  private readonly chatJumpDown = requireElement<HTMLButtonElement>('#chat-jump-down');
   private readonly chatSend = requireElement<HTMLButtonElement>('#chat-send');
   private readonly chatStatus = requireElement<HTMLElement>('#chat-status');
   private readonly providerList = requireElement<HTMLElement>('#provider-list');
@@ -307,6 +329,14 @@ export class MainApp implements McpSessionSink {
     this.chatForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.send();
+    });
+    // The chat view scrolls to the latest message only while it sits at the bottom.
+    // A scroll away from the end unpins it, and the arrow above the input jumps back.
+    this.chatMessages.addEventListener('scroll', () => {
+      this.updateChatPinned();
+    });
+    this.chatJumpDown.addEventListener('click', () => {
+      this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
     });
     this.chatInput.addEventListener('paste', (event) => {
       const files = imageFilesOf(event.clipboardData?.files ?? null);
@@ -1003,37 +1033,54 @@ export class MainApp implements McpSessionSink {
 
     const head = document.createElement('summary');
     head.className = 'provider-card-head';
-    if (this.effectiveDefaultAccount()?.id === account.id) {
-      const badge = document.createElement('span');
-      badge.className = 'provider-default';
-      badge.textContent = 'Default';
-      head.append(badge);
-    }
-    const title = document.createElement('span');
-    title.className = 'provider-card-title';
-    title.textContent = account.label;
+    // The title doubles as the name editor: editing it marks the card dirty, and Save stores the name.
+    const titleInput = document.createElement('input');
+    titleInput.type = 'text';
+    titleInput.className = 'provider-title-input';
+    titleInput.value = account.label;
+    titleInput.spellcheck = false;
+    titleInput.title = 'Provider name';
     const modelCount = account.models.length;
     const meta = document.createElement('span');
     meta.className = 'provider-card-meta';
     meta.textContent = modelCount === 1 ? '1 model' : `${modelCount} models`;
-    head.append(title, meta);
+    // The default pill lives in the head, so the default provider reads and changes while the card sits collapsed.
+    const isDefaultAccount = this.effectiveDefaultAccount()?.id === account.id;
+    const defaultButton = document.createElement('button');
+    defaultButton.type = 'button';
+    defaultButton.className = 'provider-default-toggle';
+    defaultButton.textContent = isDefaultAccount ? 'Default' : 'Set default';
+    defaultButton.setAttribute('aria-pressed', String(isDefaultAccount));
+    defaultButton.title = 'New chats pick this provider and its current default model.';
+    defaultButton.addEventListener('click', (event) => {
+      // The click must not open or close the card around the button.
+      event.preventDefault();
+      // The latched pill stays latched: another provider's pill moves the default.
+      if (isDefaultAccount) {
+        return;
+      }
+      this.makeDefaultProvider(account.id);
+    });
+    head.append(titleInput, meta, defaultButton);
 
     const body = document.createElement('div');
     body.className = 'provider-card-body';
-    const labelInput = document.createElement('input');
-    labelInput.type = 'text';
-    labelInput.value = account.label;
-    labelInput.placeholder = 'Label';
-    labelInput.className = 'provider-label';
+    const urlField = document.createElement('label');
+    urlField.className = 'provider-field';
+    urlField.append('Base URL');
     const urlInput = document.createElement('input');
     urlInput.type = 'text';
     urlInput.value = account.baseUrl;
     urlInput.placeholder = 'https://api.moonshot.ai/v1';
     urlInput.spellcheck = false;
+    urlField.append(urlInput);
+    const keyField = document.createElement('label');
+    keyField.className = 'provider-field';
+    keyField.append('API key');
     const keyInput = document.createElement('input');
     keyInput.type = 'password';
     keyInput.value = account.apiKey;
-    keyInput.placeholder = 'API key';
+    keyField.append(keyInput);
 
     const models = document.createElement('div');
     models.className = 'provider-models';
@@ -1056,21 +1103,25 @@ export class MainApp implements McpSessionSink {
     modelInput.type = 'text';
     modelInput.placeholder = 'kimi-k2.6';
     modelInput.spellcheck = false;
-    const visionLabel = document.createElement('label');
-    visionLabel.className = 'model-vision';
-    const visionInput = document.createElement('input');
-    visionInput.type = 'checkbox';
-    visionInput.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
-    visionLabel.append(visionInput, document.createTextNode('Vision'));
+    // The vision flag of the new model latches as a pill and resets after the add.
+    const visionToggle = document.createElement('button');
+    visionToggle.type = 'button';
+    visionToggle.className = 'model-vision-toggle';
+    visionToggle.textContent = 'Vision';
+    visionToggle.setAttribute('aria-pressed', 'false');
+    visionToggle.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
+    visionToggle.addEventListener('click', () => {
+      visionToggle.setAttribute('aria-pressed', String(visionToggle.getAttribute('aria-pressed') !== 'true'));
+    });
     const addModelButton = document.createElement('button');
     addModelButton.type = 'button';
     addModelButton.textContent = 'Add model';
     addModelButton.addEventListener('click', () => {
-      this.addModel(account.id, modelInput.value, visionInput.checked);
+      this.addModel(account.id, modelInput.value, visionToggle.getAttribute('aria-pressed') === 'true');
       modelInput.value = '';
-      visionInput.checked = false;
+      visionToggle.setAttribute('aria-pressed', 'false');
     });
-    addModelRow.append(modelInput, visionLabel, addModelButton);
+    addModelRow.append(modelInput, visionToggle, addModelButton);
 
     const actions = document.createElement('div');
     actions.className = 'provider-card-actions';
@@ -1080,39 +1131,31 @@ export class MainApp implements McpSessionSink {
     saveButton.textContent = 'Save';
     saveButton.disabled = true;
     saveButton.addEventListener('click', () => {
-      this.saveAccount(account.id, labelInput.value.trim() || 'Provider', urlInput.value.trim(), keyInput.value);
-    });
-    const isDefaultAccount = this.effectiveDefaultAccount()?.id === account.id;
-    const defaultButton = document.createElement('button');
-    defaultButton.type = 'button';
-    defaultButton.textContent = isDefaultAccount ? 'Default' : 'Set default';
-    defaultButton.disabled = isDefaultAccount;
-    defaultButton.title = 'New chats pick this provider and its current default model.';
-    defaultButton.addEventListener('click', () => {
-      this.makeDefaultProvider(account.id);
+      this.saveAccount(account.id, titleInput.value.trim() || 'Provider', urlInput.value.trim(), keyInput.value);
     });
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
+    removeButton.className = 'provider-remove';
     removeButton.textContent = 'Remove';
     removeButton.addEventListener('click', () => {
       this.removeProvider(account.id);
     });
-    actions.append(saveButton, defaultButton, removeButton);
+    actions.append(saveButton, removeButton);
 
     /** The save action enables while an edited value differs from the stored account. */
     const updateSaveState = (): void => {
       const dirty =
-        (labelInput.value.trim() || 'Provider') !== account.label ||
+        (titleInput.value.trim() || 'Provider') !== account.label ||
         urlInput.value.trim() !== account.baseUrl ||
         keyInput.value !== account.apiKey;
       saveButton.disabled = !dirty;
       card.classList.toggle('dirty', dirty);
     };
-    for (const field of [labelInput, urlInput, keyInput]) {
+    for (const field of [titleInput, urlInput, keyInput]) {
       field.addEventListener('input', updateSaveState);
     }
 
-    body.append(labelInput, urlInput, keyInput, models, addModelRow, actions);
+    body.append(urlField, keyField, models, addModelRow, actions);
     card.append(head, body);
     return card;
   }
@@ -1123,31 +1166,37 @@ export class MainApp implements McpSessionSink {
     const name = document.createElement('span');
     name.className = 'provider-model-name';
     name.textContent = model.id;
-    const visionLabel = document.createElement('label');
-    visionLabel.className = 'model-vision';
-    const visionInput = document.createElement('input');
-    visionInput.type = 'checkbox';
-    visionInput.checked = model.vision;
-    visionInput.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
-    visionInput.addEventListener('change', () => {
-      this.setModelVision(account.id, model.id, visionInput.checked);
+    // The vision flag latches as a pill: filled when the model reads images, quiet when it does not.
+    const visionToggle = document.createElement('button');
+    visionToggle.type = 'button';
+    visionToggle.className = 'model-vision-toggle';
+    visionToggle.textContent = 'Vision';
+    visionToggle.setAttribute('aria-pressed', String(model.vision));
+    visionToggle.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
+    visionToggle.addEventListener('click', () => {
+      this.setModelVision(account.id, model.id, !model.vision);
     });
-    visionLabel.append(visionInput, document.createTextNode('Vision'));
+    // The Use pill latches on the default pair and never unlatches on itself: another Use moves the latch.
     const useButton = document.createElement('button');
     useButton.type = 'button';
+    useButton.className = 'model-use';
     useButton.textContent = isDefault ? 'In use' : 'Use';
-    useButton.disabled = isDefault;
+    useButton.setAttribute('aria-pressed', String(isDefault));
     useButton.addEventListener('click', () => {
+      if (isDefault) {
+        return;
+      }
       this.makeDefault(account.id, model.id);
     });
     const removeButton = document.createElement('button');
     removeButton.type = 'button';
+    removeButton.className = 'provider-remove';
     removeButton.textContent = '×';
     removeButton.title = `Remove ${model.id}`;
     removeButton.addEventListener('click', () => {
       this.removeModel(account.id, model.id);
     });
-    row.append(name, visionLabel, useButton, removeButton);
+    row.append(name, visionToggle, useButton, removeButton);
     return row;
   }
 
@@ -1301,6 +1350,8 @@ export class MainApp implements McpSessionSink {
     if (!chat || (text.length === 0 && images.length === 0) || this.chatSend.disabled) {
       return;
     }
+    // The user acts on the latest message, so the send pins the view back to it.
+    this.chatPinned = true;
     const connection = this.resolveChatConnection(chat);
     if (connection && images.length > 0 && !connection.vision) {
       // Nothing is consumed: the text stays typed and the chips stay pending, so the user can switch model or remove the images.
@@ -1630,8 +1681,35 @@ export class MainApp implements McpSessionSink {
       return;
     }
     text.textContent = entry.content;
-    body.textContent = entry.reasoning ?? '';
-    this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    const reasoning = entry.reasoning ?? '';
+    body.textContent = reasoning;
+    const tail = item.querySelector(':scope > details.reasoning > summary > .reasoning-tail');
+    if (reasoning && tail instanceof HTMLElement) {
+      tail.textContent = reasoningTailOf(reasoning);
+      if (this.reasoningTailTimer !== null) {
+        window.clearTimeout(this.reasoningTailTimer);
+      }
+      // Reasoning that stops mid-stream clears its tail, and the settled render drops it entirely.
+      this.reasoningTailTimer = window.setTimeout(() => {
+        tail.textContent = '';
+        this.reasoningTailTimer = null;
+      }, REASONING_TAIL_TIMEOUT);
+    }
+    this.pinChatToBottom();
+  }
+
+  /** Recomputes the pinned state from the scroll position and shows or hides the jump-down arrow. */
+  private updateChatPinned(): void {
+    const list = this.chatMessages;
+    this.chatPinned = list.scrollHeight - list.scrollTop - list.clientHeight <= CHAT_PIN_THRESHOLD;
+    this.chatJumpDown.hidden = this.chatPinned;
+  }
+
+  /** Scrolls the latest message into view, but only while the view sits at the bottom. */
+  private pinChatToBottom(): void {
+    if (this.chatPinned) {
+      this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    }
   }
 
   private setChatBusy(busy: boolean): void {
@@ -1664,6 +1742,8 @@ export class MainApp implements McpSessionSink {
 
   private activateChat(id: number): void {
     this.activeChatId = id;
+    // A freshly opened tab starts at its latest message.
+    this.chatPinned = true;
     const chat = this.chats.find((candidate) => candidate.id === id);
     if (chat) {
       chat.unread = false;
@@ -1885,7 +1965,12 @@ export class MainApp implements McpSessionSink {
     disclosure.className = 'reasoning';
     disclosure.open = openReasoning.has(String(index));
     const summary = document.createElement('summary');
-    summary.textContent = 'Reasoning';
+    const label = document.createElement('span');
+    label.textContent = 'Reasoning';
+    // The collapsed tail carries the latest reasoning words while they stream, and clears when they stop.
+    const tail = document.createElement('span');
+    tail.className = 'reasoning-tail';
+    summary.append(label, tail);
     const body = document.createElement('div');
     body.className = 'reasoning-body';
     disclosure.append(summary, body);
@@ -2102,6 +2187,6 @@ export class MainApp implements McpSessionSink {
         ),
       );
     }
-    this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+    this.pinChatToBottom();
   }
 }
