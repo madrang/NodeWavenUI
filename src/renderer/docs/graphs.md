@@ -1,6 +1,6 @@
 # The Graphs window
 
-A child window that draws simple SVG graphs. It opens empty and carries the `nodewavenGraphs` page global. The colors come from the active app theme, so the API takes no color arguments.
+A child window that draws simple SVG graphs. It opens empty and carries the `nodewavenGraphs` page global. The colors come from the active app theme, so the API takes no color arguments. The surface follows the window size: a resize redraws the current graph into the new space, a static graph replays, and a live chart keeps its values.
 
 # Open it
 

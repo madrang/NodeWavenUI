@@ -41,9 +41,23 @@ export interface BarGraphSpec {
 const surface = requireElement<SVGSVGElement>('#graph-root');
 const emptyHint = requireElement<HTMLElement>('#graph-empty');
 
-/** The view box of the drawing surface. */
-const VIEW_WIDTH = 1000;
-const VIEW_HEIGHT = 620;
+/** The boot view box of the drawing surface, before the first read of the window size. */
+const BOOT_VIEW = { width: 1000, height: 620 } as const;
+
+/** The current view box: it follows the window size, so a drawing fills the whole surface. */
+let view: { width: number; height: number } = { ...BOOT_VIEW };
+
+/** Reads the surface size into the view box attribute. True when the view box changed. */
+function refreshView(): boolean {
+  const width = Math.max(1, surface.clientWidth);
+  const height = Math.max(1, surface.clientHeight);
+  if (width === view.width && height === view.height) {
+    return false;
+  }
+  view = { width, height };
+  surface.setAttribute('viewBox', `0 0 ${view.width} ${view.height}`);
+  return true;
+}
 
 /** The plot margins inside the view box: room for the axis labels. The top margin follows the title and the legend. */
 const MARGIN = { left: 70, right: 24, bottom: 42 } as const;
@@ -209,7 +223,7 @@ function drawFrame(
 /** Draws the title and the legend of one drawing. Returns the top edge of the plot. */
 function drawHead(plot: Plot, title: string | null, legend: readonly LegendEntry[]): number {
   if (title !== null) {
-    surface.append(svgText(VIEW_WIDTH / 2, 26, title, 'graph-title'));
+    surface.append(svgText(view.width / 2, 26, title, 'graph-title'));
   }
   const legendY = title !== null ? 48 : 16;
   let x = plot.x1;
@@ -241,15 +255,15 @@ function drawSeriesPlot(spec: LineGraphSpec | ScatterGraphSpec, markers: boolean
   const allPoints = spec.series.flatMap((series) => series.points);
   const xs = allPoints.map((point) => point[0]);
   const ys = allPoints.map((point) => point[1]);
-  const xScale = scaleOf(Math.min(...xs), Math.max(...xs), MARGIN.left, VIEW_WIDTH - MARGIN.right);
+  const xScale = scaleOf(Math.min(...xs), Math.max(...xs), MARGIN.left, view.width - MARGIN.right);
   const legend = spec.series
     .map((series, seriesIndex) => ({ name: series.name ?? '', seriesIndex }))
     .filter((entry) => entry.name.length > 0);
   const title = readTitle(spec as unknown as Record<string, unknown>);
-  const y0 = drawHead({ x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0: 0, y1: VIEW_HEIGHT - MARGIN.bottom }, title, legend);
-  const plot: Plot = { x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0, y1: VIEW_HEIGHT - MARGIN.bottom };
+  const y0 = drawHead({ x0: MARGIN.left, x1: view.width - MARGIN.right, y0: 0, y1: view.height - MARGIN.bottom }, title, legend);
+  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0, y1: view.height - MARGIN.bottom };
   // The vertical scale maps into the plot below the head, so the highest point stays under title and legend.
-  const yScale = scaleOf(Math.min(...ys), Math.max(...ys), VIEW_HEIGHT - MARGIN.bottom, y0);
+  const yScale = scaleOf(Math.min(...ys), Math.max(...ys), view.height - MARGIN.bottom, y0);
   const xStep = niceStep(xScale.max - xScale.min);
   const xLabels = ticksFor(xScale.min, xScale.max).map((tick) => ({ at: map(xScale, tick), text: formatTick(tick, xStep) }));
   drawFrame(surface, plot, yScale, xLabels);
@@ -281,10 +295,10 @@ function drawBars(spec: BarGraphSpec): string {
   }
   const values = spec.bars.map((bar) => bar.value);
   const title = readTitle(spec as unknown as Record<string, unknown>);
-  const y0 = drawHead({ x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0: 0, y1: VIEW_HEIGHT - MARGIN.bottom }, title, []);
-  const plot: Plot = { x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0, y1: VIEW_HEIGHT - MARGIN.bottom };
+  const y0 = drawHead({ x0: MARGIN.left, x1: view.width - MARGIN.right, y0: 0, y1: view.height - MARGIN.bottom }, title, []);
+  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0, y1: view.height - MARGIN.bottom };
   // The vertical scale maps into the plot below the head, so the tallest bar stays under the title.
-  const yScale = scaleOf(Math.min(0, ...values), Math.max(0, ...values), VIEW_HEIGHT - MARGIN.bottom, y0);
+  const yScale = scaleOf(Math.min(0, ...values), Math.max(0, ...values), view.height - MARGIN.bottom, y0);
   const yStep = niceStep(yScale.max - yScale.min);
   const band = (plot.x1 - plot.x0) / spec.bars.length;
   const labelEvery = Math.max(1, Math.ceil(44 / band));
@@ -329,15 +343,19 @@ export interface LiveGraphSpec {
 interface LiveChart {
   readonly spec: LiveGraphSpec;
   readonly values: number[];
-  readonly line: SVGPolylineElement;
-  readonly meanLine: SVGLineElement;
-  readonly meanLabel: SVGTextElement;
+  /** The drawing elements: mutable, because a resize redraws the chart on a fresh surface. */
+  line: SVGPolylineElement;
+  meanLine: SVGLineElement;
+  meanLabel: SVGTextElement;
   frame: SVGGElement;
   frameKey: string;
 }
 
 /** The running live chart, or null before `live` starts and after any other drawing. */
 let liveChart: LiveChart | null = null;
+
+/** The last static drawing to replay when the window resizes. Null while a live chart runs or after clear. */
+let lastDraw: (() => string) | null = null;
 
 /** Reads the y of one appended point: a finite number or an object with a finite y. */
 function readLiveY(value: unknown): number {
@@ -373,8 +391,9 @@ function startLive(spec: unknown): string {
   const unit = record['unit'] === undefined || record['unit'] === null ? '' : String(record['unit']);
   const wantMean = record['mean'] === undefined || record['mean'] === null ? false : record['mean'] === true;
   surface.replaceChildren();
+  lastDraw = null;
   emptyHint.hidden = true;
-  const plot: Plot = { x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0: title !== null ? 62 : 26, y1: VIEW_HEIGHT - MARGIN.bottom };
+  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: title !== null ? 62 : 26, y1: view.height - MARGIN.bottom };
   drawHead({ ...plot, y0: 0 }, title, []);
   const frame = svgElement('g', {});
   const line = svgElement('polyline', { fill: 'none', class: 'line-series-0' });
@@ -394,13 +413,44 @@ function startLive(spec: unknown): string {
   return `live chart: window of ${record['window']} points${wantMean ? ', mean line on' : ''}`;
 }
 
+/** Redraws the running live chart on a fresh surface: the head and the drawing elements, then the update. The values stay. */
+function replayLive(): void {
+  const chart = liveChart;
+  if (!chart) {
+    return;
+  }
+  surface.replaceChildren();
+  const title = chart.spec.title ?? null;
+  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: title !== null ? 62 : 26, y1: view.height - MARGIN.bottom };
+  drawHead({ ...plot, y0: 0 }, title, []);
+  chart.frame = svgElement('g', {});
+  chart.line = svgElement('polyline', { fill: 'none', class: 'line-series-0' });
+  chart.meanLine = svgElement('line', { class: 'mean-line' });
+  chart.meanLabel = svgText(plot.x1, 0, '', 'mean-label', 'end');
+  surface.append(chart.frame, chart.line, chart.meanLine, chart.meanLabel);
+  chart.frameKey = '';
+  updateLive();
+}
+
+/** Redraws the current graph into the new view box: the live chart keeps its values, a static graph replays. */
+function redraw(): void {
+  if (liveChart) {
+    replayLive();
+    return;
+  }
+  if (lastDraw) {
+    surface.replaceChildren();
+    lastDraw();
+  }
+}
+
 /** Redraws the live chart from its rolling values: the frame only when its ticks move, the line and mean every time. */
 function updateLive(): void {
   const chart = liveChart;
   if (!chart) {
     return;
   }
-  const plot: Plot = { x0: MARGIN.left, x1: VIEW_WIDTH - MARGIN.right, y0: chart.spec.title ? 62 : 26, y1: VIEW_HEIGHT - MARGIN.bottom };
+  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: chart.spec.title ? 62 : 26, y1: view.height - MARGIN.bottom };
   // The x axis spans the whole window, so the line grows from the left edge and scrolls once the window fills.
   const xScale = scaleOf(0, chart.spec.window - 1, plot.x0, plot.x1);
   const ys = chart.values;
@@ -461,6 +511,7 @@ function clearSurface(): string {
   surface.replaceChildren();
   emptyHint.hidden = false;
   liveChart = null;
+  lastDraw = null;
   return 'cleared';
 }
 
@@ -468,7 +519,9 @@ function clearSurface(): string {
 function draw(action: () => string): string {
   surface.replaceChildren();
   liveChart = null;
+  lastDraw = null;
   const result = action();
+  lastDraw = action;
   emptyHint.hidden = true;
   return result;
 }
@@ -504,6 +557,18 @@ export const nodewavenGraphs = {
 } as const;
 
 (globalThis as { nodewavenGraphs?: typeof nodewavenGraphs }).nodewavenGraphs = nodewavenGraphs;
+
+// A window resize grows the view box and redraws, so the drawing fills the whole surface at every size.
+let resizeFrame = 0;
+window.addEventListener('resize', () => {
+  cancelAnimationFrame(resizeFrame);
+  resizeFrame = requestAnimationFrame(() => {
+    if (refreshView()) {
+      redraw();
+    }
+  });
+});
+refreshView();
 
 /** Applies the theme the workspace window mirrored, so the page follows the active app theme. */
 function applyMirroredTheme(): void {
