@@ -16,7 +16,7 @@
     "transparent": true,
     "resizable": false
   },
-  "chromium-args": "--enable-logging=stderr",
+  "chromium-args": "--enable-logging=stderr --silent-debugger-extension-api",
   "scripts": {
     "build": "tsc -b && node scripts/copy-assets.mjs",
     "watch": "node scripts/copy-assets.mjs && tsc -b --watch",
