@@ -34,6 +34,7 @@ src/
     main-app.ts            tabs, settings panes, chat, permission cards
     permission-gate.ts     the permission pipeline and pending requests
     settings-store.ts      the per-workspace settings store
+    chat-sessions.ts       chat session persistence: one file per chat, sealed with a storage-held chat key on password workspaces
     storage-setups.ts      the built-in storage setups for the wizard dropdown
     storage-shares.ts      read-only storage sharing with the chat agent
     storage-migration.ts   moves legacy backends forward
@@ -58,6 +59,7 @@ src/
   storage/         storage backends, one module per backend
     storage.ts             the StorageBackend contract every backend implements
     node-access.ts         crypto and fs module loaders for the storage layer
+    encryption.ts          shared suites, envelopes, and key derivation for password encryption
     indexeddb.ts           IndexedDB key-value backend
     json-file.ts           JSON file backend with atomic writes
     password-encrypted.ts  password encryption wrapped over any backend

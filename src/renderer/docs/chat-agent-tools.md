@@ -1,6 +1,8 @@
 # Chat agent tools
 
-The chat assistant is a tool-calling agent. A message may spend up to 12 provider turns on tool calls before it answers in text.
+The chat assistant is a tool-calling agent. The workspace setting "Agent tool rounds" caps the provider rounds one message may spend on tool calls; the default is no limit.
+
+The user can stop a running turn at any time (Stop beside Send): the in-flight request aborts, the streamed partial stays, and a `Stopped.` notice lands. A message sent while a turn runs queues as a dimmed entry and delivers itself when the turn ends; a stop leaves the queue untouched.
 
 | Tool | Arguments | What it does |
 |---|---|---|

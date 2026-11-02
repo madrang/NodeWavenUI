@@ -125,7 +125,13 @@ function additionalData(keyName: string): Uint8Array<ArrayBuffer> {
   return utf8Encode(`${ENVELOPE_PREFIX}:${keyName}`);
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
+/**
+ * Encodes bytes as base64, for records that carry raw key material.
+ *
+ * @param bytes The bytes to encode.
+ * @returns The base64 text.
+ */
+export function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
@@ -133,7 +139,13 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {
+/**
+ * Decodes base64 text into bytes.
+ *
+ * @param value The base64 text.
+ * @returns The bytes. The input length must be a valid base64 form.
+ */
+export function base64ToBytes(value: string): Uint8Array<ArrayBuffer> {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {
@@ -199,6 +211,19 @@ async function webCryptoAesDecrypt(
 async function deriveWebCryptoAesKey(rawKey: Uint8Array<ArrayBuffer>): Promise<EncryptionKey> {
   const key = await subtle().importKey('raw', rawKey, 'AES-GCM', false, ['encrypt', 'decrypt']);
   return { kind: 'webcrypto', key };
+}
+
+/**
+ * Imports raw AES-256 key bytes as a WebCrypto encryption key.
+ * This path serves stored random keys, which need no derivation: the cipher half of the AES-GCM
+ * suites does the work, and the suite key derivation never runs. `sealRecord` and `openRecord`
+ * take the key with any AES-GCM suite id.
+ *
+ * @param rawKey The 32 raw key bytes.
+ * @returns The key material for the AES-GCM suites.
+ */
+export function importRawAesKey(rawKey: Uint8Array<ArrayBuffer>): Promise<EncryptionKey> {
+  return deriveWebCryptoAesKey(rawKey);
 }
 
 /** The suites, keyed by id. Each entry states its own availability rule. */

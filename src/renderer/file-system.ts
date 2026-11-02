@@ -25,6 +25,8 @@ export interface NodeFileSystem {
   readdirSync(path: string): readonly string[];
   readFileSync(path: string, encoding: 'utf-8'): string;
   writeFileSync(path: string, contents: string): void;
+  mkdirSync(path: string, options: { recursive: boolean }): void;
+  rmSync(path: string, options: { force: boolean }): void;
 }
 
 /**
@@ -38,7 +40,13 @@ export function fileSystem(): NodeFileSystem | null {
     return null;
   }
   const fs = module as Partial<NodeFileSystem>;
-  return typeof fs.readdirSync === 'function' && typeof fs.readFileSync === 'function' && typeof fs.writeFileSync === 'function'
+  return [
+    fs.readdirSync,
+    fs.readFileSync,
+    fs.writeFileSync,
+    fs.mkdirSync,
+    fs.rmSync,
+  ].every((method) => typeof method === 'function')
     ? (fs as NodeFileSystem)
     : null;
 }

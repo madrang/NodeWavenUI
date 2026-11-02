@@ -18,6 +18,7 @@ import type {
 } from '../shared/workspace.js';
 import { emptyProviderRegistry } from '../shared/workspace.js';
 import { agentToolDefinition, buildAgentTools, CHAT_AGENT_SOURCE, type AgentTool, type AgentToolOutput } from './agent-tools.js';
+import { ChatSessionStore, type ChatEntry, type StoredChatSession } from './chat-sessions.js';
 import { JsonViewerElement } from './json-viewer-element.js';
 import type { McpClientManager } from './mcp-client/manager.js';
 import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from './mcp-host.js';
@@ -37,9 +38,6 @@ import {
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
 import type { ChildWindowManager } from './window-manager.js';
-
-/** How many provider turns one chat message may spend on tool calls. */
-const MAX_AGENT_TURNS = 12;
 
 /** The longest edge of a pasted or dropped image, in pixels. Bigger pictures scale down. */
 const MAX_IMAGE_EDGE = 1280;
@@ -89,30 +87,14 @@ function formatTokenCount(count: number | undefined): string {
   return count < 1000 ? String(count) : `${(count / 1000).toFixed(1)}k`;
 }
 
-/** One rendered chat entry. */
-interface ChatEntry {
-  readonly role: 'user' | 'assistant' | 'notice' | 'error' | 'tool';
-  readonly content: string;
-  /** The structured payload that a tool entry renders with the JSON viewer, when present. */
-  readonly json?: unknown;
-  /** The reasoning of an assistant reply, when the model reports one. It replays on the next request. */
-  readonly reasoning?: string;
-  /** The tool calls of an assistant reply, when the model requests tools instead of text. */
-  readonly toolCalls?: readonly ToolCall[];
-  /** The tool call this entry answers, on role tool. */
-  readonly toolCallId?: string;
-  /** The display name of the tool that produced this entry, on tool replies. */
-  readonly toolName?: string;
-  /** The images of the entry: attachments on user entries, image results on tool entries. */
-  readonly images?: readonly ChatImage[];
-  /** The short MCP session id that produced this entry, on entries of the host tab. */
-  readonly mcpSession?: string;
-}
-
 /** One chat tab with its conversation. */
 interface Chat {
   readonly id: number;
+  /** The session file id: one uuid per chat, stable across launches. */
+  readonly fileId: string;
   readonly title: string;
+  /** ISO date and time of the chat creation. It fixes the restore order. */
+  readonly createdAt: string;
   readonly entries: ChatEntry[];
   /** True when this tab is the one MCP host tab that logs every session. */
   readonly isMcpHostLog?: boolean;
@@ -155,6 +137,7 @@ export class MainApp implements McpSessionSink {
   private readonly workspacePath: string;
   private readonly storageShares: StorageShareRegistry;
   private readonly storageSetups: readonly StorageSetup[];
+  private readonly chatSessions: ChatSessionStore;
   private mcpHost: McpHostHandle | null = null;
   private registry: ProviderRegistry = emptyProviderRegistry();
   private mcpEndpoints: McpEndpoints = { endpoints: [] };
@@ -168,6 +151,12 @@ export class MainApp implements McpSessionSink {
   private chatPinned = true;
   /** The pending clear of the collapsed reasoning tail, armed on every reasoning delta. */
   private reasoningTailTimer: number | null = null;
+  /** True while the agent runs one turn. A send while busy queues the message instead. */
+  private chatBusy = false;
+  /** The abort controller of the running agent turn, or null while idle. */
+  private chatAbort: AbortController | null = null;
+  /** How many provider rounds one message may spend on tool calls. Null means no limit. */
+  private agentTurnLimit: number | null = null;
 
   private readonly tabSettings = requireElement<HTMLButtonElement>('#tab-settings');
   private readonly chatTabs = requireElement<HTMLElement>('#chat-tab-list');
@@ -180,6 +169,7 @@ export class MainApp implements McpSessionSink {
   private readonly chatAttachments = requireElement<HTMLElement>('#chat-attachments');
   private readonly chatJumpDown = requireElement<HTMLButtonElement>('#chat-jump-down');
   private readonly chatSend = requireElement<HTMLButtonElement>('#chat-send');
+  private readonly chatStop = requireElement<HTMLButtonElement>('#chat-stop');
   private readonly chatStatus = requireElement<HTMLElement>('#chat-status');
   private readonly providerList = requireElement<HTMLElement>('#provider-list');
   private readonly providerAdd = requireElement<HTMLDetailsElement>('#provider-add');
@@ -223,6 +213,7 @@ export class MainApp implements McpSessionSink {
    * @param workspacePath The absolute path of the workspace directory.
    * @param storageShares The storage sharing registry of the workspace.
    * @param storageSetups The registered storage setups, for the add form.
+   * @param chatSessions The chat session store of the workspace.
    */
   constructor(
     settings: WorkspaceSettings,
@@ -235,6 +226,7 @@ export class MainApp implements McpSessionSink {
     workspacePath: string,
     storageShares: StorageShareRegistry,
     storageSetups: readonly StorageSetup[],
+    chatSessions: ChatSessionStore,
   ) {
     this.settings = settings;
     this.store = store;
@@ -246,13 +238,14 @@ export class MainApp implements McpSessionSink {
     this.workspacePath = workspacePath;
     this.storageShares = storageShares;
     this.storageSetups = storageSetups;
+    this.chatSessions = chatSessions;
     this.notificationHub.setChatNotifier((text) => {
       this.pushChatNotification(text);
     });
   }
 
   /**
-   * Loads the provider settings, opens the first chat, and wires the events.
+   * Loads the provider settings, restores the stored chat sessions, and wires the events.
    *
    * @param mcpHost The running MCP host handle, or null when the host stays off.
    * @throws Error when the document misses a required element.
@@ -292,6 +285,7 @@ export class MainApp implements McpSessionSink {
     this.storageShares.applyRecord(this.sharedStorages);
     await this.initializeThemeControls();
     await this.initializeFrameControls();
+    await this.initializeAgentTurnControls();
     this.initializeMcpHostSection();
     this.initializeMcpEndpointsSection();
     this.initializeStorageShareSection();
@@ -330,6 +324,9 @@ export class MainApp implements McpSessionSink {
       event.preventDefault();
       void this.send();
     });
+    this.chatStop.addEventListener('click', () => {
+      this.chatAbort?.abort();
+    });
     // The chat view scrolls to the latest message only while it sits at the bottom.
     // A scroll away from the end unpins it, and the arrow above the input jumps back.
     this.chatMessages.addEventListener('scroll', () => {
@@ -353,7 +350,53 @@ export class MainApp implements McpSessionSink {
       event.preventDefault();
       void this.addImageFiles(imageFilesOf(event.dataTransfer?.files ?? null));
     });
-    this.newChat();
+    await this.chatSessions.init();
+    await this.restoreChats();
+  }
+
+  /** Restores the stored sessions as chat tabs in creation order and activates the newest.
+   * A workspace without a stored session opens one fresh chat. */
+  private async restoreChats(): Promise<void> {
+    const sessions = await this.chatSessions.loadSessions();
+    for (const session of sessions) {
+      const chat: Chat = {
+        id: this.nextChatId,
+        fileId: session.id,
+        title: session.title,
+        createdAt: session.createdAt,
+        entries: [...session.entries],
+        ...(session.boundProviderId ? { boundProviderId: session.boundProviderId } : {}),
+        ...(session.boundModel ? { boundModel: session.boundModel } : {}),
+        ...(session.contextTokens !== undefined ? { contextTokens: session.contextTokens } : {}),
+        ...(session.outputTokens !== undefined ? { outputTokens: session.outputTokens } : {}),
+      };
+      this.nextChatId += 1;
+      this.chats.push(chat);
+    }
+    const newest = this.chats.at(-1) ?? null;
+    if (!newest) {
+      this.newChat();
+      return;
+    }
+    this.activateChat(newest.id);
+  }
+
+  /** Persists one chat as its session file. The host tab and chats without entries hold nothing worth a file. */
+  private persistChat(chat: Chat): void {
+    if (chat.isMcpHostLog || chat.entries.length === 0) {
+      return;
+    }
+    const session: StoredChatSession = {
+      id: chat.fileId,
+      title: chat.title,
+      createdAt: chat.createdAt,
+      entries: chat.entries,
+      ...(chat.boundProviderId ? { boundProviderId: chat.boundProviderId } : {}),
+      ...(chat.boundModel ? { boundModel: chat.boundModel } : {}),
+      ...(chat.contextTokens !== undefined ? { contextTokens: chat.contextTokens } : {}),
+      ...(chat.outputTokens !== undefined ? { outputTokens: chat.outputTokens } : {}),
+    };
+    this.chatSessions.saveSession(session);
   }
 
   /** Wires the MCP host section. The section stays hidden while the host stays off. */
@@ -746,7 +789,9 @@ export class MainApp implements McpSessionSink {
   private createMcpHostTab(): Chat {
     const chat: Chat = {
       id: this.nextChatId,
+      fileId: crypto.randomUUID(),
       title: 'MCP Host',
+      createdAt: new Date().toISOString(),
       entries: [],
       isMcpHostLog: true,
     };
@@ -796,6 +841,7 @@ export class MainApp implements McpSessionSink {
       return;
     }
     chat.entries.push({ role: 'user', content: text });
+    this.persistChat(chat);
     if (chat.id === this.activeChatId) {
       this.renderMessages();
       return;
@@ -890,6 +936,26 @@ export class MainApp implements McpSessionSink {
       this.store.saveFrameModePreference(frameSelect.value).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`[NodeWavenUI] the window frame choice could not be saved: ${message}`);
+      });
+    });
+  }
+
+  /** Loads the agent tool round limit of the workspace and wires the dropdown of the settings pane. */
+  private async initializeAgentTurnControls(): Promise<void> {
+    try {
+      this.agentTurnLimit = await this.store.loadAgentTurnLimit();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the stored agent round limit could not be read, no limit applies: ${message}`);
+    }
+    const turnsSelect = requireElement<HTMLSelectElement>('#agent-turns-select');
+    turnsSelect.value = this.agentTurnLimit === null ? '' : String(this.agentTurnLimit);
+    turnsSelect.addEventListener('change', () => {
+      const value = Number(turnsSelect.value);
+      this.agentTurnLimit = turnsSelect.value === '' ? null : value;
+      this.store.saveAgentTurnLimit(this.agentTurnLimit).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[NodeWavenUI] the agent round limit could not be saved: ${message}`);
       });
     });
   }
@@ -1347,11 +1413,25 @@ export class MainApp implements McpSessionSink {
     const chat = this.activeChat();
     const text = this.chatInput.value.trim();
     const images = this.pendingImages;
-    if (!chat || (text.length === 0 && images.length === 0) || this.chatSend.disabled) {
+    if (!chat || (text.length === 0 && images.length === 0)) {
+      return;
+    }
+    if (this.chatBusy) {
+      // The agent runs: the message waits as a dimmed entry and delivers when the run ends.
+      this.chatInput.value = '';
+      this.pendingImages = [];
+      this.renderAttachments();
+      chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images: [...images] } : {}), queued: true });
+      this.renderMessages();
       return;
     }
     // The user acts on the latest message, so the send pins the view back to it.
     this.chatPinned = true;
+    await this.deliver(chat, text, images);
+  }
+
+  /** Delivers one message: resolves the connection, pushes the entry, and runs the agent turn. */
+  private async deliver(chat: Chat, text: string, images: readonly ChatImage[]): Promise<void> {
     const connection = this.resolveChatConnection(chat);
     if (connection && images.length > 0 && !connection.vision) {
       // Nothing is consumed: the text stays typed and the chips stay pending, so the user can switch model or remove the images.
@@ -1360,12 +1440,13 @@ export class MainApp implements McpSessionSink {
         content: `The model "${connection.model}" reads text only. Turn on its Vision flag in the settings, or remove the images.`,
       });
       this.renderMessages();
+      this.persistChat(chat);
       return;
     }
-    chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images: [...images] } : {}) });
     this.chatInput.value = '';
     this.pendingImages = [];
     this.renderAttachments();
+    chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
     if (!connection) {
       chat.entries.push({
         role: chat.boundProviderId ? 'error' : 'notice',
@@ -1374,6 +1455,7 @@ export class MainApp implements McpSessionSink {
           : 'No provider is configured. Open the Settings tab, add a provider, and give it a model.',
       });
       this.renderMessages();
+      this.persistChat(chat);
       return;
     }
     const provider = new OpenAiInferenceProvider({
@@ -1386,19 +1468,56 @@ export class MainApp implements McpSessionSink {
       chat.boundModel = connection.model;
       this.renderChatStatus();
     }
-    this.renderMessages();
+    const abort = new AbortController();
+    this.chatAbort = abort;
     this.setChatBusy(true);
+    this.renderMessages();
+    let stopped = false;
     try {
-      await this.runAgentTurn(chat, provider, connection.model, connection.vision);
+      await this.runAgentTurn(chat, provider, connection.model, connection.vision, this.agentTurnLimit, abort.signal);
     } catch (error) {
-      chat.entries.push({
-        role: 'error',
-        content: error instanceof Error ? error.message : String(error),
-      });
+      if (abort.signal.aborted) {
+        stopped = true;
+        // The aborted streaming slot keeps whatever streamed. An empty one drops, queued entries included in the search.
+        for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
+          const candidate = chat.entries[index];
+          if (candidate && candidate.role === 'assistant') {
+            if (!candidate.content && !candidate.reasoning && !candidate.toolCalls) {
+              chat.entries.splice(index, 1);
+            }
+            break;
+          }
+        }
+        chat.entries.push({ role: 'notice', content: 'Stopped.' });
+      } else {
+        chat.entries.push({
+          role: 'error',
+          content: error instanceof Error ? error.message : String(error),
+        });
+      }
     } finally {
+      this.chatAbort = null;
       this.setChatBusy(false);
       this.renderMessages();
+      this.persistChat(chat);
     }
+    // A stop leaves the queue in place: the user halted the agent, so nothing follows on its own.
+    if (stopped) {
+      return;
+    }
+    await this.drainQueued(chat);
+  }
+
+  /** Delivers the first queued message of a chat after a finished run. The entry moves to the end as it delivers. */
+  private async drainQueued(chat: Chat): Promise<void> {
+    const index = chat.entries.findIndex((entry) => entry.role === 'user' && entry.queued);
+    const queued = index >= 0 ? chat.entries[index] : undefined;
+    if (!queued) {
+      return;
+    }
+    chat.entries.splice(index, 1);
+    this.renderMessages();
+    await this.deliver(chat, queued.content, queued.images ?? []);
   }
 
   /** Adds image files from paste or drop to the pending attachments, downscaled and capped. */
@@ -1491,9 +1610,18 @@ export class MainApp implements McpSessionSink {
     });
   }
 
-  /** Runs the tool-calling loop of one user message, until the model answers in text or hits the turn cap. */
-  private async runAgentTurn(chat: Chat, provider: OpenAiInferenceProvider, model: string, vision: boolean): Promise<void> {
-    for (let turn = 0; turn < MAX_AGENT_TURNS; turn += 1) {
+  /** Runs the tool-calling loop of one user message, until the model answers in text or hits the round limit. */
+  private async runAgentTurn(
+    chat: Chat,
+    provider: OpenAiInferenceProvider,
+    model: string,
+    vision: boolean,
+    limit: number | null,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let turn = 0;
+    while (limit === null || turn < limit) {
+      turn += 1;
       const tools = this.agentTools();
       const messages = this.agentMessages(chat, vision);
       const streaming = this.beginStreamingEntry(chat);
@@ -1502,6 +1630,7 @@ export class MainApp implements McpSessionSink {
         messages,
         tools: tools.map(agentToolDefinition),
         onDelta: streaming.onDelta,
+        signal,
       });
       if (result.usage) {
         chat.contextTokens = result.usage.promptTokens;
@@ -1529,7 +1658,7 @@ export class MainApp implements McpSessionSink {
     }
     chat.entries.push({
       role: 'error',
-      content: `The agent exceeded ${MAX_AGENT_TURNS} tool turns in one message.`,
+      content: `The agent exceeded ${limit} tool rounds in one message.`,
     });
   }
 
@@ -1570,6 +1699,8 @@ export class MainApp implements McpSessionSink {
       toolName: call.name,
     });
     this.renderMessages();
+    // The turn runs on, so the result lands in the session file now: a crash mid-turn keeps it.
+    this.persistChat(chat);
   }
 
   /** Reads the entries of one chat as the message list of the next provider request. */
@@ -1589,11 +1720,14 @@ export class MainApp implements McpSessionSink {
     };
     for (const entry of chat.entries) {
       if (entry.role === 'user') {
+        if (entry.queued) {
+          continue;
+        }
         flushToolImages();
         messages.push({
           role: 'user',
           content: entry.content,
-          ...(vision && entry.images && entry.images.length > 0 ? { images: entry.images } : {}),
+          ...(entry.images && entry.images.length > 0 ? { images: entry.images } : {}),
         });
       } else if (entry.role === 'assistant') {
         flushToolImages();
@@ -1624,18 +1758,28 @@ export class MainApp implements McpSessionSink {
 
   /**
    * Opens one in-flight assistant entry that streams the reply, and settles it with the final entry.
+   * The entry is tracked by identity, because a message queued mid-run appends after it.
    * The renders stay throttled, so a long stream does not thrash the message list.
    */
   private beginStreamingEntry(chat: Chat): { onDelta: (delta: CompletionDelta) => void; settle: (entry: ChatEntry) => void } {
     let liveContent = '';
     let liveReasoning = '';
-    chat.entries.push({ role: 'assistant', content: '' });
+    // The slot is tracked through its replacements, because a message queued mid-run appends after it.
+    let slot: ChatEntry = { role: 'assistant', content: '' };
+    chat.entries.push(slot);
+    const replaceSlot = (next: ChatEntry): void => {
+      const index = chat.entries.indexOf(slot);
+      if (index >= 0) {
+        chat.entries[index] = next;
+        slot = next;
+      }
+    };
     let lastStreamRender = 0;
     const renderStreamed = (force: boolean): void => {
       const now = Date.now();
       if (force || now - lastStreamRender >= 80) {
         lastStreamRender = now;
-        this.patchStreamingEntry(chat);
+        this.patchStreamingEntry(chat, slot);
       }
     };
     renderStreamed(true);
@@ -1647,15 +1791,15 @@ export class MainApp implements McpSessionSink {
         if (delta.reasoning) {
           liveReasoning += delta.reasoning;
         }
-        chat.entries[chat.entries.length - 1] = {
+        replaceSlot({
           role: 'assistant',
           content: liveContent,
           ...(liveReasoning.length > 0 ? { reasoning: liveReasoning } : {}),
-        };
+        });
         renderStreamed(false);
       },
       settle: (entry: ChatEntry): void => {
-        chat.entries[chat.entries.length - 1] = entry;
+        replaceSlot(entry);
         this.renderMessages();
       },
     };
@@ -1666,11 +1810,11 @@ export class MainApp implements McpSessionSink {
    * so a click or an open disclosure never fights the stream renders.
    * A missing or replaced list item falls back to one full render.
    */
-  private patchStreamingEntry(chat: Chat): void {
-    const index = chat.entries.length - 1;
-    const entry = chat.entries[index];
-    const item = this.chatMessages.lastElementChild;
-    if (!entry || entry.role !== 'assistant' || !(item instanceof HTMLElement) || item.dataset.entryIndex !== String(index)) {
+  private patchStreamingEntry(chat: Chat, slot: ChatEntry): void {
+    const index = chat.entries.indexOf(slot);
+    const entry = index >= 0 ? chat.entries[index] : undefined;
+    const item = this.chatMessages.querySelector(`:scope > li[data-entry-index="${index}"]`);
+    if (!entry || entry.role !== 'assistant' || !(item instanceof HTMLElement)) {
       this.renderMessages();
       return;
     }
@@ -1713,15 +1857,21 @@ export class MainApp implements McpSessionSink {
   }
 
   private setChatBusy(busy: boolean): void {
-    this.chatSend.disabled = busy;
-    this.chatInput.disabled = busy;
+    this.chatBusy = busy;
+    this.chatStop.hidden = !busy;
     if (!busy) {
       this.chatInput.focus();
     }
   }
 
   private newChat(): void {
-    const chat: Chat = { id: this.nextChatId, title: `Chat ${this.nextChatId}`, entries: [] };
+    const chat: Chat = {
+      id: this.nextChatId,
+      fileId: crypto.randomUUID(),
+      title: `Chat ${this.nextChatId}`,
+      createdAt: new Date().toISOString(),
+      entries: [],
+    };
     this.nextChatId += 1;
     this.chats.push(chat);
     this.activateChat(chat.id);
@@ -1732,7 +1882,11 @@ export class MainApp implements McpSessionSink {
     if (index < 0) {
       return;
     }
-    this.chats.splice(index, 1);
+    const [chat] = this.chats.splice(index, 1);
+    // The closed tab drops its session file, so a restart does not resurrect it.
+    if (chat && !chat.isMcpHostLog) {
+      this.chatSessions.deleteSession(chat.fileId);
+    }
     if (this.activeChatId === id) {
       this.activateSettings();
       return;
@@ -1997,8 +2151,14 @@ export class MainApp implements McpSessionSink {
       item.append(disclosure, text);
       return item;
     }
-    item.className = `message ${entry.role}`;
+    item.className = `message ${entry.role}${entry.queued ? ' queued' : ''}`;
     item.textContent = entry.content;
+    if (entry.queued) {
+      const marker = document.createElement('span');
+      marker.className = 'queued-marker';
+      marker.textContent = '(queued)';
+      item.append(marker);
+    }
     if (entry.images && entry.images.length > 0) {
       item.append(this.buildImageStrip(entry.images));
     }
@@ -2166,8 +2326,17 @@ export class MainApp implements McpSessionSink {
     if (!chat) {
       return;
     }
-    // The last assistant entry of a busy chat streams: it carries the reasoning disclosure from the start.
-    const streamingIndex = this.chatSend.disabled ? chat.entries.length - 1 : -1;
+    // The streaming entry of a busy chat carries the reasoning disclosure from the start, queued entries or not.
+    let streamingIndex = -1;
+    if (this.chatBusy) {
+      for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
+        const candidate = chat.entries[index];
+        if (candidate && candidate.role === 'assistant') {
+          streamingIndex = index;
+          break;
+        }
+      }
+    }
     for (const group of this.groupChatEntries(chat)) {
       if (group.kind === 'single') {
         this.chatMessages.append(this.buildMessageItem(group.slot, openReasoning, group.slot.index === streamingIndex));

@@ -59,6 +59,8 @@ export interface CompletionRequest {
   readonly onDelta?: (delta: CompletionDelta) => void;
   /** The tools the model may call. An empty list sends no tools. */
   readonly tools?: readonly ToolDefinition[];
+  /** Aborts the request. A backend that supports it fails fast with the platform abort error. */
+  readonly signal?: AbortSignal;
 }
 
 /** Token counts of one completion, when the provider reports them. */

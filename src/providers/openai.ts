@@ -440,8 +440,13 @@ export class OpenAiInferenceProvider implements InferenceProvider {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(body),
+          signal: request.signal ?? null,
         });
       } catch (error) {
+        // A user abort is final: it never retries and carries its own error through.
+        if (request.signal?.aborted) {
+          throw error;
+        }
         networkError = error;
       }
       const exhausted = attempt >= RETRY_COUNT;

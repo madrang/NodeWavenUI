@@ -1145,6 +1145,28 @@ permission-request {
   border-color: var(--accent);
 }
 
+/* The stop button beside Send: visible while the agent runs, tinted with the error color. */
+#chat-stop {
+  border: 1px solid var(--error);
+  background: none;
+  color: var(--error);
+}
+
+#chat-stop:hover {
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+}
+
+/* A queued user message waits for the running turn, so it reads dimmed until it delivers. */
+.message.user.queued {
+  opacity: 0.55;
+}
+
+.queued-marker {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* The pending image attachments between the permission cards and the composer. */
 #chat-attachments {
   display: flex;

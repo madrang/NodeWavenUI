@@ -31,6 +31,15 @@
       <label class="field">Window frame
         <select id="frame-mode-select"></select>
       </label>
+      <label class="field">Agent tool rounds
+        <select id="agent-turns-select">
+          <option value="">No limit</option>
+          <option value="6">6 rounds</option>
+          <option value="12">12 rounds</option>
+          <option value="24">24 rounds</option>
+          <option value="48">48 rounds</option>
+        </select>
+      </label>
       <p class="status">The window frame applies the next time the workspace window opens.</p>
       <fieldset class="field" id="mcp-host-section" hidden>
         <legend>MCP host</legend>
@@ -125,12 +134,13 @@
     </div>
     <div id="pane-chat" class="pane pane-chat" hidden>
       <ol id="chat-messages"></ol>
+      <button id="chat-jump-down" type="button" title="Jump to the latest message" hidden>↓</button>
       <div id="permission-requests" hidden></div>
       <div id="chat-attachments" hidden></div>
-      <button id="chat-jump-down" type="button" title="Jump to the latest message" hidden>↓</button>
       <form id="chat-form">
         <input id="chat-input" type="text" placeholder="Message…" autocomplete="off">
         <button id="chat-send" type="submit" class="primary">Send</button>
+        <button id="chat-stop" type="button" hidden>Stop</button>
       </form>
       <footer id="chat-status"></footer>
     </div>

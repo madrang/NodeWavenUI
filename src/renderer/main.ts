@@ -10,6 +10,7 @@ import type { WorkspaceSettings } from '../shared/workspace.js';
 import type { StorageBackend } from '../storage/storage.js';
 import { requireElement } from './dom.js';
 import { readAppArguments } from './arguments.js';
+import { ChatSessionStore } from './chat-sessions.js';
 import { MainApp } from './main-app.js';
 import { McpClientManager } from './mcp-client/manager.js';
 import { mcpHostConfigFromProcess, startMcpHost, type McpHostHandle } from './mcp-host.js';
@@ -102,6 +103,7 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     directory.path,
     storageShares,
     plugins.listStorageSetups(),
+    new ChatSessionStore(directory.path, store, setup.needsPassword),
   );
   // The workspace window closes only after every child window closed: NW.js keeps the process alive while
   // any window stays open, so a surviving child would wedge the app and the restart loop. NW.js fires

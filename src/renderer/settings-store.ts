@@ -25,6 +25,8 @@ const MCP_ENDPOINTS_KEY = 'mcp-endpoints';
 const SHARED_STORAGES_KEY = 'shared-storages';
 const THEME_KEY = 'theme';
 const FRAME_MODE_KEY = 'window-frame';
+const AGENT_TURN_LIMIT_KEY = 'agent-turn-limit';
+const CHAT_KEY_KEY = 'chat-key';
 const MINIMUM_MCP_TOKEN_LENGTH = 16;
 const MAXIMUM_MCP_TOKEN_LENGTH = 256;
 
@@ -292,5 +294,58 @@ export class WorkspaceSettingsStore {
    */
   async saveFrameModePreference(modeId: string): Promise<void> {
     await this.backend.set(FRAME_MODE_KEY, modeId);
+  }
+
+  /**
+   * Reads the agent tool round limit of the workspace.
+   *
+   * @returns The limit, or null when the agent runs without one. A missing or invalid record means no limit.
+   * @throws StorageError when the store fails.
+   */
+  async loadAgentTurnLimit(): Promise<number | null> {
+    const raw = await this.backend.get(AGENT_TURN_LIMIT_KEY);
+    if (raw === null) {
+      return null;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      console.warn('[NodeWavenUI] the stored agent turn limit is damaged and ignored. The agent runs without a limit.');
+      return null;
+    }
+    return typeof parsed === 'number' && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  /**
+   * Writes the agent tool round limit of the workspace.
+   *
+   * @param limit The limit to persist, or null for no limit.
+   * @throws StorageError when the store fails.
+   */
+  async saveAgentTurnLimit(limit: number | null): Promise<void> {
+    await this.backend.set(AGENT_TURN_LIMIT_KEY, JSON.stringify(limit));
+  }
+
+  /**
+   * Reads the chat key record that encrypts the chat session files of a password-protected workspace.
+   * The record travels as a raw string: the shape check lives with the key material, in the chat session store.
+   *
+   * @returns The stored record, or null when the store holds none.
+   * @throws StorageError when the store fails.
+   */
+  async loadChatKey(): Promise<string | null> {
+    return this.backend.get(CHAT_KEY_KEY);
+  }
+
+  /**
+   * Writes the chat key record. A password-protected storage seals the record with its password, so the
+   * chat session files stay closed without the workspace password.
+   *
+   * @param record The record to persist.
+   * @throws StorageError when the store fails.
+   */
+  async saveChatKey(record: string): Promise<void> {
+    await this.backend.set(CHAT_KEY_KEY, record);
   }
 }
