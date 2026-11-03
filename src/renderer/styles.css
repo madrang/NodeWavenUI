@@ -586,6 +586,30 @@ body.framed #chat-tabs::after {
   padding: 2px 6px;
 }
 
+/* The source menu before the first send: centered and accented, so the choice leads the window.
+   The auto margins center it in the empty list, mid-window between the tabs and the input. */
+.system-prompt-item.system-prompt-menu {
+  align-self: center;
+  max-width: 90%;
+  margin-top: auto;
+  margin-bottom: auto;
+  gap: 10px;
+  padding: 10px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.system-prompt-item.system-prompt-menu .system-prompt-menu-label {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.system-prompt-item.system-prompt-menu .system-prompt-select {
+  font-size: 13px;
+  padding: 5px 10px;
+}
+
 /* The collapsed prompt inside the card: the source title as the summary, the text under a rule. */
 .system-prompt {
   min-width: 0;

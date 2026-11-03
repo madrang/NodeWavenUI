@@ -1009,14 +1009,14 @@ export class MainApp implements McpSessionSink {
   /** Creates the host tab and activates it, the first time a client connects. It sits before every chat tab. */
   private createMcpHostTab(): Chat {
     const chat: Chat = {
-      id: this.nextChatId,
+      // The host tab holds the id 0, below every chat number, so it consumes no chat title.
+      id: 0,
       fileId: crypto.randomUUID(),
       title: 'MCP Host',
       createdAt: new Date().toISOString(),
       entries: [],
       isMcpHostLog: true,
     };
-    this.nextChatId += 1;
     this.chats.unshift(chat);
     this.activateChat(chat.id);
     return chat;
@@ -2196,7 +2196,8 @@ export class MainApp implements McpSessionSink {
 
   private activeChat(): Chat | null {
     const id = this.activeChatId;
-    if (!id) {
+    // The host tab holds the id 0, so only a non-number id means no chat is active.
+    if (typeof id !== 'number') {
       return null;
     }
     return this.chats.find((chat) => chat.id === id) ?? null;
@@ -2240,7 +2241,8 @@ export class MainApp implements McpSessionSink {
       group.append(tab, close);
       this.chatTabs.append(group);
     }
-    this.tabSettings.classList.toggle('active', !this.activeChatId);
+    // The host tab holds the id 0, so the settings tab must check for a non-number id, not a falsy one.
+    this.tabSettings.classList.toggle('active', typeof this.activeChatId !== 'number');
     this.tabSettings.classList.toggle('permissions', pendingSources.has(CHAT_AGENT_SOURCE));
     // The active tab scrolls into view, so a full strip keeps it reachable.
     this.chatTabs.querySelector<HTMLElement>('.tab-group.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -2666,7 +2668,8 @@ export class MainApp implements McpSessionSink {
     }
     const selected = this.selectedSystemPromptId(chat);
     const item = document.createElement('li');
-    item.className = 'system-prompt-item';
+    // The menu variant carries its own emphasis: centered and accented before the first send.
+    item.className = 'system-prompt-item system-prompt-menu';
     const label = document.createElement('span');
     label.className = 'system-prompt-menu-label';
     label.textContent = 'System prompt';
