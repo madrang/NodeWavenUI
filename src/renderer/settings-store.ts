@@ -27,6 +27,7 @@ const THEME_KEY = 'theme';
 const FRAME_MODE_KEY = 'window-frame';
 const AGENT_TURN_LIMIT_KEY = 'agent-turn-limit';
 const CHAT_KEY_KEY = 'chat-key';
+const AGENT_TOOL_DEFAULTS_KEY = 'agent-tool-defaults';
 const MINIMUM_MCP_TOKEN_LENGTH = 16;
 const MAXIMUM_MCP_TOKEN_LENGTH = 256;
 
@@ -347,5 +348,35 @@ export class WorkspaceSettingsStore {
    */
   async saveChatKey(record: string): Promise<void> {
     await this.backend.set(CHAT_KEY_KEY, record);
+  }
+
+  /**
+   * Reads the flag that marks the one-time tool defaults. The flag stays true after the seeding, so a
+   * user who moves a tool back to ask keeps that choice across launches.
+   *
+   * @returns True when the defaults were seeded, or a damaged record reads as not seeded.
+   * @throws StorageError when the store fails.
+   */
+  async loadAgentToolDefaults(): Promise<boolean> {
+    const raw = await this.backend.get(AGENT_TOOL_DEFAULTS_KEY);
+    if (raw === null) {
+      return false;
+    }
+    try {
+      return JSON.parse(raw) === true;
+    } catch {
+      console.warn('[NodeWavenUI] the stored agent tool defaults flag is damaged and ignored. The defaults seed again.');
+      return false;
+    }
+  }
+
+  /**
+   * Writes the flag that marks the one-time tool defaults.
+   *
+   * @param seeded True after the defaults were seeded.
+   * @throws StorageError when the store fails.
+   */
+  async saveAgentToolDefaults(seeded: boolean): Promise<void> {
+    await this.backend.set(AGENT_TOOL_DEFAULTS_KEY, JSON.stringify(seeded));
   }
 }

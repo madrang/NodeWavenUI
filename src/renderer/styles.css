@@ -186,7 +186,8 @@ button:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: var(--text);
   background: var(--field);
@@ -559,6 +560,88 @@ body.framed #chat-tabs::after {
   background: none;
 }
 
+/* The system prompt element sits first in the message list, in one message card on the assistant
+   side: the source menu before the first send, the collapsed bound prompt after it. */
+.system-prompt-item {
+  align-self: flex-start;
+  max-width: 80%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.system-prompt-menu-label {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.system-prompt-select {
+  width: auto;
+  max-width: 60%;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+/* The collapsed prompt inside the card: the source title as the summary, the text under a rule. */
+.system-prompt {
+  min-width: 0;
+  flex: 1;
+}
+
+.system-prompt > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.system-prompt > summary:hover {
+  color: var(--text);
+}
+
+.system-prompt > summary::-webkit-details-marker {
+  display: none;
+}
+
+.system-prompt > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.system-prompt[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.system-prompt-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-prompt-body {
+  margin: 4px 0 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
+}
+
 /* The reasoning disclosure of an assistant reply: collapsed until the user opens it.
    The summary spans the full row, so the click target stays comfortable. */
 .reasoning {
@@ -748,6 +831,16 @@ body.framed #chat-tabs::after {
   content: '← ';
   color: var(--muted);
   font-weight: 400;
+}
+
+/* The group head of one tool origin in the agent tools list. */
+.agent-tool-group {
+  margin: 10px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 /* The MCP endpoint cards of the settings pane. */
@@ -1229,8 +1322,14 @@ permission-request {
   border-top: 1px solid var(--border);
 }
 
+/* The composer text area: one line tall, growing with the written lines up to the cap. */
 #chat-input {
   flex: 1;
+  resize: none;
+  overflow-y: auto;
+  min-height: 32px;
+  max-height: 132px;
+  line-height: 1.4;
 }
 
 /* The chat status bar: the provider and model of the tab, and the token usage.

@@ -6,9 +6,9 @@ The user can stop a running turn at any time (Stop beside Send): the in-flight r
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `evaluate` | `childId`, `expression` | The same evaluation the MCP host runs, as the `agent` principal: JavaScript in a child window. The first use on one window asks for approval. |
+| `evaluate` | `childId`, `expression` | The same evaluation the MCP host runs, as the `agent` principal: JavaScript in a child window. The first use on one window asks for approval, unless its tool rule allows it. |
 | `read` | `uri` | Reads one URI. See `harness:///nodewavenui/read-uris.md`. |
-| `<label>.<tool>` | per the tool | Every MCP endpoint in Native mode contributes its tools under its sanitized label, for example `vault.search`. |
+| `<label>.<tool>` | per the tool | Every MCP endpoint in Native mode contributes its tools under its sanitized label, for example `vault.search`. The first call of each tool asks for approval. |
 
 # Images
 
@@ -22,7 +22,17 @@ The agent carries the same window tools the MCP host serves: `list_windows`, `op
 
 # Approval cards
 
-Permission-gated actions (evaluate on a window, file reads) show an approval card above the chat input: Approve, Deny, and an Always checkbox that persists a rule. A request waits forever until answered.
+Permission-gated actions (evaluate on a window, file reads, native MCP tool calls) show an approval card above the chat input: Approve, Deny, and an Always checkbox that persists a rule. A request waits forever until answered.
+
+# Tool rules
+
+The settings pane carries an Agent tools section: one row per tool of the chat agent, with a three-state select.
+
+- **Ask** — the permission pipeline decides, so a first use shows the approval card. This is the default.
+- **Allow** — the calls of the tool run without the ask prompts of the file and window checks. A deny rule at those layers still blocks the call.
+- **Disable** — the tool leaves the agent list, so the model never sees it.
+
+The select writes a permission rule of resource `tool`, and the Always checkbox of an approval card writes the same rule shape, so the two controls stay in step. The read and evaluate built-ins start on Allow: a one-time seeding writes their rules, and a user who moves one back to Ask keeps that choice across launches.
 
 # MCP endpoint modes
 

@@ -132,7 +132,7 @@ export class McpServerClient {
     const result = await transport.request('initialize', {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: 'nodewavenui', version: '0.1.0' },
+      clientInfo: { name: 'nodewavenui', version: '0.2.0' },
     });
     const record = asRecord(result);
     if (record === null) {

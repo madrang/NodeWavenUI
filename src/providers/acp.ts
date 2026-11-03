@@ -304,7 +304,7 @@ class AcpAgent {
       const result = await this.call('initialize', {
         protocolVersion: 1,
         clientCapabilities: {},
-        clientInfo: { name: 'NodeWavenUI', version: '0.1.0' },
+        clientInfo: { name: 'NodeWavenUI', version: '0.2.0' },
       });
       if (isRecord(result) && isRecord(result.agentInfo) && typeof result.agentInfo.name === 'string') {
         this.agentName = result.agentInfo.name;

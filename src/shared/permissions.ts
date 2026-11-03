@@ -49,7 +49,7 @@ export interface PermissionRule {
   readonly enabled: boolean;
   /** The principal the rule selects, or `*` for every principal. */
   readonly principal: PrincipalKind | '*';
-  /** Resource selector: `window`, `storage`, `storage:<id>`, or `file`. */
+  /** Resource selector: `window`, `storage`, `storage:<id>`, `file`, or `tool`. */
   readonly resource: string;
   /** Window rules: match children whose URL starts with this prefix. Undefined matches every child. */
   readonly urlPrefix?: string;
@@ -68,7 +68,8 @@ export interface PermissionRule {
 export type PermissionTarget =
   | { readonly kind: 'window'; readonly url: string }
   | { readonly kind: 'storage'; readonly storageId: string; readonly key: string }
-  | { readonly kind: 'file'; readonly path: string };
+  | { readonly kind: 'file'; readonly path: string }
+  | { readonly kind: 'tool'; readonly name: string };
 
 /** The window actions that only read. */
 export const WINDOW_READ_ACTIONS: ReadonlySet<string> = new Set(['attach', 'screenshot', 'console.read']);
@@ -116,6 +117,10 @@ function isWriteAction(target: PermissionTarget, action: string): boolean {
   if (target.kind === 'file') {
     return action !== 'read';
   }
+  if (target.kind === 'tool') {
+    // A tool call may change anything, so every call counts as a write: a readOnly allow rule denies it.
+    return true;
+  }
   return !WINDOW_READ_ACTIONS.has(action) && action !== 'detach';
 }
 
@@ -147,6 +152,13 @@ function ruleMatchesTarget(
     }
     return rule.pathPrefix === undefined || target.path.startsWith(rule.pathPrefix);
   }
+  if (target.kind === 'tool') {
+    if (rule.resource !== 'tool') {
+      return false;
+    }
+    // The action of a tool call is the tool name, so the actions array pins one tool or every tool.
+    return rule.actions === '*' || rule.actions.includes(target.name);
+  }
   if (rule.resource !== 'storage' && rule.resource !== `storage:${target.storageId}`) {
     return false;
   }
@@ -156,13 +168,16 @@ function ruleMatchesTarget(
 /**
  * Runs the decision pipeline for one guarded call.
  * The rules decide first, then the defaults apply: `user` and `plugin` allow, `agent` and `mcp` allow window reads
- * and window detach, ask for other window actions, ask for file reads, and deny storage. Storage sharing for the
- * chat agent runs through the storage sharing settings, not through this pipeline.
+ * and window detach, ask for other window actions, ask for file reads, ask for tool calls, and deny storage.
+ * A preauthorized call turns the ask defaults into allow, so one call never prompts twice. Rules and deny
+ * defaults still decide, so a deny rule below a higher-level allow keeps its block.
+ * Storage sharing for the chat agent runs through the storage sharing settings, not through this pipeline.
  *
  * @param principal The principal that wants to act.
  * @param action The action, for example `evaluate` or `write`.
  * @param target The target of the action.
  * @param rules The persisted rules, in order. The first match wins.
+ * @param preauthorized True when a rule at a higher layer already allowed the call.
  * @returns The decision. `ask` means the main app UI must approve the call.
  */
 export function decidePermission(
@@ -170,6 +185,7 @@ export function decidePermission(
   action: string,
   target: PermissionTarget,
   rules: readonly PermissionRule[],
+  preauthorized = false,
 ): PermissionDecision {
   for (const rule of rules) {
     if (!ruleMatchesTarget(rule, principal, action, target)) {
@@ -190,10 +206,13 @@ export function decidePermission(
     if (WINDOW_READ_ACTIONS.has(action) || action === 'detach') {
       return 'allow';
     }
-    return 'ask';
+    return preauthorized ? 'allow' : 'ask';
   }
   if (target.kind === 'file' && action === 'read') {
-    return 'ask';
+    return preauthorized ? 'allow' : 'ask';
+  }
+  if (target.kind === 'tool') {
+    return preauthorized ? 'allow' : 'ask';
   }
   return 'deny';
 }

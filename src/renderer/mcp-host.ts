@@ -476,7 +476,7 @@ async function dispatchMcpMessage(
       result: {
         protocolVersion: typeof requested === 'string' ? requested : MCP_PROTOCOL_VERSION,
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { name: 'nodewavenui-mcp-host', version: '0.1.0' },
+        serverInfo: { name: 'nodewavenui-mcp-host', version: '0.2.0' },
         instructions: 'The tools drive the child windows of the NodeWavenUI app through debug sessions. The resources hold the agent documentation: start with harness:///nodewavenui/overview.md.',
       },
     };

@@ -23,7 +23,7 @@ export interface PluginDescriptor {
   readonly setup: (registry: PluginRegistry) => void;
 }
 
-/** The surface a plugin uses to contribute providers and storage backends. */
+/** The surface a plugin uses to contribute providers, storage backends, and system prompt sources. */
 export interface PluginRegistry {
   /** Registers one inference provider. */
   registerProvider(provider: InferenceProvider): void;
@@ -31,6 +31,8 @@ export interface PluginRegistry {
   registerStorage(backend: StorageBackend): void;
   /** Registers one storage setup, which lists in the wizard dropdown. */
   registerStorageSetup(setup: StorageSetup): void;
+  /** Registers one system prompt source, which lists in the chat menu. */
+  registerSystemPromptSetup(setup: SystemPromptSetup): void;
 }
 
 /** Options for opening the backend of one workspace. */
@@ -91,6 +93,27 @@ export interface StorageSetup {
   readonly readConfiguration: (values: Readonly<Record<string, string>>) => StorageConfiguration | string;
   /** Opens the backend for a workspace. */
   readonly open: (options: StorageOpenOptions) => StorageBackend;
+}
+
+/** The context one system prompt source builds its text from. */
+export interface SystemPromptContext {
+  /** The absolute path of the workspace directory. */
+  readonly workspacePath: string;
+}
+
+/** What a system prompt plugin contributes: an entry in the chat menu and a way to build its text. */
+export interface SystemPromptSetup {
+  /** Unique identifier of the source, kept with the chat that binds it. */
+  readonly id: string;
+  /** Label shown in the chat menu and as the title of the collapsed prompt. */
+  readonly label: string;
+  /**
+   * Builds the prompt text of one chat.
+   *
+   * @param context The workspace facts of the chat.
+   * @returns The prompt text. An empty text binds no system message.
+   */
+  readonly build: (context: SystemPromptContext) => Promise<string>;
 }
 
 /** Error the plugin manager throws on failure. */
@@ -174,6 +197,25 @@ function isStorageSetup(value: unknown): value is StorageSetup {
 }
 
 /**
+ * Checks that a value satisfies the SystemPromptSetup shape.
+ *
+ * @param value The value to check. It can have any type.
+ * @returns True when the value carries the id and label strings and the build function.
+ */
+function isSystemPromptSetup(value: unknown): value is SystemPromptSetup {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    typeof value.label === 'string' &&
+    value.label.length > 0 &&
+    typeof value.build === 'function'
+  );
+}
+
+/**
  * Reads the plugin descriptor out of a module's exports.
  *
  * @param exports The module exports. It can have any type.
@@ -190,11 +232,12 @@ function readDescriptor(exports: unknown): PluginDescriptor {
   throw new PluginError('The plugin module exports no PluginDescriptor.');
 }
 
-/** Loads plugins and hands out the providers and storage backends they registered. */
+/** Loads plugins and hands out the contributions they registered. */
 export class PluginManager implements PluginRegistry {
   private readonly providers = new Map<string, InferenceProvider>();
   private readonly storages = new Map<string, StorageBackend>();
   private readonly storageSetups = new Map<string, StorageSetup>();
+  private readonly systemPromptSetups = new Map<string, SystemPromptSetup>();
   private readonly plugins = new Map<string, PluginDescriptor>();
 
   /**
@@ -243,6 +286,22 @@ export class PluginManager implements PluginRegistry {
       throw new PluginError(`A storage setup with the id "${setup.id}" is already registered.`);
     }
     this.storageSetups.set(setup.id, setup);
+  }
+
+  /**
+   * Registers one system prompt source for the chat menu.
+   *
+   * @param setup The source. Values from plugin modules are validated against the setup shape.
+   * @throws PluginError when the value does not satisfy the shape or the id is taken.
+   */
+  registerSystemPromptSetup(setup: unknown): void {
+    if (!isSystemPromptSetup(setup)) {
+      throw new PluginError('The setup does not satisfy the SystemPromptSetup shape.');
+    }
+    if (this.systemPromptSetups.has(setup.id)) {
+      throw new PluginError(`A system prompt setup with the id "${setup.id}" is already registered.`);
+    }
+    this.systemPromptSetups.set(setup.id, setup);
   }
 
   /**
@@ -349,6 +408,21 @@ export class PluginManager implements PluginRegistry {
   /** Lists every registered storage setup, in registration order. */
   listStorageSetups(): readonly StorageSetup[] {
     return [...this.storageSetups.values()];
+  }
+
+  /**
+   * Looks up one system prompt source by id.
+   *
+   * @param id The source id.
+   * @returns The source, or undefined when nothing registered it.
+   */
+  getSystemPromptSetup(id: string): SystemPromptSetup | undefined {
+    return this.systemPromptSetups.get(id);
+  }
+
+  /** Lists every registered system prompt source, in registration order. */
+  listSystemPromptSetups(): readonly SystemPromptSetup[] {
+    return [...this.systemPromptSetups.values()];
   }
 
   /** Lists every loaded plugin descriptor. */

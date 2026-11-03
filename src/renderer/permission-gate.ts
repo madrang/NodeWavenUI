@@ -41,6 +41,9 @@ function describeTarget(target: PermissionTarget): string {
   if (target.kind === 'file') {
     return `file ${target.path}`;
   }
+  if (target.kind === 'tool') {
+    return `tool ${target.name}`;
+  }
   return `storage "${target.storageId}" key "${target.key}"`;
 }
 
@@ -50,6 +53,9 @@ function resourceOfTarget(target: PermissionTarget): string {
   }
   if (target.kind === 'file') {
     return 'file';
+  }
+  if (target.kind === 'tool') {
+    return 'tool';
   }
   return `storage:${target.storageId}`;
 }
@@ -76,6 +82,7 @@ export class PermissionGate {
    * @param target The target of the action.
    * @param detail The detail the UI shows next to the request.
    * @param source The origin of the call, for example the MCP session id, so the UI can route the request.
+   * @param preauthorized True when a rule at a higher layer already allowed the call, so the ask defaults turn into allow.
    * @throws Error when the pipeline denies the call or the UI rejects the request.
    */
   async check(
@@ -84,9 +91,10 @@ export class PermissionGate {
     target: PermissionTarget,
     detail: string,
     source: string | null = null,
+    preauthorized = false,
   ): Promise<void> {
     await this.ensureRules();
-    const decision = decidePermission(principal, action, target, this.rules);
+    const decision = decidePermission(principal, action, target, this.rules, preauthorized);
     if (decision === 'allow') {
       return;
     }

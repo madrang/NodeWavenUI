@@ -6,7 +6,7 @@
 
 import { OpenAiInferenceProvider } from '../providers/openai.js';
 import type { ChatImage, ChatMessage, CompletionDelta, ToolCall } from '../providers/provider.js';
-import type { StorageSetup } from '../plugins.js';
+import type { StorageSetup, SystemPromptSetup } from '../plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { closeWindow, minimizeWindow } from '../shared/nw.js';
@@ -17,8 +17,17 @@ import type {
   WorkspaceSettings,
 } from '../shared/workspace.js';
 import { emptyProviderRegistry } from '../shared/workspace.js';
-import { agentToolDefinition, buildAgentTools, CHAT_AGENT_SOURCE, type AgentTool, type AgentToolOutput } from './agent-tools.js';
-import { ChatSessionStore, type ChatEntry, type StoredChatSession } from './chat-sessions.js';
+import {
+  agentToolDefinition,
+  agentToolRule,
+  availableAgentTools,
+  buildAgentTools,
+  CHAT_AGENT_SOURCE,
+  type AgentTool,
+  type AgentToolDeps,
+  type AgentToolOutput,
+} from './agent-tools.js';
+import { ChatSessionStore, type ChatEntry, type StoredChatSession, type StoredSystemPrompt } from './chat-sessions.js';
 import { JsonViewerElement } from './json-viewer-element.js';
 import type { McpClientManager } from './mcp-client/manager.js';
 import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from './mcp-host.js';
@@ -37,6 +46,7 @@ import {
 } from './storage-shares.js';
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
+import { defaultSystemPromptSetup, NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
 import type { ChildWindowManager } from './window-manager.js';
 
 /** The longest edge of a pasted or dropped image, in pixels. Bigger pictures scale down. */
@@ -100,6 +110,10 @@ interface Chat {
   readonly isMcpHostLog?: boolean;
   /** True while the tab sits in the background and took traffic the user has not seen. */
   unread?: boolean;
+  /** The system prompt source the menu holds while the chat has sent no message. */
+  pendingSystemPromptId?: string;
+  /** The system prompt the chat bound on its first send. It stays for the life of the chat. */
+  boundSystemPrompt?: StoredSystemPrompt;
   /** The provider selection the status bar holds while the chat has sent no message. */
   pendingProviderId?: string;
   pendingModel?: string;
@@ -138,6 +152,7 @@ export class MainApp implements McpSessionSink {
   private readonly storageShares: StorageShareRegistry;
   private readonly storageSetups: readonly StorageSetup[];
   private readonly chatSessions: ChatSessionStore;
+  private readonly promptSources: readonly SystemPromptSetup[];
   private mcpHost: McpHostHandle | null = null;
   private registry: ProviderRegistry = emptyProviderRegistry();
   private mcpEndpoints: McpEndpoints = { endpoints: [] };
@@ -165,7 +180,7 @@ export class MainApp implements McpSessionSink {
   private readonly paneChat = requireElement<HTMLElement>('#pane-chat');
   private readonly chatMessages = requireElement<HTMLOListElement>('#chat-messages');
   private readonly chatForm = requireElement<HTMLFormElement>('#chat-form');
-  private readonly chatInput = requireElement<HTMLInputElement>('#chat-input');
+  private readonly chatInput = requireElement<HTMLTextAreaElement>('#chat-input');
   private readonly chatAttachments = requireElement<HTMLElement>('#chat-attachments');
   private readonly chatJumpDown = requireElement<HTMLButtonElement>('#chat-jump-down');
   private readonly chatSend = requireElement<HTMLButtonElement>('#chat-send');
@@ -201,6 +216,7 @@ export class MainApp implements McpSessionSink {
   private readonly shareFields = requireElement<HTMLElement>('#storage-share-fields');
   private readonly shareAccess = requireElement<HTMLSelectElement>('#storage-share-access');
   private readonly shareStatus = requireElement<HTMLElement>('#storage-share-status');
+  private readonly agentToolList = requireElement<HTMLElement>('#agent-tool-list');
 
   /**
    * @param settings The workspace settings.
@@ -214,6 +230,7 @@ export class MainApp implements McpSessionSink {
    * @param storageShares The storage sharing registry of the workspace.
    * @param storageSetups The registered storage setups, for the add form.
    * @param chatSessions The chat session store of the workspace.
+   * @param promptSources The registered system prompt sources, for the chat menu.
    */
   constructor(
     settings: WorkspaceSettings,
@@ -227,6 +244,7 @@ export class MainApp implements McpSessionSink {
     storageShares: StorageShareRegistry,
     storageSetups: readonly StorageSetup[],
     chatSessions: ChatSessionStore,
+    promptSources: readonly SystemPromptSetup[],
   ) {
     this.settings = settings;
     this.store = store;
@@ -239,6 +257,7 @@ export class MainApp implements McpSessionSink {
     this.storageShares = storageShares;
     this.storageSetups = storageSetups;
     this.chatSessions = chatSessions;
+    this.promptSources = promptSources;
     this.notificationHub.setChatNotifier((text) => {
       this.pushChatNotification(text);
     });
@@ -257,6 +276,7 @@ export class MainApp implements McpSessionSink {
     this.permissionGate?.subscribe(() => {
       this.renderPermissionRequests();
       this.renderTabs();
+      this.renderAgentTools();
     });
     requireElement<HTMLElement>('#workspace-name').textContent = this.settings.name;
     requireElement<HTMLElement>('#workspace-storage-mode').textContent = this.storageLabel;
@@ -281,6 +301,7 @@ export class MainApp implements McpSessionSink {
     void this.mcpClients.applyEndpoints(this.mcpEndpoints);
     this.mcpClients.subscribe(() => {
       this.renderMcpEndpoints();
+      this.renderAgentTools();
     });
     this.storageShares.applyRecord(this.sharedStorages);
     await this.initializeThemeControls();
@@ -289,6 +310,9 @@ export class MainApp implements McpSessionSink {
     this.initializeMcpHostSection();
     this.initializeMcpEndpointsSection();
     this.initializeStorageShareSection();
+    await this.seedAgentToolDefaults();
+    // The direct render covers a launch that seeds nothing and fires no gate or connection event.
+    this.renderAgentTools();
     this.initializeProviderSection();
     requireElement<HTMLButtonElement>('#app-close').addEventListener('click', () => {
       closeWindow();
@@ -323,6 +347,17 @@ export class MainApp implements McpSessionSink {
     this.chatForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.send();
+    });
+    // Enter sends; Shift+Enter and Ctrl+Enter break the line. A composing input method keeps its Enter.
+    this.chatInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.ctrlKey || event.shiftKey || event.isComposing) {
+        return;
+      }
+      event.preventDefault();
+      this.chatForm.requestSubmit();
+    });
+    this.chatInput.addEventListener('input', () => {
+      this.fitChatInput();
     });
     this.chatStop.addEventListener('click', () => {
       this.chatAbort?.abort();
@@ -369,6 +404,7 @@ export class MainApp implements McpSessionSink {
         ...(session.boundModel ? { boundModel: session.boundModel } : {}),
         ...(session.contextTokens !== undefined ? { contextTokens: session.contextTokens } : {}),
         ...(session.outputTokens !== undefined ? { outputTokens: session.outputTokens } : {}),
+        ...(session.systemPrompt ? { boundSystemPrompt: session.systemPrompt } : {}),
       };
       this.nextChatId += 1;
       this.chats.push(chat);
@@ -395,6 +431,7 @@ export class MainApp implements McpSessionSink {
       ...(chat.boundModel ? { boundModel: chat.boundModel } : {}),
       ...(chat.contextTokens !== undefined ? { contextTokens: chat.contextTokens } : {}),
       ...(chat.outputTokens !== undefined ? { outputTokens: chat.outputTokens } : {}),
+      ...(chat.boundSystemPrompt ? { systemPrompt: chat.boundSystemPrompt } : {}),
     };
     this.chatSessions.saveSession(session);
   }
@@ -493,18 +530,23 @@ export class MainApp implements McpSessionSink {
 
   /** Stores the next endpoint list, applies it to the connections, and re-renders the cards. */
   private persistMcpEndpoints(next: McpEndpoints, successText: string): void {
-    this.mcpEndpoints = next;
-    void this.mcpClients.applyEndpoints(next);
-    this.renderMcpEndpoints();
-    void this.store
-      .saveMcpEndpoints(next)
-      .then(() => {
-        this.showMcpEndpointStatus(successText, false);
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.showMcpEndpointStatus(message, true);
-      });
+    void (async () => {
+      // The carry runs to completion first: it reads the live tool names of the old connections,
+      // so its rule moves finish before the new connections replace them.
+      await this.carryToolRulesOverRename(this.mcpEndpoints, next);
+      this.mcpEndpoints = next;
+      await this.mcpClients.applyEndpoints(next);
+      this.renderMcpEndpoints();
+      await this.store
+        .saveMcpEndpoints(next)
+        .then(() => {
+          this.showMcpEndpointStatus(successText, false);
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          this.showMcpEndpointStatus(message, true);
+        });
+    })();
   }
 
   /** Renders one card per endpoint, disabled ones included, with the live connection state. */
@@ -752,6 +794,185 @@ export class MainApp implements McpSessionSink {
       onChange(select.value === 'readonly' ? 'readonly' : 'none');
     });
     return select;
+  }
+
+  /** Seeds the tool defaults once per workspace: the two trusted built-ins, read and evaluate, start allowed. */
+  private async seedAgentToolDefaults(): Promise<void> {
+    const gate = this.permissionGate;
+    if (!gate) {
+      return;
+    }
+    try {
+      if (await this.store.loadAgentToolDefaults()) {
+        return;
+      }
+      for (const name of ['read', 'evaluate']) {
+        // A rule that already governs the tool holds the user's choice, so a repeated seeding adds nothing.
+        if (agentToolRule(name, gate.listRules()) !== null) {
+          continue;
+        }
+        await gate.addRule({
+          id: crypto.randomUUID(),
+          enabled: true,
+          principal: 'agent',
+          resource: 'tool',
+          actions: [name],
+          effect: 'allow',
+        });
+      }
+      await this.store.saveAgentToolDefaults(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the agent tool defaults could not be seeded: ${message}`);
+    }
+  }
+
+  /** Renders the agent tools section: one group head per origin, one row per tool with its state. */
+  private renderAgentTools(): void {
+    this.agentToolList.replaceChildren();
+    const gate = this.permissionGate;
+    const rules = gate?.listRules() ?? [];
+    const tools = availableAgentTools(this.agentToolDeps());
+    if (tools.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'status';
+      empty.textContent = 'No tool is available to the chat agent.';
+      this.agentToolList.append(empty);
+      return;
+    }
+    let group = '';
+    for (const tool of tools) {
+      const origin = this.toolOriginLabel(tool.name);
+      if (origin !== group) {
+        group = origin;
+        const head = document.createElement('p');
+        head.className = 'agent-tool-group';
+        head.textContent = origin;
+        this.agentToolList.append(head);
+      }
+      const row = document.createElement('div');
+      row.className = 'mcp-endpoint';
+      const name = document.createElement('span');
+      name.className = 'mcp-endpoint-label';
+      name.textContent = tool.name;
+      name.title = tool.description;
+      const description = document.createElement('span');
+      description.className = 'mcp-endpoint-transport';
+      description.textContent =
+        tool.description.length > 60 ? `${tool.description.slice(0, 57)}…` : tool.description;
+      const state = agentToolRule(tool.name, rules)?.effect ?? 'ask';
+      const select = document.createElement('select');
+      select.className = 'mcp-endpoint-mode';
+      select.title = 'Ask prompts on first use, Allow skips the prompts, Disable hides the tool.';
+      for (const [value, label] of [
+        ['ask', 'Ask'],
+        ['allow', 'Allow'],
+        ['deny', 'Disable'],
+      ] as const) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        select.append(option);
+      }
+      select.value = state === 'allow' ? 'allow' : state === 'deny' ? 'deny' : 'ask';
+      select.addEventListener('change', () => {
+        const next = select.value === 'allow' ? 'allow' : select.value === 'deny' ? 'deny' : 'ask';
+        void this.setAgentToolState(tool.name, next);
+      });
+      row.append(name, description, select);
+      this.agentToolList.append(row);
+    }
+  }
+
+  /** The group head of one tool: the built-ins, the window tools, or the endpoint label of a native tool. */
+  private toolOriginLabel(name: string): string {
+    if (name === 'read' || name === 'evaluate') {
+      return 'Built-in tools';
+    }
+    const separator = name.indexOf('.');
+    if (separator > 0) {
+      const prefix = name.slice(0, separator);
+      const endpoint = this.mcpEndpoints.endpoints.find(
+        (candidate) => sanitizeEndpointLabel(candidate.label) === prefix,
+      );
+      return endpoint?.label ?? 'MCP tools';
+    }
+    return 'Window tools';
+  }
+
+  /** Writes the state of one agent tool as its rule: ask removes the rule, allow and deny replace it. */
+  private async setAgentToolState(name: string, effect: 'ask' | 'allow' | 'deny'): Promise<void> {
+    const gate = this.permissionGate;
+    if (!gate) {
+      return;
+    }
+    try {
+      const existing = agentToolRule(name, gate.listRules());
+      if (existing) {
+        await gate.removeRule(existing.id);
+      }
+      if (effect !== 'ask') {
+        await gate.addRule({
+          id: existing?.id ?? crypto.randomUUID(),
+          enabled: true,
+          principal: 'agent',
+          resource: 'tool',
+          actions: [name],
+          effect,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the state of the tool "${name}" could not be saved: ${message}`);
+    }
+  }
+
+  /** Carries the tool rules of an endpoint over a label rename. A rule moves only when every one of its
+   * actions maps to a live tool of the endpoint under the new prefix. Anything else stays behind, so the
+   * affected tools fall back to ask. */
+  private async carryToolRulesOverRename(previous: McpEndpoints, next: McpEndpoints): Promise<void> {
+    const gate = this.permissionGate;
+    if (!gate) {
+      return;
+    }
+    for (const endpoint of next.endpoints) {
+      const old = previous.endpoints.find((candidate) => candidate.id === endpoint.id);
+      if (!old || old.label === endpoint.label) {
+        continue;
+      }
+      const oldPrefix = sanitizeEndpointLabel(old.label);
+      const newPrefix = sanitizeEndpointLabel(endpoint.label);
+      if (oldPrefix === newPrefix) {
+        continue;
+      }
+      const toolNames = this.mcpClients.listServers().find((state) => state.id === endpoint.id)?.toolNames ?? [];
+      for (const rule of gate.listRules()) {
+        if (rule.resource !== 'tool' || rule.actions === '*') {
+          continue;
+        }
+        const mapped: string[] = [];
+        let perfect = rule.actions.length > 0;
+        for (const action of rule.actions) {
+          const suffix = action.startsWith(`${oldPrefix}.`) ? action.slice(oldPrefix.length + 1) : null;
+          if (suffix !== null && toolNames.includes(suffix)) {
+            mapped.push(`${newPrefix}.${suffix}`);
+          } else {
+            perfect = false;
+            break;
+          }
+        }
+        if (!perfect) {
+          continue;
+        }
+        try {
+          await gate.removeRule(rule.id);
+          await gate.addRule({ ...rule, actions: mapped });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(`[NodeWavenUI] the tool rules of "${old.label}" could not move to "${endpoint.label}": ${message}`);
+        }
+      }
+    }
   }
 
   /** McpSessionSink: every MCP session logs into one shared host tab, and each new connection posts its facts. */
@@ -1419,6 +1640,7 @@ export class MainApp implements McpSessionSink {
     if (this.chatBusy) {
       // The agent runs: the message waits as a dimmed entry and delivers when the run ends.
       this.chatInput.value = '';
+      this.fitChatInput();
       this.pendingImages = [];
       this.renderAttachments();
       chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images: [...images] } : {}), queued: true });
@@ -1430,7 +1652,12 @@ export class MainApp implements McpSessionSink {
     await this.deliver(chat, text, images);
   }
 
-  /** Delivers one message: resolves the connection, pushes the entry, and runs the agent turn. */
+  /** True when the chat already carries a sent message, so its system prompt window has passed. */
+  private chatHasConversation(chat: Chat): boolean {
+    return chat.entries.some((entry) => entry.role === 'user' || entry.role === 'assistant');
+  }
+
+  /** Delivers one message: resolves the connection, binds the system prompt, pushes the entry, and runs the agent turn. */
   private async deliver(chat: Chat, text: string, images: readonly ChatImage[]): Promise<void> {
     const connection = this.resolveChatConnection(chat);
     if (connection && images.length > 0 && !connection.vision) {
@@ -1443,7 +1670,32 @@ export class MainApp implements McpSessionSink {
       this.persistChat(chat);
       return;
     }
+    // Only a chat without messages binds a prompt. An old chat keeps running without one.
+    // The bind sits past the rejected-send guards, so a send that never reaches the transcript leaves the menu open.
+    if (!chat.boundSystemPrompt && !this.chatHasConversation(chat)) {
+      // The first send binds the prompt source and snapshots its text, so the chat keeps what it sent.
+      const setup = this.selectedSystemPromptSetup(chat);
+      if (setup === null) {
+        chat.boundSystemPrompt = { sourceId: NONE_SYSTEM_PROMPT_SETUP_ID, title: 'No system prompt', text: '' };
+      } else {
+        let promptText: string;
+        try {
+          promptText = await setup.build({ workspacePath: this.workspacePath });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          chat.entries.push({
+            role: 'error',
+            content: `The system prompt source "${setup.label}" failed: ${message}`,
+          });
+          this.renderMessages();
+          return;
+        }
+        chat.boundSystemPrompt = { sourceId: setup.id, title: setup.label, text: promptText };
+        this.renderMessages();
+      }
+    }
     this.chatInput.value = '';
+    this.fitChatInput();
     this.pendingImages = [];
     this.renderAttachments();
     chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
@@ -1594,9 +1846,9 @@ export class MainApp implements McpSessionSink {
     });
   }
 
-  /** The tools the agent may call this turn, the built-ins plus the native MCP tools. */
-  private agentTools(): readonly AgentTool[] {
-    return buildAgentTools({
+  /** The dependencies the agent tools build from. The rule reader feeds the tool rule layer. */
+  private agentToolDeps(): AgentToolDeps {
+    return {
       windowManager: this.windowManager,
       gate:
         this.permissionGate ?? {
@@ -1607,7 +1859,13 @@ export class MainApp implements McpSessionSink {
       mcpClients: this.mcpClients,
       workspacePath: this.workspacePath,
       storageShares: this.storageShares,
-    });
+      toolRules: () => this.permissionGate?.listRules() ?? [],
+    };
+  }
+
+  /** The tools the agent may call this turn, the built-ins plus the native MCP tools, without the disabled ones. */
+  private agentTools(): readonly AgentTool[] {
+    return buildAgentTools(this.agentToolDeps());
   }
 
   /** Runs the tool-calling loop of one user message, until the model answers in text or hits the round limit. */
@@ -1706,6 +1964,10 @@ export class MainApp implements McpSessionSink {
   /** Reads the entries of one chat as the message list of the next provider request. */
   private agentMessages(chat: Chat, vision: boolean): ChatMessage[] {
     const messages: ChatMessage[] = [];
+    const system = chat.boundSystemPrompt;
+    if (system && system.sourceId !== NONE_SYSTEM_PROMPT_SETUP_ID && system.text.length > 0) {
+      messages.push({ role: 'system', content: system.text });
+    }
     // Tool images travel as one user message after the tool batch, because tool messages carry text only.
     // A model without vision reads an omission note instead.
     const toolImages: ChatImage[] = [];
@@ -1862,6 +2124,12 @@ export class MainApp implements McpSessionSink {
     if (!busy) {
       this.chatInput.focus();
     }
+  }
+
+  /** Shrinks the chat input back to one line and grows it with the written lines. */
+  private fitChatInput(): void {
+    this.chatInput.style.height = 'auto';
+    this.chatInput.style.height = `${this.chatInput.scrollHeight}px`;
   }
 
   private newChat(): void {
@@ -2321,11 +2589,15 @@ export class MainApp implements McpSessionSink {
         openReasoning.add(key);
       }
     }
+    // The open state of the system prompt disclosure survives the rebuild the same way.
+    const promptDisclosure = this.chatMessages.querySelector(':scope > li.system-prompt-item > details.system-prompt');
+    const promptOpen = promptDisclosure instanceof HTMLDetailsElement ? promptDisclosure.open : false;
     this.chatMessages.replaceChildren();
     const chat = this.activeChat();
     if (!chat) {
       return;
     }
+    this.appendSystemPromptItem(chat, promptOpen);
     // The streaming entry of a busy chat carries the reasoning disclosure from the start, queued entries or not.
     let streamingIndex = -1;
     if (this.chatBusy) {
@@ -2357,5 +2629,80 @@ export class MainApp implements McpSessionSink {
       );
     }
     this.pinChatToBottom();
+  }
+
+  /** Renders the system prompt element first in the message list: the source menu before the first
+   * sent message, the collapsed bound prompt after it. The none source and the host tab render nothing.
+   * A chat that predates the prompt, or carries messages without one, renders nothing: its window passed. */
+  private appendSystemPromptItem(chat: Chat, promptOpen: boolean): void {
+    if (chat.isMcpHostLog || this.promptSources.length === 0) {
+      return;
+    }
+    const bound = chat.boundSystemPrompt;
+    if (bound) {
+      if (bound.sourceId === NONE_SYSTEM_PROMPT_SETUP_ID || bound.text.length === 0) {
+        return;
+      }
+      const item = document.createElement('li');
+      item.className = 'system-prompt-item';
+      const disclosure = document.createElement('details');
+      disclosure.className = 'system-prompt';
+      disclosure.open = promptOpen;
+      const summary = document.createElement('summary');
+      const label = document.createElement('span');
+      label.className = 'system-prompt-title';
+      label.textContent = bound.title;
+      summary.append(label);
+      const body = document.createElement('div');
+      body.className = 'system-prompt-body';
+      body.textContent = bound.text;
+      disclosure.append(summary, body);
+      item.append(disclosure);
+      this.chatMessages.append(item);
+      return;
+    }
+    if (this.chatHasConversation(chat)) {
+      return;
+    }
+    const selected = this.selectedSystemPromptId(chat);
+    const item = document.createElement('li');
+    item.className = 'system-prompt-item';
+    const label = document.createElement('span');
+    label.className = 'system-prompt-menu-label';
+    label.textContent = 'System prompt';
+    const select = document.createElement('select');
+    select.className = 'system-prompt-select';
+    select.title = 'The system prompt of the first message. The chat keeps it after the send.';
+    for (const source of this.promptSources) {
+      const option = document.createElement('option');
+      option.value = source.id;
+      option.textContent = source.label;
+      select.append(option);
+    }
+    select.value = this.promptSources.some((source) => source.id === selected)
+      ? selected
+      : (this.promptSources[0]?.id ?? '');
+    select.addEventListener('change', () => {
+      chat.pendingSystemPromptId = select.value;
+    });
+    item.append(label, select);
+    this.chatMessages.append(item);
+  }
+
+  /** The source id the chat menu holds: the pending selection, or the default of the workspace. */
+  private selectedSystemPromptId(chat: Chat): string {
+    if (chat.pendingSystemPromptId) {
+      return chat.pendingSystemPromptId;
+    }
+    return defaultSystemPromptSetup(this.promptSources)?.id ?? NONE_SYSTEM_PROMPT_SETUP_ID;
+  }
+
+  /** The source the chat menu holds: the pending selection, or the default. Null reads the none source. */
+  private selectedSystemPromptSetup(chat: Chat): SystemPromptSetup | null {
+    const wanted = this.selectedSystemPromptId(chat);
+    if (wanted === NONE_SYSTEM_PROMPT_SETUP_ID) {
+      return null;
+    }
+    return this.promptSources.find((source) => source.id === wanted) ?? defaultSystemPromptSetup(this.promptSources);
   }
 }

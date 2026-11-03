@@ -25,6 +25,7 @@ import { NotificationHub } from './notification-hub.js';
 import { PermissionGate } from './permission-gate.js';
 import { PluginManager } from '../plugins.js';
 import { registerBuiltinStorageSetups } from './storage-setups.js';
+import { registerBuiltinSystemPromptSetups } from './system-prompts.js';
 import { StorageShareRegistry } from './storage-shares.js';
 import { WorkspaceSettingsStore } from './settings-store.js';
 import { initializeTheme } from './theme.js';
@@ -34,9 +35,10 @@ import { ChildWindowManager } from './window-manager.js';
 /** The size the workspace window takes when no stored geometry restores. */
 const MAIN_WINDOW_SIZE = { width: 760, height: 680 } as const;
 
-/** The plugin registry of the workspace window, seeded with the built-in storage setups. */
+/** The plugin registry of the workspace window, seeded with the built-in storage and system prompt setups. */
 const plugins = new PluginManager();
 registerBuiltinStorageSetups(plugins);
+registerBuiltinSystemPromptSetups(plugins);
 
 /** The app arguments, read once at startup. */
 const appArguments = readAppArguments();
@@ -104,6 +106,7 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     storageShares,
     plugins.listStorageSetups(),
     new ChatSessionStore(directory.path, store, setup.needsPassword),
+    plugins.listSystemPromptSetups(),
   );
   // The workspace window closes only after every child window closed: NW.js keeps the process alive while
   // any window stays open, so a surviving child would wedge the app and the restart loop. NW.js fires

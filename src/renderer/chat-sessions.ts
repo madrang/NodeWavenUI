@@ -57,6 +57,16 @@ export interface ChatEntry {
   readonly queued?: boolean;
 }
 
+/** The system prompt a chat bound on its first send. */
+export interface StoredSystemPrompt {
+  /** The id of the source that built the prompt. */
+  readonly sourceId: string;
+  /** The label of the source at bind time. It titles the collapsed prompt. */
+  readonly title: string;
+  /** The prompt text the chat sent. It stays for the life of the chat. */
+  readonly text: string;
+}
+
 /** One persisted chat session: the durable state of one chat tab. */
 export interface StoredChatSession {
   /** The session id, which is also the file name. */
@@ -73,6 +83,8 @@ export interface StoredChatSession {
   readonly contextTokens?: number;
   /** The output tokens of the whole chat, summed over the requests the provider reported. */
   readonly outputTokens?: number;
+  /** The system prompt the chat bound on its first send, when it sent one. */
+  readonly systemPrompt?: StoredSystemPrompt;
 }
 
 /** Reads one stored tool call. Returns null on an invalid shape. */
@@ -149,6 +161,28 @@ function readChatEntry(value: unknown): ChatEntry | null {
 }
 
 /**
+ * Reads one stored system prompt.
+ *
+ * @param value The value to check. It can have any type.
+ * @returns The prompt record, or null when it carries an invalid shape.
+ */
+function readStoredSystemPrompt(value: unknown): StoredSystemPrompt | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.sourceId !== 'string' ||
+    candidate.sourceId.length === 0 ||
+    typeof candidate.title !== 'string' ||
+    typeof candidate.text !== 'string'
+  ) {
+    return null;
+  }
+  return { sourceId: candidate.sourceId, title: candidate.title, text: candidate.text };
+}
+
+/**
  * Reads one stored chat session.
  * A session with one damaged entry reads as null, whole, so a restored conversation never
  * loses the tool results that answer its tool calls.
@@ -183,11 +217,14 @@ export function readStoredChatSession(value: unknown): StoredChatSession | null 
   const boundModel = candidate.boundModel;
   const contextTokens = candidate.contextTokens;
   const outputTokens = candidate.outputTokens;
+  const systemPrompt =
+    candidate.systemPrompt === undefined ? null : readStoredSystemPrompt(candidate.systemPrompt);
   if (
     (boundProviderId !== undefined && typeof boundProviderId !== 'string') ||
     (boundModel !== undefined && typeof boundModel !== 'string') ||
     (contextTokens !== undefined && typeof contextTokens !== 'number') ||
-    (outputTokens !== undefined && typeof outputTokens !== 'number')
+    (outputTokens !== undefined && typeof outputTokens !== 'number') ||
+    (candidate.systemPrompt !== undefined && systemPrompt === null)
   ) {
     return null;
   }
@@ -200,6 +237,7 @@ export function readStoredChatSession(value: unknown): StoredChatSession | null 
     ...(boundModel !== undefined ? { boundModel } : {}),
     ...(contextTokens !== undefined ? { contextTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(systemPrompt ? { systemPrompt } : {}),
   };
 }
 

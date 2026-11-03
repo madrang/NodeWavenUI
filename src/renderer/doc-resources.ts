@@ -29,6 +29,12 @@ const DOCS: readonly HarnessDoc[] = [
     description: 'The MCP host tool reference: windows, sessions, evaluate, permissions.',
   },
   {
+    uri: 'harness:///nodewavenui/AGENTS.md',
+    file: 'docs/AGENTS.md',
+    name: 'AGENTS',
+    description: 'The base system prompt of the chat agent: the tool surface and the entry document.',
+  },
+  {
     uri: 'harness:///nodewavenui/chat-agent-tools.md',
     file: 'docs/chat-agent-tools.md',
     name: 'chat-agent-tools',

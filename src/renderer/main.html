@@ -111,6 +111,11 @@
         </details>
         <p id="storage-share-status" class="status" hidden></p>
       </fieldset>
+      <fieldset class="field" id="agent-tools-section">
+        <legend>Agent tools</legend>
+        <p class="status">Every tool the chat agent may call. Ask prompts on first use, Allow skips the prompts, Disable hides the tool from the agent.</p>
+        <div id="agent-tool-list"></div>
+      </fieldset>
       <section id="provider-section">
         <h3>Provider</h3>
         <div id="provider-list"></div>
@@ -138,7 +143,7 @@
       <div id="permission-requests" hidden></div>
       <div id="chat-attachments" hidden></div>
       <form id="chat-form">
-        <input id="chat-input" type="text" placeholder="Message…" autocomplete="off">
+        <textarea id="chat-input" rows="1" placeholder="Message…"></textarea>
         <button id="chat-send" type="submit" class="primary">Send</button>
         <button id="chat-stop" type="button" hidden>Stop</button>
       </form>

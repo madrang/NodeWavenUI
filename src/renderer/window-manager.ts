@@ -113,6 +113,12 @@ export interface WindowCaller {
   readonly principal: PrincipalKind;
   /** The origin of the call, for example the MCP session id, so permission requests route to the right tab. */
   readonly source?: string;
+  /**
+   * True when a permission rule already allowed the call at a higher level, for example a tool rule that
+   * covers the window action. The window check keeps its rules, but its ask default turns into allow,
+   * so one call never prompts twice.
+   */
+  readonly preauthorized?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -367,6 +373,7 @@ export class ChildWindowManager {
 
   /**
    * Checks one window action through the permission gate.
+   * A preauthorized caller keeps every rule check; only the ask default turns into allow.
    *
    * @param caller The caller with its principal and origin.
    * @param action The window action.
@@ -380,7 +387,7 @@ export class ChildWindowManager {
       }
       throw new Error(`Permission denied: no permission gate is wired, so "${caller.principal}" may not run "${action}" on window ${url}.`);
     }
-    await this.gate.check(caller.principal, action, { kind: 'window', url }, `window ${url}`, caller.source ?? null);
+    await this.gate.check(caller.principal, action, { kind: 'window', url }, `window ${url}`, caller.source ?? null, caller.preauthorized === true);
   }
 
   /**
