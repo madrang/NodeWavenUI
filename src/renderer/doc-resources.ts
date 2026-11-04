@@ -75,7 +75,43 @@ const DOCS: readonly HarnessDoc[] = [
 /** The MIME type of every harness document. */
 export const HARNESS_DOC_MIME_TYPE = 'text/markdown';
 
+/** The uris the built-in documents claim. A plugin harness document must not take one of them. */
+export const BUILT_IN_HARNESS_DOC_URIS: readonly string[] = DOCS.map((doc) => doc.uri);
+
+/** The overview document, the entry point every agent reads first. It lists the live plugin documents. */
+const OVERVIEW_URI = 'harness:///nodewavenui/overview.md';
+
 const cache = new Map<string, string>();
+
+/** The harness documents plugins registered, set once at startup. They appear only while their plugin loads. */
+let pluginDocs: readonly HarnessDoc[] = [];
+
+/**
+ * Sets the harness documents of the loaded plugins.
+ * The startup wiring calls this after the plugin folders load, so a plugin document never
+ * outlives its plugin: a removed or disabled plugin folder contributes nothing.
+ * The overview cache drops, so the entry point composes with the new list on its next read.
+ *
+ * @param docs The documents the plugin manager registered.
+ */
+export function setPluginHarnessDocs(docs: readonly HarnessDoc[]): void {
+  pluginDocs = [...docs];
+  cache.delete(OVERVIEW_URI);
+}
+
+/**
+ * Builds the plugin document section of the overview.
+ *
+ * @param docs The registered plugin documents.
+ * @returns The section text, or null when no plugin registered a document.
+ */
+export function pluginDocumentSection(docs: readonly HarnessDoc[]): string | null {
+  if (docs.length === 0) {
+    return null;
+  }
+  const lines = docs.map((doc) => `- \`${doc.uri}\` — ${doc.description}`);
+  return `# Plugin documents\n\nThese documents come from the enabled plugin folders. They leave with their plugin.\n\n${lines.join('\n')}\n`;
+}
 
 /** One resource entry as the MCP resources/list answer carries it. */
 export interface HarnessDocInfo {
@@ -85,9 +121,9 @@ export interface HarnessDocInfo {
   readonly mimeType: string;
 }
 
-/** Lists the harness documents. */
+/** Lists the harness documents: the built-ins first, then the plugin documents. */
 export function listHarnessDocs(): readonly HarnessDocInfo[] {
-  return DOCS.map((doc) => ({
+  return [...DOCS, ...pluginDocs].map((doc) => ({
     uri: doc.uri,
     name: doc.name,
     description: doc.description,
@@ -107,9 +143,9 @@ export async function readHarnessDoc(uri: string): Promise<string> {
   if (cached !== undefined) {
     return cached;
   }
-  const doc = DOCS.find((candidate) => candidate.uri === uri);
+  const doc = [...DOCS, ...pluginDocs].find((candidate) => candidate.uri === uri);
   if (doc === undefined) {
-    const list = DOCS.map((candidate) => candidate.uri).join(', ');
+    const list = [...DOCS, ...pluginDocs].map((candidate) => candidate.uri).join(', ');
     throw new Error(`No harness document matches ${uri}. Valid: ${list}.`);
   }
   const response = await fetch(doc.file);
@@ -117,6 +153,15 @@ export async function readHarnessDoc(uri: string): Promise<string> {
     throw new Error(`The harness document ${doc.file} answered HTTP ${response.status}.`);
   }
   const text = await response.text();
-  cache.set(uri, text);
-  return text;
+  // The overview is the entry point, so it carries the live plugin documents: an agent that
+  // reads only the overview still learns they exist.
+  const composed = doc.uri === OVERVIEW_URI ? withPluginSection(text) : text;
+  cache.set(uri, composed);
+  return composed;
+}
+
+/** Appends the plugin document section to the overview text. */
+function withPluginSection(text: string): string {
+  const section = pluginDocumentSection(pluginDocs);
+  return section === null ? text : `${text}\n${section}`;
 }

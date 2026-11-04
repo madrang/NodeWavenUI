@@ -151,3 +151,6 @@ vite.config.ts.timestamp-*
 # Local agent tooling
 AGENTS.md
 .zcode/
+
+# The Jasmine browser bundle, vendored into the selftest plugin at build time
+plugins/selftest/vendor/

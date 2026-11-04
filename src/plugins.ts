@@ -33,6 +33,18 @@ export interface PluginRegistry {
   registerStorageSetup(setup: StorageSetup): void;
   /** Registers one system prompt source, which lists in the chat menu. */
   registerSystemPromptSetup(setup: SystemPromptSetup): void;
+  /** Registers one harness document, which the agent surfaces serve as a resource. */
+  registerHarnessDoc(doc: HarnessDocSetup): void;
+}
+
+/** One harness document a plugin contributes: an agent-facing resource that lives with the plugin. */
+export interface HarnessDocSetup {
+  /** The resource URI both agent surfaces serve, for example `harness:///nodewavenui/selftest.md`. */
+  readonly uri: string;
+  /** The file to fetch, absolute from the app root, for example `/plugins/selftest/selftest.md`. */
+  readonly file: string;
+  readonly name: string;
+  readonly description: string;
 }
 
 /** Options for opening the backend of one workspace. */
@@ -216,6 +228,28 @@ function isSystemPromptSetup(value: unknown): value is SystemPromptSetup {
 }
 
 /**
+ * Checks that a value satisfies the HarnessDocSetup shape.
+ *
+ * @param value The value to check. It can have any type.
+ * @returns True when the value carries the four non-empty strings.
+ */
+function isHarnessDocSetup(value: unknown): value is HarnessDocSetup {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.uri === 'string' &&
+    value.uri.length > 0 &&
+    typeof value.file === 'string' &&
+    value.file.length > 0 &&
+    typeof value.name === 'string' &&
+    value.name.length > 0 &&
+    typeof value.description === 'string' &&
+    value.description.length > 0
+  );
+}
+
+/**
  * Reads the plugin descriptor out of a module's exports.
  *
  * @param exports The module exports. It can have any type.
@@ -238,7 +272,18 @@ export class PluginManager implements PluginRegistry {
   private readonly storages = new Map<string, StorageBackend>();
   private readonly storageSetups = new Map<string, StorageSetup>();
   private readonly systemPromptSetups = new Map<string, SystemPromptSetup>();
+  private readonly harnessDocs = new Map<string, HarnessDocSetup>();
   private readonly plugins = new Map<string, PluginDescriptor>();
+  private readonly reservedHarnessDocUris: readonly string[];
+
+  /**
+   * @param reservedHarnessDocUris The uris built-in harness documents already claim.
+   * The harness doc registration rejects them, so a plugin never shadows a built-in resource.
+   * Empty for managers outside the workspace window, which serve no harness documents.
+   */
+  constructor(reservedHarnessDocUris: readonly string[] = []) {
+    this.reservedHarnessDocUris = [...reservedHarnessDocUris];
+  }
 
   /**
    * Registers one inference provider.
@@ -302,6 +347,25 @@ export class PluginManager implements PluginRegistry {
       throw new PluginError(`A system prompt setup with the id "${setup.id}" is already registered.`);
     }
     this.systemPromptSetups.set(setup.id, setup);
+  }
+
+  /**
+   * Registers one harness document, which the agent surfaces serve as a resource.
+   *
+   * @param doc The document. Values from plugin modules are validated against the setup shape.
+   * @throws PluginError when the value does not satisfy the shape, the uri is taken, or the uri belongs to a built-in document.
+   */
+  registerHarnessDoc(doc: unknown): void {
+    if (!isHarnessDocSetup(doc)) {
+      throw new PluginError('The setup does not satisfy the HarnessDocSetup shape.');
+    }
+    if (this.reservedHarnessDocUris.includes(doc.uri)) {
+      throw new PluginError(`The uri "${doc.uri}" belongs to a built-in harness document.`);
+    }
+    if (this.harnessDocs.has(doc.uri)) {
+      throw new PluginError(`A harness document with the uri "${doc.uri}" is already registered.`);
+    }
+    this.harnessDocs.set(doc.uri, doc);
   }
 
   /**
@@ -423,6 +487,11 @@ export class PluginManager implements PluginRegistry {
   /** Lists every registered system prompt source, in registration order. */
   listSystemPromptSetups(): readonly SystemPromptSetup[] {
     return [...this.systemPromptSetups.values()];
+  }
+
+  /** Lists every registered harness document, in registration order. */
+  listHarnessDocs(): readonly HarnessDocSetup[] {
+    return [...this.harnessDocs.values()];
   }
 
   /** Lists every loaded plugin descriptor. */

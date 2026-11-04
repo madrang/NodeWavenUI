@@ -24,9 +24,11 @@ export function joinPath(directory: string, file: string): string {
 export interface NodeFileSystem {
   readdirSync(path: string): readonly string[];
   readFileSync(path: string, encoding: 'utf-8'): string;
+  readFileSync(path: string): Uint8Array;
   writeFileSync(path: string, contents: string): void;
   mkdirSync(path: string, options: { recursive: boolean }): void;
   rmSync(path: string, options: { force: boolean }): void;
+  statSync(path: string): { isDirectory(): boolean };
 }
 
 /**
@@ -46,6 +48,7 @@ export function fileSystem(): NodeFileSystem | null {
     fs.writeFileSync,
     fs.mkdirSync,
     fs.rmSync,
+    fs.statSync,
   ].every((method) => typeof method === 'function')
     ? (fs as NodeFileSystem)
     : null;

@@ -514,9 +514,17 @@ body.framed #chat-tabs::after {
   padding: 0;
 }
 
-#chat-messages {
+/* The scroll area of the messages. It also anchors the jump-down arrow, which floats over
+   the bottom right of the list instead of reserving a band above the composer. */
+.chat-scroll {
+  position: relative;
   flex: 1;
   min-height: 0;
+}
+
+#chat-messages {
+  height: 100%;
+  box-sizing: border-box;
   overflow: auto;
   list-style: none;
   margin: 0;
@@ -1241,10 +1249,14 @@ permission-request {
   align-items: center;
 }
 
-/* The jump-down arrow between the attachments and the composer: visible only while the chat sits above its latest message. */
+/* The jump-down arrow floats over the bottom center of the messages: visible only while the chat
+   sits above its latest message. It reserves no space in the column. */
 #chat-jump-down {
-  align-self: center;
-  margin: 4px 0;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 16px;
+  z-index: 1;
   width: 26px;
   height: 26px;
   padding: 0;
@@ -1255,6 +1267,7 @@ permission-request {
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.25);
 }
 
 #chat-jump-down:hover {

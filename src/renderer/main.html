@@ -116,6 +116,11 @@
         <p class="status">Every tool the chat agent may call. Ask prompts on first use, Allow skips the prompts, Disable hides the tool from the agent.</p>
         <div id="agent-tool-list"></div>
       </fieldset>
+      <fieldset class="field" id="plugin-folders-section">
+        <legend>Plugins</legend>
+        <p class="status">Folders under plugins/ of the app. Enable loads the plugin; a content change after that resets it to disabled.</p>
+        <div id="plugin-folder-list"></div>
+      </fieldset>
       <section id="provider-section">
         <h3>Provider</h3>
         <div id="provider-list"></div>
@@ -138,8 +143,10 @@
       </section>
     </div>
     <div id="pane-chat" class="pane pane-chat" hidden>
-      <ol id="chat-messages"></ol>
-      <button id="chat-jump-down" type="button" title="Jump to the latest message" hidden>↓</button>
+      <div class="chat-scroll">
+        <ol id="chat-messages"></ol>
+        <button id="chat-jump-down" type="button" title="Jump to the latest message" hidden>↓</button>
+      </div>
       <div id="permission-requests" hidden></div>
       <div id="chat-attachments" hidden></div>
       <form id="chat-form">

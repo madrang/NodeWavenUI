@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "mocha"],
+    "rootDir": "tests/node",
+    "outDir": "dist/tests"
+  },
+  "include": ["tests/node"],
+  "references": [
+    { "path": "./tsconfig.shared.json" },
+    { "path": "./tsconfig.providers.json" },
+    { "path": "./tsconfig.storage.json" },
+    { "path": "./tsconfig.renderer.json" }
+  ]
+}

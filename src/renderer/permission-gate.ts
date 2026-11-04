@@ -218,6 +218,16 @@ export class PermissionGate {
     };
   }
 
+  /**
+   * Waits until the persisted rules loaded. The first call loads them.
+   * The UI reads `listRules` before any `check` runs, so it must await this or it reads an empty list.
+   *
+   * @throws StorageError when the store fails.
+   */
+  ready(): Promise<void> {
+    return this.ensureRules();
+  }
+
   private ensureRules(): Promise<void> {
     if (this.rulesLoaded) {
       return Promise.resolve();

@@ -46,6 +46,7 @@ import {
 } from './storage-shares.js';
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
+import type { PluginFolderController } from './plugin-folders.js';
 import { defaultSystemPromptSetup, NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
 import type { ChildWindowManager } from './window-manager.js';
 
@@ -153,6 +154,7 @@ export class MainApp implements McpSessionSink {
   private readonly storageSetups: readonly StorageSetup[];
   private readonly chatSessions: ChatSessionStore;
   private readonly promptSources: readonly SystemPromptSetup[];
+  private readonly pluginFolders: PluginFolderController;
   private mcpHost: McpHostHandle | null = null;
   private registry: ProviderRegistry = emptyProviderRegistry();
   private mcpEndpoints: McpEndpoints = { endpoints: [] };
@@ -217,6 +219,7 @@ export class MainApp implements McpSessionSink {
   private readonly shareAccess = requireElement<HTMLSelectElement>('#storage-share-access');
   private readonly shareStatus = requireElement<HTMLElement>('#storage-share-status');
   private readonly agentToolList = requireElement<HTMLElement>('#agent-tool-list');
+  private readonly pluginFolderList = requireElement<HTMLElement>('#plugin-folder-list');
 
   /**
    * @param settings The workspace settings.
@@ -231,6 +234,7 @@ export class MainApp implements McpSessionSink {
    * @param storageSetups The registered storage setups, for the add form.
    * @param chatSessions The chat session store of the workspace.
    * @param promptSources The registered system prompt sources, for the chat menu.
+   * @param pluginFolders The plugin folder controller, for the settings pane.
    */
   constructor(
     settings: WorkspaceSettings,
@@ -245,6 +249,7 @@ export class MainApp implements McpSessionSink {
     storageSetups: readonly StorageSetup[],
     chatSessions: ChatSessionStore,
     promptSources: readonly SystemPromptSetup[],
+    pluginFolders: PluginFolderController,
   ) {
     this.settings = settings;
     this.store = store;
@@ -258,6 +263,7 @@ export class MainApp implements McpSessionSink {
     this.storageSetups = storageSetups;
     this.chatSessions = chatSessions;
     this.promptSources = promptSources;
+    this.pluginFolders = pluginFolders;
     this.notificationHub.setChatNotifier((text) => {
       this.pushChatNotification(text);
     });
@@ -310,9 +316,13 @@ export class MainApp implements McpSessionSink {
     this.initializeMcpHostSection();
     this.initializeMcpEndpointsSection();
     this.initializeStorageShareSection();
+    // The gate loads its rules lazily on the first check. The rule-reading UI renders before any
+    // check runs, so it must await the load or it reads an empty list and shows every tool on ask.
+    await this.permissionGate?.ready();
     await this.seedAgentToolDefaults();
     // The direct render covers a launch that seeds nothing and fires no gate or connection event.
     this.renderAgentTools();
+    this.renderPluginFolders();
     this.initializeProviderSection();
     requireElement<HTMLButtonElement>('#app-close').addEventListener('click', () => {
       closeWindow();
@@ -925,6 +935,72 @@ export class MainApp implements McpSessionSink {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[NodeWavenUI] the state of the tool "${name}" could not be saved: ${message}`);
     }
+  }
+
+  /** Renders the plugin folder section: one row per folder of the app `plugins/` directory, with its switch. */
+  private renderPluginFolders(): void {
+    this.pluginFolderList.replaceChildren();
+    const states = this.pluginFolders.list();
+    if (states.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'status';
+      empty.textContent = 'No plugin folder found under plugins/ of the app.';
+      this.pluginFolderList.append(empty);
+      return;
+    }
+    for (const state of states) {
+      const row = document.createElement('div');
+      row.className = 'mcp-endpoint';
+      const name = document.createElement('span');
+      name.className = 'mcp-endpoint-label';
+      const versionText = state.version !== undefined ? ` ${state.version}` : '';
+      name.textContent = `${state.name}${versionText}`;
+      if (state.description !== undefined) {
+        name.title = state.description;
+      }
+      const detail = document.createElement('span');
+      detail.className = 'mcp-endpoint-transport';
+      detail.textContent = state.detail.length > 0 ? state.detail : this.pluginFolderStatusText(state.status);
+      if (state.status !== 'skipped') {
+        const select = document.createElement('select');
+        select.className = 'mcp-endpoint-mode';
+        select.title = 'Enable loads the plugin and pins its content digest. Disable keeps it out of the next start.';
+        for (const [value, label] of [
+          ['disabled', 'Disabled'],
+          ['enabled', 'Enabled'],
+        ] as const) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = label;
+          select.append(option);
+        }
+        select.value = state.enabled ? 'enabled' : 'disabled';
+        select.addEventListener('change', () => {
+          void this.setPluginFolderEnabled(state.id, select.value === 'enabled');
+        });
+        row.append(name, detail, select);
+      } else {
+        row.append(name, detail);
+      }
+      this.pluginFolderList.append(row);
+    }
+  }
+
+  /** The idle status text of one plugin folder state. */
+  private pluginFolderStatusText(status: 'disabled' | 'loaded' | 'reset' | 'failed' | 'skipped'): string {
+    if (status === 'loaded') {
+      return 'Loaded.';
+    }
+    if (status === 'failed') {
+      return 'The plugin failed to load.';
+    }
+    return 'Off.';
+  }
+
+  /** Writes one plugin folder switch through the controller and re-renders the rows. */
+  private async setPluginFolderEnabled(id: string, enabled: boolean): Promise<void> {
+    await this.pluginFolders.setEnabled(id, enabled);
+    this.renderPluginFolders();
   }
 
   /** Carries the tool rules of an endpoint over a label rename. A rule moves only when every one of its

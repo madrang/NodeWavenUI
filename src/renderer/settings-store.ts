@@ -5,6 +5,7 @@
  */
 
 import type { StorageBackend } from '../storage/storage.js';
+import type { StoredPluginFolders } from './plugin-folders.js';
 import { isMcpEndpoints, type McpEndpoints } from '../shared/mcp-endpoints.js';
 import { isPermissionRule, type PermissionRule } from '../shared/permissions.js';
 import { EMPTY_SHARED_STORAGES, isSharedStoragesRecord, type SharedStoragesRecord } from './storage-shares.js';
@@ -28,6 +29,7 @@ const FRAME_MODE_KEY = 'window-frame';
 const AGENT_TURN_LIMIT_KEY = 'agent-turn-limit';
 const CHAT_KEY_KEY = 'chat-key';
 const AGENT_TOOL_DEFAULTS_KEY = 'agent-tool-defaults';
+const PLUGIN_FOLDERS_KEY = 'plugin-folders';
 const MINIMUM_MCP_TOKEN_LENGTH = 16;
 const MAXIMUM_MCP_TOKEN_LENGTH = 256;
 
@@ -378,5 +380,50 @@ export class WorkspaceSettingsStore {
    */
   async saveAgentToolDefaults(seeded: boolean): Promise<void> {
     await this.backend.set(AGENT_TOOL_DEFAULTS_KEY, JSON.stringify(seeded));
+  }
+
+  /**
+   * Reads the enable flags and digests of the plugin folders. A damaged record reads as empty,
+   * so every plugin starts disabled and the user enables it again.
+   *
+   * @returns The record keyed by plugin folder name.
+   * @throws StorageError when the store fails.
+   */
+  async loadPluginFolders(): Promise<StoredPluginFolders> {
+    const raw = await this.backend.get(PLUGIN_FOLDERS_KEY);
+    if (raw === null) {
+      return {};
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the stored plugin folders are damaged and ignored: ${message}`);
+      return {};
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      console.warn('[NodeWavenUI] the stored plugin folders carry an invalid shape. They are ignored.');
+      return {};
+    }
+    const record: StoredPluginFolders = {};
+    for (const [folder, value] of Object.entries(parsed)) {
+      const candidate = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+      record[folder] = {
+        enabled: candidate.enabled === true,
+        ...(typeof candidate.digest === 'string' ? { digest: candidate.digest } : {}),
+      };
+    }
+    return record;
+  }
+
+  /**
+   * Writes the enable flags and digests of the plugin folders.
+   *
+   * @param record The record to persist, keyed by plugin folder name.
+   * @throws StorageError when the store fails.
+   */
+  async savePluginFolders(record: StoredPluginFolders): Promise<void> {
+    await this.backend.set(PLUGIN_FOLDERS_KEY, JSON.stringify(record));
   }
 }

@@ -36,6 +36,7 @@ src/
     settings-store.ts      the per-workspace settings store
     chat-sessions.ts       chat session persistence: one file per chat, sealed with a storage-held chat key on password workspaces
     system-prompts.ts      the built-in system prompt sources of the chat menu (AGENTS.md harness plus workspace, none)
+    plugin-folders.ts      the plugins/ folder scan, the manifest guard, the SHA-256 integrity gate, and the settings controller
     storage-setups.ts      the built-in storage setups for the wizard dropdown
     storage-shares.ts      read-only storage sharing with the chat agent
     storage-migration.ts   moves legacy backends forward

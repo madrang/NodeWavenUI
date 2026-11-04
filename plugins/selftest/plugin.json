@@ -1,0 +1,7 @@
+{
+  "id": "selftest",
+  "name": "Self Test",
+  "version": "0.1.0",
+  "description": "Runs the app self test in a child window through the specRunner page.",
+  "entry": "index.js"
+}

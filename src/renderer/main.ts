@@ -26,6 +26,10 @@ import { PermissionGate } from './permission-gate.js';
 import { PluginManager } from '../plugins.js';
 import { registerBuiltinStorageSetups } from './storage-setups.js';
 import { registerBuiltinSystemPromptSetups } from './system-prompts.js';
+import { BUILT_IN_HARNESS_DOC_URIS, setPluginHarnessDocs } from './doc-resources.js';
+import { readAppRootPath } from './node-context.js';
+import { PluginFolderController } from './plugin-folders.js';
+import { fileSystem } from './file-system.js';
 import { StorageShareRegistry } from './storage-shares.js';
 import { WorkspaceSettingsStore } from './settings-store.js';
 import { initializeTheme } from './theme.js';
@@ -35,8 +39,9 @@ import { ChildWindowManager } from './window-manager.js';
 /** The size the workspace window takes when no stored geometry restores. */
 const MAIN_WINDOW_SIZE = { width: 760, height: 680 } as const;
 
-/** The plugin registry of the workspace window, seeded with the built-in storage and system prompt setups. */
-const plugins = new PluginManager();
+/** The plugin registry of the workspace window, seeded with the built-in storage and system prompt setups.
+ * The built-in harness document uris come reserved, so a plugin document never shadows one. */
+const plugins = new PluginManager(BUILT_IN_HARNESS_DOC_URIS);
 registerBuiltinStorageSetups(plugins);
 registerBuiltinSystemPromptSetups(plugins);
 
@@ -94,6 +99,16 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     );
     childWindows.exposeMainWindow();
   }
+  const pluginFolders = new PluginFolderController(
+    plugins,
+    { load: () => store.loadPluginFolders(), save: (record) => store.savePluginFolders(record) },
+    readAppRootPath() ?? '',
+    fileSystem(),
+  );
+  await pluginFolders.initialize();
+  // The plugin documents join the harness list only while their plugin loaded, so a removed
+  // plugin folder leaves no dangling resource behind.
+  setPluginHarnessDocs(plugins.listHarnessDocs());
   const app = new MainApp(
     settings,
     store,
@@ -107,6 +122,7 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     plugins.listStorageSetups(),
     new ChatSessionStore(directory.path, store, setup.needsPassword),
     plugins.listSystemPromptSetups(),
+    pluginFolders,
   );
   // The workspace window closes only after every child window closed: NW.js keeps the process alive while
   // any window stays open, so a surviving child would wedge the app and the restart loop. NW.js fires

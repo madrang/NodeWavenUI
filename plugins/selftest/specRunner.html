@@ -1,0 +1,31 @@
+<!doctype html>
+<!--
+  The specRunner page of the selftest plugin: Jasmine runs the DOM specs of the app
+  inside the real NW.js engine. Open it in a child window with the window tools,
+  attach a session, and read the summary through the nodewavenSelftest page global.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NodeWavenUI Self Test</title>
+  <link rel="stylesheet" href="vendor/jasmine.css">
+  <style>
+    body { margin: 12px; font: 13px/1.45 system-ui, sans-serif; }
+    #selftest-summary { margin-bottom: 12px; font-weight: 600; }
+    #selftest-summary.failed { color: #d03030; }
+    #selftest-summary.passed { color: #1f7a1f; }
+    #selftest-results { list-style: none; margin: 0; padding: 0; }
+    .selftest-spec { padding: 3px 0; border-bottom: 1px solid #e4e4e4; }
+    .selftest-spec-name { font-weight: 500; }
+    .selftest-spec.failed .selftest-spec-name { color: #d03030; }
+    .selftest-spec-message { margin: 4px 0 0 18px; color: #7a1d1d; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <p id="selftest-summary">running…</p>
+  <ul id="selftest-results"></ul>
+  <script src="vendor/jasmine.js"></script>
+  <script src="specs/selftest.spec.js"></script>
+  <script src="boot.js"></script>
+</body>
+</html>
