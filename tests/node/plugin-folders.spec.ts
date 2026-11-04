@@ -148,6 +148,31 @@ describe('the integrity gate', () => {
       const state = controller.list().find((entry) => entry.id === 'selftest');
       expect(state?.status).to.equal('reset');
       expect(state?.enabled).to.equal(false);
+      // The reset state carries the stored digest beside the digest of the changed folder.
+      expect(state?.previousDigest).to.equal('0000');
+      expect(state?.digest).to.match(/^[0-9a-f]{64}$/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('shows the calculated digest of a folder that never enabled', async () => {
+    const { root, cleanup } = scratchAppRoot();
+    const stored: Record<string, { enabled: boolean; digest?: string }> = {};
+    const controller = new PluginFolderController(
+      new PluginManager(),
+      { load: async () => ({ ...stored }), save: async (record) => { Object.assign(stored, record); } },
+      root,
+      fs,
+    );
+    try {
+      writePlugin(root, 'selftest', { id: 'selftest', name: 'Self Test', entry: 'index.js' }, { 'index.js': 'module.exports = {};' });
+      await controller.initialize();
+      const state = controller.list().find((entry) => entry.id === 'selftest');
+      expect(state?.status).to.equal('disabled');
+      // A disabled row carries only the calculated digest of the current content.
+      expect(state?.digest).to.match(/^[0-9a-f]{64}$/);
+      expect(state?.previousDigest).to.equal(undefined);
     } finally {
       cleanup();
     }
@@ -196,12 +221,14 @@ describe('the enable switch', () => {
       expect(stored['selftest']?.digest).to.be.a('string');
       await controller.setEnabled('selftest', false);
       expect(stored['selftest']?.enabled).to.equal(false);
+      expect(controller.list().find((entry) => entry.id === 'selftest')?.digest).to.match(/^[0-9a-f]{64}$/);
       // The disable unloaded nothing, so the re-enable stores the flag without a second load.
       await controller.setEnabled('selftest', true);
       expect(loaded).to.have.lengthOf(1);
       expect(stored['selftest']?.enabled).to.equal(true);
       const state = controller.list().find((entry) => entry.id === 'selftest');
       expect(state?.status).to.equal('loaded');
+      expect(state?.digest).to.match(/^[0-9a-f]{64}$/);
     } finally {
       cleanup();
     }

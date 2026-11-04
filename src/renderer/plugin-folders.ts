@@ -210,6 +210,10 @@ export interface PluginFolderState {
   readonly version?: string;
   readonly description?: string;
   readonly enabled: boolean;
+  /** The SHA-256 digest of the folder content, computed from the current files. */
+  readonly digest?: string;
+  /** The stored digest that no longer matches the folder. The settings show it beside the new one on a reset. */
+  readonly previousDigest?: string;
   /** What the app did with the folder: the load state or the reason it stayed out. */
   readonly status: 'disabled' | 'loaded' | 'reset' | 'failed' | 'skipped';
   readonly detail: string;
@@ -243,24 +247,28 @@ export class PluginFolderController {
     const scan = scanPluginFolders(this.appRoot, this.fs);
     const stored = await this.store.load();
     for (const folder of scan.plugins) {
+      // Every accepted folder gets its digest computed, so every settings row shows one.
+      const digest = await hashPluginFolder(folder.folderPath, this.fs);
       const record = readStoredPluginFolder(stored[folder.folder]);
       if (!record.enabled) {
-        this.states.set(folder.manifest.id, this.stateOf(folder, false, 'disabled', ''));
+        this.states.set(folder.manifest.id, this.stateOf(folder, false, 'disabled', '', digest));
         continue;
       }
-      const digest = await hashPluginFolder(folder.folderPath, this.fs);
       if (record.digest !== digest) {
         stored[folder.folder] = { enabled: false };
         await this.store.save(stored);
-        this.states.set(folder.manifest.id, this.stateOf(folder, false, 'reset', 'The folder content changed, so the plugin reset to disabled.'));
+        this.states.set(
+          folder.manifest.id,
+          this.stateOf(folder, false, 'reset', 'The folder content changed, so the plugin reset to disabled.', digest, record.digest),
+        );
         continue;
       }
       try {
         await this.plugins.loadPlugin(`${folder.folderPath}/${folder.manifest.entry}`);
-        this.states.set(folder.manifest.id, this.stateOf(folder, true, 'loaded', ''));
+        this.states.set(folder.manifest.id, this.stateOf(folder, true, 'loaded', '', digest));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.states.set(folder.manifest.id, this.stateOf(folder, true, 'failed', `The plugin failed to load: ${message}`));
+        this.states.set(folder.manifest.id, this.stateOf(folder, true, 'failed', `The plugin failed to load: ${message}`, digest));
       }
     }
     for (const folder of scan.skipped) {
@@ -302,7 +310,8 @@ export class PluginFolderController {
     if (!enabled) {
       stored[folder.folder] = { enabled: false };
       await this.store.save(stored);
-      this.states.set(id, this.stateOf(folder, false, 'disabled', 'Loaded contributions leave at the next start.'));
+      const digest = await hashPluginFolder(folder.folderPath, this.fs);
+      this.states.set(id, this.stateOf(folder, false, 'disabled', 'Loaded contributions leave at the next start.', digest));
       return;
     }
     const digest = await hashPluginFolder(folder.folderPath, this.fs);
@@ -313,13 +322,13 @@ export class PluginFolderController {
         await this.plugins.loadPlugin(`${folder.folderPath}/${folder.manifest.entry}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.states.set(id, this.stateOf(folder, false, 'failed', `The plugin failed to load: ${message}`));
+        this.states.set(id, this.stateOf(folder, false, 'failed', `The plugin failed to load: ${message}`, digest));
         return;
       }
     }
     stored[folder.folder] = { enabled: true, digest };
     await this.store.save(stored);
-    this.states.set(id, this.stateOf(folder, true, 'loaded', ''));
+    this.states.set(id, this.stateOf(folder, true, 'loaded', '', digest));
   }
 
   private stateOf(
@@ -327,6 +336,8 @@ export class PluginFolderController {
     enabled: boolean,
     status: PluginFolderState['status'],
     detail: string,
+    digest?: string,
+    previousDigest?: string,
   ): PluginFolderState {
     return {
       id: folder.manifest.id,
@@ -334,6 +345,8 @@ export class PluginFolderController {
       ...(folder.manifest.version !== undefined ? { version: folder.manifest.version } : {}),
       ...(folder.manifest.description !== undefined ? { description: folder.manifest.description } : {}),
       enabled,
+      ...(digest !== undefined ? { digest } : {}),
+      ...(previousDigest !== undefined ? { previousDigest } : {}),
       status,
       detail,
     };

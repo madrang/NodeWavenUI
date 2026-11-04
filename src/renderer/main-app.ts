@@ -982,8 +982,24 @@ export class MainApp implements McpSessionSink {
       } else {
         row.append(name, detail);
       }
+      // A reset row shows the stored digest beside the digest of the changed folder, so the
+      // cause of the disabled state reads at a glance.
+      if (state.previousDigest !== undefined) {
+        row.append(this.pluginDigestLine(`sha256 old ${state.previousDigest}`));
+      }
+      if (state.digest !== undefined) {
+        row.append(this.pluginDigestLine(`sha256 ${state.previousDigest === undefined ? '' : 'new '}${state.digest}`));
+      }
       this.pluginFolderList.append(row);
     }
+  }
+
+  /** One SHA-256 line under a plugin folder row. */
+  private pluginDigestLine(text: string): HTMLElement {
+    const line = document.createElement('div');
+    line.className = 'plugin-folder-digest';
+    line.textContent = text;
+    return line;
   }
 
   /** The idle status text of one plugin folder state. */

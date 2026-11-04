@@ -929,6 +929,19 @@ body.framed #chat-tabs::after {
   width: auto;
 }
 
+/* The plugin folder rows wrap, so the digest lines sit under the label line. */
+#plugin-folder-list .mcp-endpoint {
+  flex-wrap: wrap;
+}
+
+/* One SHA-256 line under a plugin folder row. A reset row carries the old and the new digest. */
+.plugin-folder-digest {
+  flex-basis: 100%;
+  font: 11px/1.4 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  color: var(--muted);
+  word-break: break-all;
+}
+
 /* The json-viewer custom element: one collapsible JSON display.
    The token colors derive from the theme palette, so every theme carries the viewer. */
 json-viewer {
