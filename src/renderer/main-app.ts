@@ -285,7 +285,7 @@ export class MainApp implements McpSessionSink {
       this.renderAgentTools();
     });
     requireElement<HTMLElement>('#workspace-name').textContent = this.settings.name;
-    requireElement<HTMLElement>('#workspace-storage-mode').textContent = this.storageLabel;
+    requireElement<HTMLElement>('#workspace-storage-mode').textContent = `Setting storage: ${this.storageLabel}`;
     try {
       this.registry = await this.store.loadProviderRegistry();
     } catch (error) {

@@ -21,26 +21,74 @@
       <button id="app-close" class="tab tab-icon" type="button" title="Close">×</button>
     </header>
     <div id="pane-settings" class="pane">
-      <dl class="facts">
-        <dt>Workspace</dt><dd id="workspace-name"></dd>
-        <dt>Setting storage</dt><dd id="workspace-storage-mode"></dd>
-      </dl>
-      <label class="field">Theme
-        <select id="theme-select"></select>
-      </label>
-      <label class="field">Window frame
-        <select id="frame-mode-select"></select>
-      </label>
-      <label class="field">Agent tool rounds
-        <select id="agent-turns-select">
-          <option value="">No limit</option>
-          <option value="6">6 rounds</option>
-          <option value="12">12 rounds</option>
-          <option value="24">24 rounds</option>
-          <option value="48">48 rounds</option>
-        </select>
-      </label>
-      <p class="status">The window frame applies the next time the workspace window opens.</p>
+      <div class="workspace-title-row">
+        <p class="workspace-title-label">Workspace</p>
+        <h2 id="workspace-name" class="workspace-title"></h2>
+      </div>
+      <fieldset class="field" id="storage-share-section">
+        <legend>Storage</legend>
+        <p id="workspace-storage-mode" class="status"></p>
+        <div id="storage-share-list"></div>
+        <details id="storage-share-add" class="provider-add">
+          <summary>Add a shared storage</summary>
+          <form id="storage-share-add-form">
+            <label class="field">Label
+              <input id="storage-share-label" type="text" placeholder="Project files" autocomplete="off">
+            </label>
+            <label class="field">Kind
+              <select id="storage-share-setup"></select>
+            </label>
+            <div id="storage-share-fields"></div>
+            <label class="field">Chat agent access
+              <select id="storage-share-access">
+                <option value="none">Not shared</option>
+                <option value="readonly">Read-only</option>
+              </select>
+            </label>
+            <button type="submit" id="storage-share-add-submit" class="primary">Add storage</button>
+          </form>
+        </details>
+        <p id="storage-share-status" class="status" hidden></p>
+      </fieldset>
+      <fieldset class="field" id="workspace-settings-section">
+        <legend>Workspace</legend>
+        <label class="field">Theme
+          <select id="theme-select"></select>
+        </label>
+        <label class="field">Window frame
+          <select id="frame-mode-select"></select>
+        </label>
+        <label class="field">Agent tool rounds
+          <select id="agent-turns-select">
+            <option value="">No limit</option>
+            <option value="6">6 rounds</option>
+            <option value="12">12 rounds</option>
+            <option value="24">24 rounds</option>
+            <option value="48">48 rounds</option>
+          </select>
+        </label>
+        <p class="status">The window frame applies the next time the workspace window opens.</p>
+      </fieldset>
+      <section id="provider-section">
+        <h3>Provider</h3>
+        <div id="provider-list"></div>
+        <details id="provider-add" class="provider-add">
+          <summary>Add a provider</summary>
+          <form id="provider-add-form">
+            <label class="field">Label
+              <input id="provider-add-label" type="text" placeholder="Moonshot" autocomplete="off">
+            </label>
+            <label class="field">Endpoint base URL
+              <input id="provider-add-url" type="text" placeholder="https://api.moonshot.ai/v1" autocomplete="off" spellcheck="false">
+            </label>
+            <label class="field">API key
+              <input id="provider-add-key" type="password" autocomplete="off">
+            </label>
+            <button type="submit" id="provider-add-submit" class="primary" disabled>Add provider</button>
+          </form>
+        </details>
+        <p id="provider-status" class="status" hidden></p>
+      </section>
       <fieldset class="field" id="mcp-host-section" hidden>
         <legend>MCP host</legend>
         <p id="mcp-host-endpoint" class="status"></p>
@@ -87,60 +135,16 @@
         </details>
         <p id="mcp-endpoint-status" class="status" hidden></p>
       </fieldset>
-      <fieldset class="field" id="storage-share-section">
-        <legend>Storage sharing</legend>
-        <div id="storage-share-list"></div>
-        <details id="storage-share-add" class="provider-add">
-          <summary>Add a shared storage</summary>
-          <form id="storage-share-add-form">
-            <label class="field">Label
-              <input id="storage-share-label" type="text" placeholder="Project files" autocomplete="off">
-            </label>
-            <label class="field">Kind
-              <select id="storage-share-setup"></select>
-            </label>
-            <div id="storage-share-fields"></div>
-            <label class="field">Chat agent access
-              <select id="storage-share-access">
-                <option value="none">Not shared</option>
-                <option value="readonly">Read-only</option>
-              </select>
-            </label>
-            <button type="submit" id="storage-share-add-submit" class="primary">Add storage</button>
-          </form>
-        </details>
-        <p id="storage-share-status" class="status" hidden></p>
+      <fieldset class="field" id="plugin-folders-section">
+        <legend>Plugins</legend>
+        <p class="status">Folders under plugins/ of the app. Enable loads the plugin; a content change after that resets it to disabled.</p>
+        <div id="plugin-folder-list"></div>
       </fieldset>
       <fieldset class="field" id="agent-tools-section">
         <legend>Agent tools</legend>
         <p class="status">Every tool the chat agent may call. Ask prompts on first use, Allow skips the prompts, Disable hides the tool from the agent.</p>
         <div id="agent-tool-list"></div>
       </fieldset>
-      <fieldset class="field" id="plugin-folders-section">
-        <legend>Plugins</legend>
-        <p class="status">Folders under plugins/ of the app. Enable loads the plugin; a content change after that resets it to disabled.</p>
-        <div id="plugin-folder-list"></div>
-      </fieldset>
-      <section id="provider-section">
-        <h3>Provider</h3>
-        <div id="provider-list"></div>
-        <details id="provider-add" class="provider-add">
-          <summary>Add a provider</summary>
-          <form id="provider-add-form">
-            <label class="field">Label
-              <input id="provider-add-label" type="text" placeholder="Moonshot" autocomplete="off">
-            </label>
-            <label class="field">Endpoint base URL
-              <input id="provider-add-url" type="text" placeholder="https://api.moonshot.ai/v1" autocomplete="off" spellcheck="false">
-            </label>
-            <label class="field">API key
-              <input id="provider-add-key" type="password" autocomplete="off">
-            </label>
-            <button type="submit" id="provider-add-submit" class="primary" disabled>Add provider</button>
-          </form>
-        </details>
-        <p id="provider-status" class="status" hidden></p>
-      </section>
     </div>
     <div id="pane-chat" class="pane pane-chat" hidden>
       <div class="chat-scroll">
