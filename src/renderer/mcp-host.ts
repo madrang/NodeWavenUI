@@ -7,7 +7,9 @@
 
 import { listHarnessDocs, readHarnessDoc, HARNESS_DOC_MIME_TYPE } from './doc-resources.js';
 import { FRAME_MODES, isKnownFrameMode } from './frame-mode.js';
+import { isFrameKind, isFrameSide, type FrameManager } from './frames.js';
 import type { ChildWindowManager, WindowCaller } from './window-manager.js';
+import type { ChatImage } from '../providers/provider.js';
 import { requireNodeModule } from '../shared/node-access.js';
 import { asRecord } from '../shared/records.js';
 
@@ -32,8 +34,8 @@ export interface McpSessionSink {
   sessionOpened(sessionId: string, info: McpConnectionInfo): void;
   /** A session started one tool call. */
   toolCall(sessionId: string, toolName: string, args: Record<string, unknown>): void;
-  /** A session finished one tool call. The json payload carries the parsed object of one JSON reply, when present. */
-  toolResult(sessionId: string, toolName: string, summary: string, isError: boolean, json?: unknown): void;
+  /** A session finished one tool call. The json payload carries the parsed object of one JSON reply, when present. The images carry the image blocks of the reply, when present. */
+  toolResult(sessionId: string, toolName: string, summary: string, isError: boolean, json?: unknown, images?: readonly ChatImage[]): void;
   /** A session sent one JSON-RPC notification to the host. */
   clientNotification(sessionId: string, method: string, params: unknown): void;
 }
@@ -234,13 +236,15 @@ function childIdSchema(): Record<string, unknown> {
  * Two surfaces serve them: the MCP host over HTTP, and the chat agent registry as built-in tools.
  *
  * @param manager The child window manager the tools drive.
+ * @param frames The frame tiling manager, when the page carries the frame columns. Null serves no open_frame.
  * @returns The descriptors, each acting as the caller it receives.
  */
-export function createTools(manager: ChildWindowManager): McpToolDescriptor[] {
+export function createTools(manager: ChildWindowManager, frames: FrameManager | null = null): McpToolDescriptor[] {
   return [
     {
       name: 'list_windows',
-      description: 'Lists the tracked child windows with their ids, URLs, titles, and session states.',
+      description:
+        'Lists the tracked child windows and frames with their ids, URLs, titles, session states, kinds, and share states.',
       inputSchema: { type: 'object', properties: {} },
       handler: async () => textResult(JSON.stringify(manager.listChildren(), null, 2)),
     },
@@ -269,6 +273,41 @@ export function createTools(manager: ChildWindowManager): McpToolDescriptor[] {
           frame: optionalFrame(args),
         });
         return textResult(`Child window ${id} opened for ${url}.`);
+      },
+    },
+    {
+      name: 'open_frame',
+      description:
+        'Opens one embedded frame beside the chat and settings panes and returns the frame id. ' +
+        'kind iframe loads the address inside the workspace page and never attaches. ' +
+        'kind webview loads it in its own guest process with its own debug target, and attach_session needs ' +
+        'the share switch of its title bar on. The permission gate may queue an approval request.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'The address the frame loads. A relative path resolves against the app root.' },
+          kind: { type: 'string', enum: ['iframe', 'webview'], description: 'The embed kind of the frame.' },
+          side: { type: 'string', enum: ['left', 'right'], description: 'The column of the frame. Default right.' },
+          title: { type: 'string', description: 'The title the title bar shows. Default: the last path segment of the address.' },
+        },
+        required: ['url', 'kind'],
+      },
+      handler: async (args, caller) => {
+        if (!frames) {
+          throw new Error('The frame columns are not part of this page, so no frame opens here.');
+        }
+        const url = requireString(args, 'url');
+        const kind = args['kind'];
+        if (!isFrameKind(kind)) {
+          throw new Error('The argument "kind" must be "iframe" or "webview".');
+        }
+        const side = args['side'];
+        if (side !== undefined && !isFrameSide(side)) {
+          throw new Error('The argument "side" must be "left" or "right".');
+        }
+        const title = typeof args['title'] === 'string' && args['title'].length > 0 ? args['title'] : undefined;
+        const frame = await frames.openFrame(caller, { url, kind, ...(side !== undefined ? { side } : {}), ...(title !== undefined ? { title } : {}) });
+        return textResult(JSON.stringify(frame));
       },
     },
     {
@@ -425,6 +464,17 @@ function summarizeToolResult(result: McpToolResult): string {
   return joined.length > 240 ? `${joined.slice(0, 237)}…` : joined;
 }
 
+/** Reads the image blocks of one result, for the thumbnails of the session tab. */
+function imagesOfResult(result: McpToolResult): ChatImage[] {
+  const images: ChatImage[] = [];
+  for (const block of result.content) {
+    if (block.type !== 'text') {
+      images.push({ data: block.data, mimeType: block.mimeType });
+    }
+  }
+  return images;
+}
+
 /** Reads the JSON object of one result whose only content is one JSON text block, for the session tab viewer. */
 function jsonOfResult(result: McpToolResult): unknown {
   const block = result.content[0];
@@ -539,7 +589,7 @@ async function dispatchMcpMessage(
       const message = error instanceof Error ? error.message : String(error);
       result = { content: [{ type: 'text', text: message }], isError: true };
     }
-    context.sink.toolResult(context.sessionId, name, summarizeToolResult(result), result.isError === true, jsonOfResult(result));
+    context.sink.toolResult(context.sessionId, name, summarizeToolResult(result), result.isError === true, jsonOfResult(result), imagesOfResult(result));
     return { jsonrpc: '2.0', id, result };
   }
   return { jsonrpc: '2.0', id, error: { code: -32601, message: `The method "${method}" is unknown.` } };
@@ -621,6 +671,7 @@ async function handleMcpRequest(
  * The log states the endpoint but never the token.
  *
  * @param manager The child window manager the tools drive.
+ * @param frames The frame tiling manager, so the host serves open_frame.
  * @param config The listen configuration.
  * @param tokenStore The token persistence of the workspace.
  * @param sessionSink The sink that logs sessions and tool traffic into the main app.
@@ -629,6 +680,7 @@ async function handleMcpRequest(
  */
 export async function startMcpHost(
   manager: ChildWindowManager,
+  frames: FrameManager | null,
   config: McpHostConfig,
   tokenStore: McpHostTokenStore,
   sessionSink: McpSessionSink,
@@ -651,7 +703,7 @@ export async function startMcpHost(
   const token = accessToken;
   const fallbackSessionId = crypto.randomUUID();
   const knownSessions = new Set<string>();
-  const tools = createTools(manager);
+  const tools = createTools(manager, frames);
   const server = (createServer as NodeHttpModule['createServer'])((request, response) => {
     void handleMcpRequest(request, response, tools, token, fallbackSessionId, sessionSink, knownSessions);
   });

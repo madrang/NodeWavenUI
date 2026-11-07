@@ -11,16 +11,19 @@
 </head>
 <body>
   <section id="screen-main" class="screen" hidden>
-    <header id="tab-bar">
-      <button id="tab-settings" class="tab active" type="button">Settings</button>
-      <span id="chat-tabs">
-        <span id="chat-tab-list"></span>
-        <button id="new-chat" class="tab tab-icon" type="button" title="New chat">+</button>
-      </span>
-      <button id="app-minimize" class="tab tab-icon" type="button" title="Minimize">–</button>
-      <button id="app-close" class="tab tab-icon" type="button" title="Close">×</button>
-    </header>
-    <div id="pane-settings" class="pane">
+    <div id="frames-layout">
+      <div id="frames-left" class="frame-column" hidden></div>
+      <div id="frames-center">
+        <header id="tab-bar">
+          <button id="tab-settings" class="tab active" type="button">Settings</button>
+          <span id="chat-tabs">
+            <span id="chat-tab-list"></span>
+            <button id="new-chat" class="tab tab-icon" type="button" title="New chat">+</button>
+          </span>
+          <button id="app-minimize" class="tab tab-icon" type="button" title="Minimize">–</button>
+          <button id="app-close" class="tab tab-icon" type="button" title="Close">×</button>
+        </header>
+        <div id="pane-settings" class="pane">
       <div class="workspace-title-row">
         <p class="workspace-title-label">Workspace</p>
         <h2 id="workspace-name" class="workspace-title"></h2>
@@ -145,8 +148,8 @@
         <p class="status">Every tool the chat agent may call. Ask prompts on first use, Allow skips the prompts, Disable hides the tool from the agent.</p>
         <div id="agent-tool-list"></div>
       </fieldset>
-    </div>
-    <div id="pane-chat" class="pane pane-chat" hidden>
+        </div>
+        <div id="pane-chat" class="pane pane-chat" hidden>
       <div class="chat-scroll">
         <ol id="chat-messages"></ol>
         <button id="chat-jump-down" type="button" title="Jump to the latest message" hidden>↓</button>
@@ -159,6 +162,9 @@
         <button id="chat-stop" type="button" hidden>Stop</button>
       </form>
       <footer id="chat-status"></footer>
+        </div>
+      </div>
+      <div id="frames-right" class="frame-column" hidden></div>
     </div>
   </section>
 </body>

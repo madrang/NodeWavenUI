@@ -47,6 +47,7 @@ import {
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
 import type { PluginFolderController } from './plugin-folders.js';
+import type { FrameManager } from './frames.js';
 import { defaultSystemPromptSetup, NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
 import type { ChildWindowManager } from './window-manager.js';
 
@@ -147,6 +148,7 @@ export class MainApp implements McpSessionSink {
   private readonly storageLabel: string;
   private readonly permissionGate: PermissionGate | null;
   private readonly windowManager: ChildWindowManager;
+  private readonly frames: FrameManager;
   private readonly mcpClients: McpClientManager;
   private readonly notificationHub: NotificationHub;
   private readonly workspacePath: string;
@@ -227,6 +229,7 @@ export class MainApp implements McpSessionSink {
    * @param storageLabel The display label of the storage the workspace uses.
    * @param permissionGate The permission gate of the workspace, or null before one exists.
    * @param windowManager The child window manager the agent tools drive.
+   * @param frames The frame tiling manager, for the agent tools.
    * @param mcpClients The MCP client manager of the workspace.
    * @param notificationHub The notification hub of the workspace.
    * @param workspacePath The absolute path of the workspace directory.
@@ -242,6 +245,7 @@ export class MainApp implements McpSessionSink {
     storageLabel: string,
     permissionGate: PermissionGate | null,
     windowManager: ChildWindowManager,
+    frames: FrameManager,
     mcpClients: McpClientManager,
     notificationHub: NotificationHub,
     workspacePath: string,
@@ -256,6 +260,7 @@ export class MainApp implements McpSessionSink {
     this.storageLabel = storageLabel;
     this.permissionGate = permissionGate;
     this.windowManager = windowManager;
+    this.frames = frames;
     this.mcpClients = mcpClients;
     this.notificationHub = notificationHub;
     this.workspacePath = workspacePath;
@@ -1119,9 +1124,9 @@ export class MainApp implements McpSessionSink {
     this.appendMcpEntry(sessionId, 'user', toolName, args, toolName);
   }
 
-  /** McpSessionSink: one tool result of a session lands in the host tab, a JSON reply in the viewer. */
-  toolResult(sessionId: string, toolName: string, summary: string, isError: boolean, json?: unknown): void {
-    this.appendMcpEntry(sessionId, isError ? 'error' : 'assistant', summary, json, toolName);
+  /** McpSessionSink: one tool result of a session lands in the host tab, a JSON reply in the viewer, an image reply as thumbnails. */
+  toolResult(sessionId: string, toolName: string, summary: string, isError: boolean, json?: unknown, images?: readonly ChatImage[]): void {
+    this.appendMcpEntry(sessionId, isError ? 'error' : 'assistant', summary, json, toolName, images);
   }
 
   /** McpSessionSink: one notification a client sent the host reaches the hub. */
@@ -1129,13 +1134,14 @@ export class MainApp implements McpSessionSink {
     this.notificationHub.dispatch(method, params, `host-session ${sessionId.slice(0, 8)}`);
   }
 
-  private appendMcpEntry(sessionId: string, role: ChatEntry['role'], content: string, json?: unknown, toolName?: string): void {
+  private appendMcpEntry(sessionId: string, role: ChatEntry['role'], content: string, json?: unknown, toolName?: string, images?: readonly ChatImage[]): void {
     const chat = this.mcpHostTab() ?? this.createMcpHostTab();
     chat.entries.push({
       role,
       content,
       ...(json ? { json } : {}),
       ...(toolName ? { toolName } : {}),
+      ...(images && images.length > 0 ? { images } : {}),
       mcpSession: sessionId.slice(0, 8),
     });
     if (chat.id === this.activeChatId) {
@@ -1949,6 +1955,7 @@ export class MainApp implements McpSessionSink {
           },
         },
       mcpClients: this.mcpClients,
+      frames: this.frames,
       workspacePath: this.workspacePath,
       storageShares: this.storageShares,
       toolRules: () => this.permissionGate?.listRules() ?? [],
@@ -2570,6 +2577,9 @@ export class MainApp implements McpSessionSink {
         const body = document.createElement('span');
         body.textContent = reply.content;
         replySection.append(body);
+      }
+      if (reply.images && reply.images.length > 0) {
+        replySection.append(this.buildImageStrip(reply.images));
       }
       item.append(replySection);
     } else {

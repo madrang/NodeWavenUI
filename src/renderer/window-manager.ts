@@ -23,6 +23,10 @@ export interface ChildWindowInfo {
   readonly url: string;
   readonly title: string;
   readonly attached: boolean;
+  /** What the child is: a child window, or an embedded frame of the workspace window. */
+  readonly kind: 'window' | 'iframe' | 'webview';
+  /** Present on webview frames: true while the title bar share switch allows debug sessions. */
+  readonly shared?: boolean;
 }
 
 /** The normalized result of one evaluation in a child window. A returned object or array arrives as a parsed JSON value in `value`. */
@@ -80,10 +84,33 @@ interface DebugSession {
   readonly consoleEntries: ConsoleEntry[];
 }
 
+/**
+ * The embedded frame of one tracked child, when the child is a frame in the workspace window instead of a window.
+ * The frame manager builds one embed per panel and keeps it alive for the life of the frame.
+ */
+export interface FrameEmbed {
+  readonly kind: 'iframe' | 'webview';
+  /** True while the title bar share switch allows debug sessions. An iframe frame never attaches. */
+  shared: boolean;
+  /** Removes the panel of the frame from its column. */
+  readonly close: () => void;
+  /** Loads one address in the embed. */
+  readonly navigate: (url: string) => void;
+  /** Opens the DevTools of the embed, or null when the embed has none of its own. */
+  readonly openDevTools: (() => void) | null;
+  /** Reads the live title of the embed, or null when the embed exposes no document. */
+  readonly readTitle: () => string | null;
+  /** Injects the page globals, when the embed accepts them. A webview guest accepts none. */
+  readonly injectGlobals: (globals: Record<string, unknown>) => void;
+}
+
 /** The internal record of one tracked child window. */
 interface ChildRecord {
   readonly id: number;
-  readonly window: NwChildWindow;
+  /** The NW.js window handle, or null for an embedded frame of the workspace window. */
+  readonly window: NwChildWindow | null;
+  /** The embed, or null for a real child window. */
+  readonly frame: FrameEmbed | null;
   url: string;
   title: string;
   session: DebugSession | null;
@@ -341,7 +368,11 @@ export class ChildWindowManager {
     if (provider === null) {
       return;
     }
-    const dom = record.window.window;
+    if (record.frame) {
+      record.frame.injectGlobals(provider());
+      return;
+    }
+    const dom = record.window?.window;
     if (typeof dom !== 'object' || dom === null) {
       return;
     }
@@ -426,7 +457,16 @@ export class ChildWindowManager {
     }
     const id = this.nextChildId;
     this.nextChildId += 1;
-    const record: ChildRecord = { id, window: childWindow, url, title: '', session: null, attaching: false, devtoolsOpen: false };
+    const record: ChildRecord = {
+      id,
+      window: childWindow,
+      frame: null,
+      url,
+      title: '',
+      session: null,
+      attaching: false,
+      devtoolsOpen: false,
+    };
     this.children.set(id, record);
     childWindow.on('closed', () => {
       this.children.delete(id);
@@ -461,6 +501,7 @@ export class ChildWindowManager {
     const record: ChildRecord = {
       id,
       window: handle,
+      frame: null,
       url: globalThis.location.href,
       title: globalThis.document.title,
       session: null,
@@ -473,6 +514,73 @@ export class ChildWindowManager {
   }
 
   /**
+   * Checks one embedded frame open through the permission gate, the same check an open window action runs.
+   * The frame manager calls this before it builds the panel.
+   *
+   * @param caller The caller that opens the frame.
+   * @param url The address the frame loads.
+   * @throws Error when the permission pipeline denies the open.
+   */
+  async requireFrameOpen(caller: WindowCaller, url: string): Promise<void> {
+    await this.requirePermission(caller, 'open', url);
+  }
+
+  /**
+   * Registers one embedded frame of the workspace window as a tracked child.
+   * The frame manager builds the embed first and calls this after the open check passed.
+   *
+   * @param url The address the frame loads.
+   * @param title The title the title bar shows.
+   * @param embed The embed the frame manager owns.
+   * @returns The frame id, from the same id space as the child windows.
+   */
+  registerFrame(url: string, title: string, embed: FrameEmbed): number {
+    const id = this.nextChildId;
+    this.nextChildId += 1;
+    this.children.set(id, {
+      id,
+      window: null,
+      frame: embed,
+      url,
+      title,
+      session: null,
+      attaching: false,
+      devtoolsOpen: false,
+    });
+    this.notifyChange();
+    return id;
+  }
+
+  /**
+   * Notes the address a frame committed, from a loadcommit event of its embed.
+   * The record URL then tracks every navigation of the guest, including the ones no tool drove.
+   *
+   * @param id The frame id.
+   * @param url The committed address.
+   */
+  noteFrameUrl(id: number, url: string): void {
+    const record = this.children.get(id);
+    if (!record?.frame) {
+      return;
+    }
+    record.url = url;
+    this.notifyChange();
+  }
+
+  /**
+   * Drops one frame record after its panel left the page. A frame the manager already
+   * removed through `closeChild` is unknown here, and that does nothing.
+   *
+   * @param id The frame id.
+   */
+  unregisterFrame(id: number): void {
+    if (this.children.get(id)?.frame) {
+      this.children.delete(id);
+      this.notifyChange();
+    }
+  }
+
+  /**
    * Lists the tracked child windows with their current URL and title.
    *
    * @returns The public view of every child, in open order.
@@ -481,7 +589,14 @@ export class ChildWindowManager {
     const infos: ChildWindowInfo[] = [];
     for (const record of this.children.values()) {
       this.refreshRecord(record);
-      infos.push({ id: record.id, url: record.url, title: record.title, attached: record.session !== null });
+      infos.push({
+        id: record.id,
+        url: record.url,
+        title: record.title,
+        attached: record.session !== null,
+        kind: record.frame ? record.frame.kind : 'window',
+        ...(record.frame?.kind === 'webview' ? { shared: record.frame.shared } : {}),
+      });
     }
     return infos;
   }
@@ -507,7 +622,11 @@ export class ChildWindowManager {
         console.warn(`[NodeWavenUI] the debug session of child ${id} did not detach cleanly: ${message}`);
       });
     }
-    record.window.close();
+    if (record.frame) {
+      record.frame.close();
+    } else {
+      record.window?.close();
+    }
     this.notifyChange();
   }
 
@@ -548,6 +667,18 @@ export class ChildWindowManager {
       return;
     }
     await this.requirePermission(caller, 'attach', record.url);
+    // The frame checks run after the permission pipeline, so a rule or a user prompt speaks first.
+    // A webview frame that is not shared denies even an approved attach.
+    if (record.frame) {
+      if (record.frame.kind !== 'webview') {
+        throw new Error('An iframe frame shares the debug target of the workspace window. Attach runs on webview frames only.');
+      }
+      if (!record.frame.shared) {
+        throw new Error(
+          `Permission denied: the webview frame "${record.title}" is not shared. Turn on sharing in its title bar.`,
+        );
+      }
+    }
     const principal = caller.principal;
     const debug = this.debug;
     if (debug === null) {
@@ -716,7 +847,11 @@ export class ChildWindowManager {
       }, 1500);
       return;
     }
-    record.window.eval(null, `location.href = ${JSON.stringify(url)};`);
+    if (record.frame) {
+      record.frame.navigate(url);
+    } else {
+      record.window?.eval(null, `location.href = ${JSON.stringify(url)};`);
+    }
     record.url = url;
     window.setTimeout(() => {
       this.reinjectPageGlobals();
@@ -752,7 +887,18 @@ export class ChildWindowManager {
         console.warn(`[NodeWavenUI] the debug session of child ${id} did not detach cleanly: ${message}`);
       }
     }
-    const showDevTools = record.window.showDevTools;
+    if (record.frame) {
+      // A webview guest carries its own DevTools; an iframe frame has none apart from the workspace window.
+      // Opening DevTools on an attached guest ends the session on its own, so no flag blocks the next attach.
+      const open = record.frame.openDevTools;
+      if (open === null) {
+        throw new Error('An iframe frame shares the DevTools of the workspace window. Open DevTools on the workspace window instead.');
+      }
+      open();
+      this.notifyChange();
+      return;
+    }
+    const showDevTools = record.window?.showDevTools;
     if (showDevTools === undefined) {
       throw new Error('DevTools are not available. Start the SDK build of NW.js.');
     }
@@ -799,12 +945,17 @@ export class ChildWindowManager {
 
   /**
    * Finds the free debug target of one child window.
-   * Two children that show the same URL cannot be told apart. The first unattached match wins.
+   * A webview frame reports one target of type "other", every other child one of type "page".
+   * The type check stays strict on both paths, so a frame never matches a page target and no
+   * page ever matches a frame target. The exact URL equality keeps unrelated "other" targets,
+   * for example the chrome omnibox, out. Two children that show the same URL cannot be told
+   * apart. The first unattached match wins.
    */
   private async resolveTargetId(debug: DebuggerBinding, record: ChildRecord): Promise<string> {
     const raw = await debuggerCall<unknown>(debug, (done) => debug.api.getTargets(done));
+    const expectedType = record.frame?.kind === 'webview' ? 'other' : 'page';
     const targets = coerceTargets(raw).filter(
-      (target) => target.type === 'page' && target.url === record.url && !target.attached,
+      (target) => target.type === expectedType && target.url === record.url && !target.attached,
     );
     const match = targets[0];
     if (match === undefined) {
@@ -813,9 +964,16 @@ export class ChildWindowManager {
     return match.id;
   }
 
-  /** Reads the current URL and title from the DOM of the child window. */
+  /** Reads the current URL and title from the DOM of the child window. A frame reads its embed. */
   private refreshRecord(record: ChildRecord): void {
-    const dom = record.window.window;
+    if (record.frame) {
+      const title = record.frame.readTitle();
+      if (title !== null && title.length > 0) {
+        record.title = title;
+      }
+      return;
+    }
+    const dom = record.window?.window;
     if (typeof dom !== 'object' || dom === null) {
       return;
     }

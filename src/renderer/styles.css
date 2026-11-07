@@ -507,6 +507,138 @@ body.framed #chat-tabs::after {
   font-weight: 600;
 }
 
+/* Main screen: the frame tiling layout. The columns sit beside the panes and stay hidden while empty. */
+#frames-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+#frames-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.frame-column {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 340px;
+  min-width: 220px;
+  padding: 8px;
+  overflow: auto;
+}
+
+/* One embedded frame: a title bar over the content. */
+.frame-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 140px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.frame-panel.collapsed {
+  flex: none;
+  min-height: 0;
+}
+
+.frame-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--field);
+  flex: none;
+}
+
+.frame-panel.collapsed .frame-titlebar {
+  border-bottom: 0;
+}
+
+.frame-kind {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 7px;
+}
+
+.frame-kind.webview {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.frame-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* The share switch of a webview frame: off denies every debug attach. */
+.frame-share {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.frame-share[aria-pressed='true'] {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.frame-hide,
+.frame-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.frame-content {
+  flex: 1;
+  min-height: 0;
+  background: var(--field);
+}
+
+.frame-panel.collapsed .frame-content {
+  display: none;
+}
+
+.frame-content iframe,
+.frame-content webview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg);
+}
+
 #provider-form {
   max-width: 420px;
 }

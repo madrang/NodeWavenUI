@@ -12,6 +12,7 @@ import { readHarnessDoc } from './doc-resources.js';
 import { fileSystem } from './file-system.js';
 import { createTools, type McpToolResult } from './mcp-host.js';
 import type { McpClientManager } from './mcp-client/manager.js';
+import type { FrameManager } from './frames.js';
 import type { StorageShareRegistry } from './storage-shares.js';
 import type { ChildWindowManager, WindowCaller } from './window-manager.js';
 
@@ -85,6 +86,8 @@ export interface AgentToolDeps {
   readonly windowManager: ChildWindowManager;
   readonly gate: PermissionCheck;
   readonly mcpClients: McpClientManager;
+  /** The frame tiling manager. Null pages serve no open_frame tool. */
+  readonly frames: FrameManager | null;
   /** The absolute path of the workspace directory. `read` serves file URIs inside it only. */
   readonly workspacePath: string;
   /** The storage sharing of the workspace. `read` serves the storages shared read-only. */
@@ -235,8 +238,12 @@ export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
   const tools: AgentTool[] = [createEvaluateTool(deps), createReadTool(deps)];
   // The chat agent carries the same window tools the MCP host serves, acting as the agent principal.
   // The built-in evaluate above covers the host evaluate, so its descriptor is skipped.
-  for (const descriptor of createTools(deps.windowManager)) {
+  // A page without the frame columns serves no open_frame.
+  for (const descriptor of createTools(deps.windowManager, deps.frames)) {
     if (descriptor.name === 'evaluate') {
+      continue;
+    }
+    if (descriptor.name === 'open_frame' && !deps.frames) {
       continue;
     }
     tools.push({

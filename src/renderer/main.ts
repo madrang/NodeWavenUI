@@ -29,6 +29,7 @@ import { registerBuiltinSystemPromptSetups } from './system-prompts.js';
 import { BUILT_IN_HARNESS_DOC_URIS, setPluginHarnessDocs } from './doc-resources.js';
 import { readAppRootPath } from './node-context.js';
 import { PluginFolderController } from './plugin-folders.js';
+import { FrameManager } from './frames.js';
 import { fileSystem } from './file-system.js';
 import { StorageShareRegistry } from './storage-shares.js';
 import { WorkspaceSettingsStore } from './settings-store.js';
@@ -109,12 +110,14 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   // The plugin documents join the harness list only while their plugin loaded, so a removed
   // plugin folder leaves no dangling resource behind.
   setPluginHarnessDocs(plugins.listHarnessDocs());
+  const frames = new FrameManager(childWindows, globalThis.location.origin);
   const app = new MainApp(
     settings,
     store,
     storageLabelFor(settings),
     permissionGate,
     childWindows,
+    frames,
     mcpClients,
     notificationHub,
     directory.path,
@@ -148,8 +151,8 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   let mcpHost: McpHostHandle | null = null;
   try {
     const config = mcpHostConfigFromProcess();
-    if (config !== null) {
-      mcpHost = await startMcpHost(childWindows, config, store, app);
+    if (config) {
+      mcpHost = await startMcpHost(childWindows, frames, config, store, app);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

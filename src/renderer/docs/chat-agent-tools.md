@@ -18,7 +18,9 @@ The user pastes or drops images into the chat: they arrive as thumbnails above t
 
 # Window tools
 
-The agent carries the same window tools the MCP host serves: `list_windows`, `open_window`, `close_window`, `attach_session`, `detach_session`, `screenshot`, `console_entries`, `clear_console`, `navigate`, and `open_devtools`. The arguments match `harness:///nodewavenui/mcp-host-tools.md`. They act as the `agent` principal, so the mutating ones show the same approval cards in the chat. `screenshot` returns the image to a vision model as an image part; a text-only model reads the note in the result text.
+The agent carries the same window tools the MCP host serves: `list_windows`, `open_window`, `open_frame`, `close_window`, `attach_session`, `detach_session`, `screenshot`, `console_entries`, `clear_console`, `navigate`, and `open_devtools`. The arguments match `harness:///nodewavenui/mcp-host-tools.md`. They act as the `agent` principal, so the mutating ones show the same approval cards in the chat. `screenshot` returns the image to a vision model as an image part; a text-only model reads the note in the result text.
+
+`open_frame` embeds a frame beside the chat and settings panes. An `iframe` frame loads app content but never attaches. A `webview` frame runs its own guest process with its own debug target, and `attach_session` on it still fails while the user keeps the share switch of its title bar off.
 
 # Approval cards
 

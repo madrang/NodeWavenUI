@@ -17,6 +17,11 @@
     "resizable": false
   },
   "chromium-args": "--enable-logging=stderr --silent-debugger-extension-api",
+  "webview": {
+    "partitions": [
+      { "name": "trusted", "accessible_resources": ["<all_urls>"] }
+    ]
+  },
   "scripts": {
     "build": "tsc -b && node scripts/copy-assets.mjs",
     "watch": "node scripts/copy-assets.mjs && tsc -b --watch",
