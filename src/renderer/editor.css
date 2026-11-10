@@ -40,13 +40,14 @@ body {
   overflow: auto;
 }
 
-/* The gutter carries one number per logical line. The script positions each number at the top of its line. */
+/* The gutter carries one number per logical line. The script positions each number at the top of its line,
+   and the shared font metrics keep each digit on the baseline of the line it numbers. */
 #editor-gutter {
   position: relative;
   flex: none;
   padding: 8px 0;
   color: var(--muted);
-  font: 12px/1.5 ui-monospace, Consolas, monospace;
+  font: 13px/1.5 ui-monospace, Consolas, monospace;
   text-align: right;
   user-select: none;
 }

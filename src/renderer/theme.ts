@@ -4,8 +4,9 @@
  * folder and the user-owned `themes` folder in the app root. A file `my-color.css` carries the theme id
  * "my-color" and must set the palette variables under `:root[data-theme='my-color']` (see the built-in
  * files for the variable list). A user file named like a built-in overrides it. The workspace settings
- * store holds the chosen theme id, and an absent or unknown id falls back to "dark-gray". NW.js exposes
- * no API for system colors, so the app owns its palette.
+ * store holds the chosen theme id, and an absent or unknown id falls back to "dark-gray". No platform
+ * API for system colors exists, so the app owns its palette. Every page calls `initializeTheme` before
+ * it renders, because the discovery reads the filesystem over the bridge.
  */
 
 import { joinPath, listDirectoryNames, readTextFile } from './file-system.js';
@@ -17,6 +18,30 @@ export interface ThemeDefinition {
   readonly label: string;
 }
 
+/** One discovered theme: the id, the label, the absolute file it came from, and whether the user folder owns it. */
+interface DiscoveredTheme {
+  readonly id: string;
+  readonly label: string;
+  readonly file: string;
+  readonly fromUserFolder: boolean;
+}
+
+/** One themes folder the discovery reads. */
+interface ThemeFolder {
+  readonly directory: string;
+  readonly warnOnFailure: boolean;
+  readonly fromUserFolder: boolean;
+}
+
+/** Every registered theme, in id order. `initializeTheme` fills it. */
+export const THEMES: ThemeDefinition[] = [];
+
+/** The theme the app uses when the settings store holds no theme or an unknown one. */
+export const DEFAULT_THEME_ID = 'dark-gray';
+
+/** The local storage key that mirrors the applied theme, so same-origin app pages follow the active theme. */
+export const THEME_MIRROR_KEY = 'app-theme';
+
 /**
  * Lists the CSS file names of one themes folder.
  *
@@ -24,9 +49,9 @@ export interface ThemeDefinition {
  * @param warnOnFailure True for the built-in folder, whose absence means a broken install. A missing user folder is the normal case.
  * @returns The file names sorted, or an empty list when the folder is missing or unreadable.
  */
-function listThemeFiles(directory: string, warnOnFailure: boolean): readonly string[] {
-  const names = listDirectoryNames(directory);
-  if (names === null) {
+async function listThemeFiles(directory: string, warnOnFailure: boolean): Promise<readonly string[]> {
+  const names = await listDirectoryNames(directory);
+  if (!names) {
     if (warnOnFailure) {
       console.warn(`[NodeWavenUI] the themes folder "${directory}" could not be read.`);
     }
@@ -42,53 +67,6 @@ function labelOf(id: string): string {
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(' ');
 }
-
-/** One discovered theme: the id, the label, the absolute file it came from, and whether the user folder owns it. */
-interface DiscoveredTheme {
-  readonly id: string;
-  readonly label: string;
-  readonly file: string;
-  readonly fromUserFolder: boolean;
-}
-
-/**
- * Discovers the themes from the built-in folder and the user folder.
- * A user file named like a built-in replaces the built-in entry.
- *
- * @returns The themes sorted by id, or an empty list outside NW.js.
- */
-function discoverThemes(): readonly DiscoveredTheme[] {
-  const root = readAppRootPath();
-  if (root === null) {
-    console.warn('[NodeWavenUI] the app root could not be read, the theme discovery found nothing.');
-    return [];
-  }
-  const folders: readonly { readonly directory: string; readonly warnOnFailure: boolean; readonly fromUserFolder: boolean }[] = [
-    { directory: joinPath(root, 'dist/renderer/themes'), warnOnFailure: true, fromUserFolder: false },
-    { directory: joinPath(root, 'themes'), warnOnFailure: false, fromUserFolder: true },
-  ];
-  const byId = new Map<string, DiscoveredTheme>();
-  for (const folder of folders) {
-    for (const name of listThemeFiles(folder.directory, folder.warnOnFailure)) {
-      const id = name.slice(0, -'.css'.length);
-      if (id.length > 0) {
-        byId.set(id, { id, label: labelOf(id), file: joinPath(folder.directory, name), fromUserFolder: folder.fromUserFolder });
-      }
-    }
-  }
-  return [...byId.values()].sort((first, second) => (first.id < second.id ? -1 : first.id > second.id ? 1 : 0));
-}
-
-const discovered = discoverThemes();
-
-/** Every registered theme, in id order. */
-export const THEMES: readonly ThemeDefinition[] = discovered.map((theme) => ({ id: theme.id, label: theme.label }));
-
-/** The theme the app uses when the settings store holds no theme or an unknown one. */
-export const DEFAULT_THEME_ID = 'dark-gray';
-
-/** The local storage key that mirrors the applied theme, so same-origin app pages follow the active theme. */
-export const THEME_MIRROR_KEY = 'app-theme';
 
 /**
  * Checks that a value names a registered theme.
@@ -122,18 +100,41 @@ export function applyTheme(themeId: string): void {
 }
 
 /**
- * Applies the default theme at startup, before any workspace opens.
+ * Discovers the themes from the built-in folder and the user folder, fills the registry, injects
+ * the style elements, and applies the default theme. A user file named like a built-in replaces
+ * the built-in entry and lands after the static link, so it overrides it.
  */
-export function initializeTheme(): void {
+export async function initializeTheme(): Promise<void> {
   applyTheme(DEFAULT_THEME_ID);
-}
-
-/**
- * Injects one style element per discovered theme, except the built-in files the page already links.
- * The user folder sits outside the extension, so the page reads the file text instead of linking it.
- * An injected user theme lands after the static link, so it overrides a built-in with the same name.
- */
-function injectThemeStyles(): void {
+  const root = await readAppRootPath();
+  if (!root) {
+    console.warn('[NodeWavenUI] the app root could not be read, the theme discovery found nothing.');
+    return;
+  }
+  const folders: readonly ThemeFolder[] = [
+    { directory: joinPath(root, 'dist/renderer/themes'), warnOnFailure: true, fromUserFolder: false },
+    { directory: joinPath(root, 'themes'), warnOnFailure: false, fromUserFolder: true },
+  ];
+  const byId = new Map<string, DiscoveredTheme>();
+  for (const folder of folders) {
+    for (const name of await listThemeFiles(folder.directory, folder.warnOnFailure)) {
+      const id = name.slice(0, -'.css'.length);
+      if (id.length > 0) {
+        byId.set(id, {
+          id,
+          label: labelOf(id),
+          file: joinPath(folder.directory, name),
+          fromUserFolder: folder.fromUserFolder,
+        });
+      }
+    }
+  }
+  const discovered = [...byId.values()].sort((first, second) =>
+    first.id < second.id ? -1 : first.id > second.id ? 1 : 0,
+  );
+  THEMES.length = 0;
+  THEMES.push(...discovered.map((theme) => ({ id: theme.id, label: theme.label })));
+  applyTheme(localStorage.getItem(THEME_MIRROR_KEY) ?? DEFAULT_THEME_ID);
   const linked = new Set(
     Array.from(document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"]')).map((link) => link.getAttribute('href')),
   );
@@ -142,8 +143,8 @@ function injectThemeStyles(): void {
     if (!theme.fromUserFolder && linked.has(`themes/${name}`)) {
       continue;
     }
-    const text = readTextFile(theme.file);
-    if (text === null) {
+    const text = await readTextFile(theme.file);
+    if (!text) {
       console.warn(`[NodeWavenUI] the theme file "${theme.file}" could not be loaded.`);
       continue;
     }
@@ -153,5 +154,3 @@ function injectThemeStyles(): void {
     document.head.append(style);
   }
 }
-
-injectThemeStyles();

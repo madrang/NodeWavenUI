@@ -1,20 +1,21 @@
 /**
- * The tools of the chat agent. The registry joins the built-ins (`evaluate`, `read`) with the window
- * tools the MCP host serves, and with the native tools of the connected MCP endpoints, named
- * `<sanitized-label>.<tool>`.
- * The `evaluate` tool wraps the same window-manager call the MCP host uses, with the `agent` principal,
- * so it runs in child windows only unless `--expose-main-window` was passed at launch.
+ * The tools of the chat agent. The registry joins the built-in `read` tool with the window
+ * tools the main process serves over the bridge, and with the native tools of the connected
+ * MCP endpoints, named `<sanitized-label>.<tool>`.
+ * Every window tool runs in the main process with the `agent` principal, so the same
+ * permission cards and rules govern it.
  */
 
 import type { ChatImage, ToolDefinition } from '../providers/provider.js';
 import type { PermissionRule, PrincipalKind, PermissionTarget } from '../shared/permissions.js';
+import { CHAT_AGENT_SOURCE } from '../shared/permissions.js';
+import { readBridge } from '../shared/bridge.js';
+import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
 import { readHarnessDoc } from './doc-resources.js';
-import { fileSystem } from './file-system.js';
-import { createTools, type McpToolResult } from './mcp-host.js';
-import type { McpClientManager } from './mcp-client/manager.js';
-import type { FrameManager } from './frames.js';
+import { readTextFile } from './file-system.js';
+import type { McpToolResult } from '../shared/window-tools.js';
+import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { StorageShareRegistry } from './storage-shares.js';
-import type { ChildWindowManager, WindowCaller } from './window-manager.js';
 
 /** The permission check the tools need. The PermissionGate of the workspace implements it. */
 export interface PermissionCheck {
@@ -28,15 +29,7 @@ export interface PermissionCheck {
   ): Promise<void>;
 }
 
-/** The origin the chat agent's permission requests carry, so the chat pane routes them. */
-export const CHAT_AGENT_SOURCE = 'chat-agent';
-
-/** The caller every chat-agent tool acts as. */
-const CHAT_AGENT_CALLER: WindowCaller = { principal: 'agent', source: CHAT_AGENT_SOURCE };
-
-/** The caller of a tool whose allow rule already covered the call, so the ask defaults of the window
- * checks turn into allow. Deny rules at the window layer still block. */
-const PREAUTHORIZED_AGENT_CALLER: WindowCaller = { principal: 'agent', source: CHAT_AGENT_SOURCE, preauthorized: true };
+export { CHAT_AGENT_SOURCE };
 
 /**
  * Reads the first rule that governs one agent tool: resource `tool`, the agent principal, the tool name.
@@ -83,11 +76,8 @@ export interface AgentTool {
 
 /** The dependencies the built-in tools need. */
 export interface AgentToolDeps {
-  readonly windowManager: ChildWindowManager;
   readonly gate: PermissionCheck;
-  readonly mcpClients: McpClientManager;
-  /** The frame tiling manager. Null pages serve no open_frame tool. */
-  readonly frames: FrameManager | null;
+  readonly mcpClients: McpClientSurface;
   /** The absolute path of the workspace directory. `read` serves file URIs inside it only. */
   readonly workspacePath: string;
   /** The storage sharing of the workspace. `read` serves the storages shared read-only. */
@@ -96,12 +86,13 @@ export interface AgentToolDeps {
   readonly toolRules: () => readonly PermissionRule[];
 }
 
-function readWorkspaceFile(path: string): string {
-  const nodeFs = fileSystem();
-  if (nodeFs === null) {
-    throw new Error('The filesystem is not reachable. Start the app under NW.js.');
+async function readWorkspaceFile(path: string): Promise<string> {
+  const text = await readTextFile(path);
+  // eslint-disable-next-line local/prefer-truthiness -- an empty file reads as an empty string, only a failed read throws
+  if (text === null) {
+    throw new Error(`The file ${path} could not be read.`);
   }
-  return nodeFs.readFileSync(path, 'utf-8');
+  return text;
 }
 
 /** Reads one file URI, after the permission pipeline allows the path. An allow rule on the read tool
@@ -174,35 +165,30 @@ function createReadTool(deps: AgentToolDeps): AgentTool {
   };
 }
 
-function createEvaluateTool(deps: AgentToolDeps): AgentTool {
+/** Builds one window tool of the chat agent: the shared definition wrapped over the bridge. */
+function createWindowTool(definition: {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: Record<string, unknown>;
+}): AgentTool {
   return {
-    name: 'evaluate',
-    description:
-      'Evaluates one JavaScript expression in one child window. Requires an attached debug session. The page global nodewavenMcp reaches the MCP endpoints of the app. The first use on one window asks for permission.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        childId: { type: 'integer', description: 'The id of the child window.' },
-        expression: { type: 'string', description: 'The JavaScript source to run. A promise result is awaited.' },
-      },
-      required: ['childId', 'expression'],
-      additionalProperties: false,
-    },
+    name: definition.name,
+    description: definition.description,
+    inputSchema: definition.inputSchema,
     run: async (args) => {
-      const childId = args.childId;
-      const expression = args.expression;
-      if (typeof childId !== 'number' || !Number.isInteger(childId)) {
-        throw new Error('The evaluate tool needs a childId integer.');
+      const bridge = readBridge();
+      if (!bridge) {
+        throw new Error('The window tools need the nodewavenui bridge of an app window.');
       }
-      if (typeof expression !== 'string' || expression.length === 0) {
-        throw new Error('The evaluate tool needs an expression string.');
+      const result = (await bridge.workspace.runWindowTool(definition.name, args)) as McpToolResult | null;
+      if (result === null || typeof result !== 'object') {
+        throw new Error(`The tool "${definition.name}" returned no result.`);
       }
-      deps.windowManager.ensurePageGlobals(childId);
-      // An allow rule on the evaluate tool preauthorizes the window check, so the call never prompts twice.
-      const caller =
-        agentToolRule('evaluate', deps.toolRules())?.effect === 'allow' ? PREAUTHORIZED_AGENT_CALLER : CHAT_AGENT_CALLER;
-      const result = await deps.windowManager.evaluate(caller, childId, expression);
-      return { text: JSON.stringify(result) };
+      if (result.isError) {
+        const text = result.content.find((block) => block.type === 'text')?.text ?? 'The tool failed.';
+        throw new Error(text);
+      }
+      return windowToolOutput(result);
     },
   };
 }
@@ -222,11 +208,11 @@ function windowToolOutput(result: McpToolResult): AgentToolOutput {
 }
 
 /**
- * Builds the tool list of the chat agent: the built-ins, the window tools of the MCP host, and the
- * native tools of the connected endpoints. A deny rule on a tool keeps it out of the list, so the
- * provider never sees it.
+ * Builds the tool list of the chat agent: the built-in `read` tool, the window tools of the
+ * main process, and the native tools of the connected endpoints. A deny rule on a tool keeps
+ * it out of the list, so the provider never sees it.
  *
- * @param deps The window manager, the permission gate, the MCP client manager, and the workspace storage facts.
+ * @param deps The permission gate, the MCP client manager, and the workspace storage facts.
  * @returns The tools, in build order, without the disabled ones.
  */
 export function buildAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
@@ -235,30 +221,10 @@ export function buildAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
 
 /** The full tool list of the chat agent, disabled tools included, for the settings matrix. */
 export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
-  const tools: AgentTool[] = [createEvaluateTool(deps), createReadTool(deps)];
+  const tools: AgentTool[] = [createReadTool(deps)];
   // The chat agent carries the same window tools the MCP host serves, acting as the agent principal.
-  // The built-in evaluate above covers the host evaluate, so its descriptor is skipped.
-  // A page without the frame columns serves no open_frame.
-  for (const descriptor of createTools(deps.windowManager, deps.frames)) {
-    if (descriptor.name === 'evaluate') {
-      continue;
-    }
-    if (descriptor.name === 'open_frame' && !deps.frames) {
-      continue;
-    }
-    tools.push({
-      name: descriptor.name,
-      description: descriptor.description,
-      inputSchema: descriptor.inputSchema,
-      run: (args) => {
-        // An allow rule on the tool preauthorizes its window checks, so one call never prompts twice.
-        const caller =
-          agentToolRule(descriptor.name, deps.toolRules())?.effect === 'allow'
-            ? PREAUTHORIZED_AGENT_CALLER
-            : CHAT_AGENT_CALLER;
-        return descriptor.handler(args, caller).then(windowToolOutput);
-      },
-    });
+  for (const definition of WINDOW_TOOL_DEFINITIONS) {
+    tools.push(createWindowTool(definition));
   }
   for (const native of deps.mcpClients.nativeTools()) {
     tools.push({

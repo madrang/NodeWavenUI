@@ -29,7 +29,7 @@ const editContext: EditContext | null = typeof EditContext !== 'undefined' ? new
  * @throws Error when the Chromium build carries no EditContext API.
  */
 function ctx(): EditContext {
-  if (editContext === null) {
+  if (!editContext) {
     throw new Error('The EditContext API is not available in this Chromium build. The editor needs Chromium 133 or later.');
   }
   return editContext;
@@ -86,7 +86,7 @@ function applyState(snapshot: EditorSnapshot): void {
 /** Steps one state back. Answers with a confirmation for the caller. */
 function undo(): string {
   const snapshot = undoStack.pop();
-  if (snapshot === undefined) {
+  if (!snapshot) {
     return 'nothing to undo';
   }
   redoStack.push(committed);
@@ -97,7 +97,7 @@ function undo(): string {
 /** Steps one stored state forward again. Answers with a confirmation for the caller. */
 function redo(): string {
   const snapshot = redoStack.pop();
-  if (snapshot === undefined) {
+  if (!snapshot) {
     return 'nothing to redo';
   }
   undoStack.push(committed);
@@ -132,7 +132,7 @@ function selectedText(): string {
 
 /** The client rectangle of the caret or selection, or null when the layout hides it. */
 function caretRect(): DOMRect | null {
-  if (textNode === null) {
+  if (!textNode) {
     return null;
   }
   const context = ctx();
@@ -140,7 +140,7 @@ function caretRect(): DOMRect | null {
   range.setStart(textNode, Math.min(context.selectionStart, context.selectionEnd));
   range.setEnd(textNode, Math.max(context.selectionStart, context.selectionEnd));
   const rect = range.getClientRects()[0];
-  if (rect !== undefined) {
+  if (rect) {
     return new DOMRect(rect.x, rect.y, Math.max(rect.width, 1), rect.height);
   }
   // A caret at a line boundary can carry no rectangle. The character before it gives the position.
@@ -149,7 +149,7 @@ function caretRect(): DOMRect | null {
     range.setStart(textNode, start - 1);
     range.setEnd(textNode, start);
     const before = range.getClientRects()[0];
-    if (before !== undefined) {
+    if (before) {
       return new DOMRect(before.right, before.y, Math.max(before.width, 1), before.height);
     }
   }
@@ -162,7 +162,7 @@ function notifyBounds(): void {
   const context = ctx();
   context.updateControlBounds(scrollArea.getBoundingClientRect());
   const caret = caretRect();
-  if (caret !== null) {
+  if (caret) {
     context.updateSelectionBounds(caret);
   }
 }
@@ -170,7 +170,7 @@ function notifyBounds(): void {
 /** Scrolls the caret into view when it sits outside the visible area. */
 function scrollCaretIntoView(): void {
   const caret = caretRect();
-  if (caret === null) {
+  if (!caret) {
     return;
   }
   const viewport = scrollArea.getBoundingClientRect();
@@ -212,12 +212,12 @@ function readDomSelection(): { readonly start: number; readonly end: number } | 
 
 /** Restores the DOM selection from the edit context selection. */
 function renderSelection(): void {
-  if (textNode === null) {
+  if (!textNode) {
     return;
   }
   const context = ctx();
   const selection = document.getSelection();
-  if (selection === null) {
+  if (!selection) {
     return;
   }
   const range = document.createRange();
@@ -229,7 +229,7 @@ function renderSelection(): void {
 
 /** The client rectangle of the character at an offset. A one-character look back covers line boundaries. */
 function charRectAt(offset: number): DOMRect | null {
-  if (textNode === null) {
+  if (!textNode) {
     return null;
   }
   const range = document.createRange();
@@ -261,7 +261,7 @@ function renderGutter(text: string): void {
     const element = document.createElement('span');
     element.textContent = String(index + 1);
     const rect = charRectAt(start);
-    if (rect !== null) {
+    if (rect) {
       // The start of a line measures its own character. A trailing empty line sits below the last line break.
       element.style.top = start < text.length ? `${rect.top - gutterTop}px` : `${rect.bottom - gutterTop}px`;
     } else {
@@ -296,7 +296,7 @@ function renderStatus(text: string): void {
 /** Styles the active composition range with the highlight registry, or clears the styling. */
 function renderComposition(): void {
   const registry = (CSS as { highlights?: Map<string, Highlight> }).highlights;
-  if (registry === undefined) {
+  if (!registry) {
     return;
   }
   if (compositionRange === null || textNode === null) {
@@ -313,7 +313,7 @@ function renderComposition(): void {
 function render(): void {
   const context = ctx();
   const text = context.text;
-  if (textNode === null) {
+  if (!textNode) {
     textNode = document.createTextNode(text);
     host.replaceChildren(textNode);
   } else {
@@ -344,7 +344,7 @@ function readTitleOption(options: unknown): string | undefined {
     throw new Error('The editor options must be an object: { title }.');
   }
   const title = (options as Record<string, unknown>)['title'];
-  if (title === undefined) {
+  if (!title) {
     return undefined;
   }
   if (typeof title !== 'string') {
@@ -379,7 +379,7 @@ function wireEditor(): void {
 
   // The input method asks where the composed characters sit, so it can place its candidate window.
   context.addEventListener('characterboundsupdate', (event) => {
-    if (textNode === null) {
+    if (!textNode) {
       return;
     }
     const bounds: DOMRect[] = [];
@@ -392,7 +392,7 @@ function wireEditor(): void {
 
   context.addEventListener('textformatupdate', (event) => {
     const format = event.getTextFormats()[0];
-    if (format !== undefined) {
+    if (format) {
       compositionRange = { start: format.rangeStart, end: format.rangeEnd };
       renderComposition();
     }
@@ -455,6 +455,7 @@ function wireEditor(): void {
 
   host.addEventListener('paste', (event) => {
     const text = event.clipboardData?.getData('text/plain');
+    // eslint-disable-next-line local/prefer-truthiness -- an empty clipboard must still prevent the native paste
     if (text === undefined) {
       return;
     }
@@ -468,7 +469,7 @@ function wireEditor(): void {
       return;
     }
     const offsets = readDomSelection();
-    if (offsets === null) {
+    if (!offsets) {
       return;
     }
     if (offsets.start !== context.selectionStart || offsets.end !== context.selectionEnd) {
@@ -491,7 +492,7 @@ export const nodewavenEditor = {
       throw new Error('The editor text must be a string.');
     }
     const title = readTitleOption(options);
-    if (title !== undefined) {
+    if (title) {
       applyTitle(title);
     }
     const context = ctx();
@@ -556,7 +557,7 @@ export const nodewavenEditor = {
 
 (globalThis as { nodewavenEditor?: typeof nodewavenEditor }).nodewavenEditor = nodewavenEditor;
 
-if (editContext === null) {
+if (!editContext) {
   unsupported.hidden = false;
   scrollArea.hidden = true;
   statusBar.hidden = true;

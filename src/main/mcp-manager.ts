@@ -4,31 +4,13 @@
  * The `native` mode surfaces its tools to the chat agent, prefixed with the sanitized endpoint label and a dot.
  */
 
-import { sanitizeEndpointLabel, type McpEndpoint, type McpEndpoints } from '../../shared/mcp-endpoints.js';
-import type { NotificationHub } from '../notification-hub.js';
-import type { McpCallResult, McpResourceInfo, McpToolInfo } from './client.js';
-import { McpServerClient } from './client.js';
-import { HttpMcpTransport, StdioMcpTransport, type McpTransport } from './transport.js';
+import { sanitizeEndpointLabel, type McpEndpoint, type McpEndpoints, type McpServerState, type McpNativeTool } from '../shared/mcp-endpoints.js';
+import type { McpResourceInfo, McpToolInfo } from './mcp-client.js';
+import type { McpCallResult } from '../shared/mcp-endpoints.js';
+import { McpServerClient } from './mcp-client.js';
+import { HttpMcpTransport, StdioMcpTransport, type McpTransport } from './mcp-transport.js';
 
 /** The public state of one endpoint, for the settings list and the page API. */
-export interface McpServerState {
-  readonly id: string;
-  readonly label: string;
-  readonly mode: McpEndpoint['mode'];
-  readonly state: 'connecting' | 'connected' | 'error' | 'dormant';
-  readonly error: string | null;
-  readonly toolNames: readonly string[];
-  readonly resourceUris: readonly string[];
-}
-
-/** One agent tool descriptor that the native mode contributes to the chat tool list. */
-export interface McpNativeTool {
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema: Record<string, unknown>;
-  readonly endpointId: string;
-}
-
 interface ServerRecord {
   readonly endpoint: McpEndpoint;
   client: McpServerClient | null;
@@ -55,12 +37,21 @@ function schemeOf(uri: string): string {
 }
 
 /** Owns the MCP server connections of the workspace. */
+/** The notification sink the client manager needs: chat messages, dispatch routing, and listener ids. */
+export interface McpNotificationSink {
+  notify(...parts: readonly unknown[]): void;
+  dispatch(method: string, params: unknown, source: string): void;
+  subscribe(name: string, listener: (heard: unknown, params: unknown, source: string) => unknown): number;
+  unsubscribe(id: number): void;
+}
+
 export class McpClientManager {
   private readonly servers = new Map<string, ServerRecord>();
   private readonly runtimeEnabled = new Set<string>();
   private readonly changeListeners = new Set<() => void>();
 
-  constructor(private readonly hub: NotificationHub) {}
+  /** The notification sink of the manager: chat messages, dispatches, and listener ids. */
+  constructor(private readonly sink: McpNotificationSink) {}
 
   /** Applies the endpoint list: new endpoints connect per their mode, removed ones disconnect. */
   async applyEndpoints(endpoints: McpEndpoints): Promise<void> {
@@ -68,7 +59,7 @@ export class McpClientManager {
     for (const endpoint of endpoints.endpoints) {
       kept.add(endpoint.id);
       const existing = this.servers.get(endpoint.id);
-      if (existing !== undefined) {
+      if (existing) {
         if (existing.endpoint !== endpoint) {
           this.replaceEndpoint(existing, endpoint);
         }
@@ -83,7 +74,11 @@ export class McpClientManager {
         resources: [],
       };
       this.servers.set(endpoint.id, record);
-      this.wantedConnected(endpoint) ? void this.connect(record) : this.notifyChange();
+      if (this.wantedConnected(endpoint)) {
+        void this.connect(record);
+      } else {
+        this.notifyChange();
+      }
     }
     for (const [id, record] of this.servers) {
       if (!kept.has(id)) {
@@ -154,9 +149,10 @@ export class McpClientManager {
    * and the list notifications refresh their list. */
   private handleServerNotification(record: ServerRecord, method: string, params: unknown): void {
     const source = `mcp ${record.endpoint.label}`;
-    this.hub.dispatch(method, params, source);
-    this.hub.notifyChat(`[${source}] ${method}${params !== undefined ? ` ${JSON.stringify(params)}` : ''}`);
-    if (record.client === null) {
+    this.sink.dispatch(method, params, source);
+    // eslint-disable-next-line local/prefer-truthiness -- a null params value still renders, only its absence drops
+    this.sink.notify(`[${source}] ${method}${params !== undefined ? ` ${JSON.stringify(params)}` : ''}`);
+    if (!record.client) {
       return;
     }
     if (method === 'notifications/tools/list_changed') {
@@ -205,7 +201,7 @@ export class McpClientManager {
   /** Enables one dormant endpoint at runtime. The agent reaches this through the page API. */
   async enable(idOrLabel: string): Promise<string> {
     const record = this.find(idOrLabel);
-    if (record === null) {
+    if (!record) {
       return this.apiError(`No MCP endpoint matches "${idOrLabel}".`);
     }
     if (record.endpoint.mode === 'disabled') {
@@ -224,7 +220,7 @@ export class McpClientManager {
   /** Disconnects one runtime-enabled endpoint. Configured modes (native, preloaded) reconnect on the next apply. */
   disable(idOrLabel: string): string {
     const record = this.find(idOrLabel);
-    if (record === null) {
+    if (!record) {
       return this.apiError(`No MCP endpoint matches "${idOrLabel}".`);
     }
     if (record.endpoint.mode !== 'none') {
@@ -267,7 +263,7 @@ export class McpClientManager {
     const scheme = schemeOf(uri);
     for (const record of this.connectedRecords()) {
       const exact = record.resources.find((resource) => resource.uri === uri);
-      if (exact === undefined) {
+      if (!exact) {
         continue;
       }
       return this.renderContents(await record.client?.readResource(uri) ?? []);
@@ -283,12 +279,19 @@ export class McpClientManager {
     throw new Error(`No connected MCP server claims the URI ${uri}.`);
   }
 
-  private renderContents(contents: readonly { readonly uri: string; readonly mimeType: string | null; readonly text: string | null; readonly blob: string | null }[]): string {
+  private renderContents(
+    contents: readonly {
+      readonly uri: string;
+      readonly mimeType: string | null;
+      readonly text: string | null;
+      readonly blob: string | null;
+    }[],
+  ): string {
     const parts: string[] = [];
     for (const content of contents) {
-      if (content.text !== null) {
+      if (content.text) {
         parts.push(content.text);
-      } else if (content.blob !== null) {
+      } else if (content.blob) {
         parts.push(`[${content.mimeType ?? 'unknown'} base64 content of ${content.uri}]`);
       }
     }
@@ -352,7 +355,7 @@ export class McpClientManager {
    * already passed the permission gate.
    */
   get pageApi(): Record<string, (...parameters: readonly unknown[]) => Promise<string> | string> {
-    if (this.cachedPageApi !== null) {
+    if (this.cachedPageApi) {
       return this.cachedPageApi;
     }
     this.cachedPageApi = {
@@ -370,7 +373,7 @@ export class McpClientManager {
       disable: (idOrLabel: unknown): string => this.disable(String(idOrLabel)),
       resources: async (idOrLabel?: unknown): Promise<string> => {
         const records =
-          idOrLabel === undefined ? this.connectedRecords() : [this.find(String(idOrLabel))].filter(isServerRecord);
+          idOrLabel ? [this.find(String(idOrLabel))].filter(isServerRecord) : this.connectedRecords();
         return JSON.stringify(
           records.map((record) => ({ label: record.endpoint.label, resources: record.resources })),
         );
@@ -384,7 +387,7 @@ export class McpClientManager {
         }
       },
       notify: (...parts: readonly unknown[]): string => {
-        this.hub.notifyChat(...parts);
+        this.sink.notify(...parts);
         return JSON.stringify({ notified: true });
       },
       onNotification: (method: unknown, listener: unknown): string => {
@@ -392,7 +395,7 @@ export class McpClientManager {
         if (typeof listener !== 'function') {
           return this.apiError('onNotification needs a method name and a callback function.');
         }
-        const id = this.hub.subscribe(name, (heard, params, source) => {
+        const id = this.sink.subscribe(name, (heard, params, source) => {
           const part = listener(heard, params, source);
           if (part !== null && typeof part === 'object' && typeof (part as { then?: unknown }).then === 'function') {
             void (part as Promise<unknown>).catch(() => {
@@ -403,7 +406,7 @@ export class McpClientManager {
         return JSON.stringify({ listenerId: id });
       },
       offNotification: (id: unknown): string => {
-        this.hub.unsubscribe(typeof id === 'number' ? id : -1);
+        this.sink.unsubscribe(typeof id === 'number' ? id : -1);
         return JSON.stringify({ removed: true });
       },
     };

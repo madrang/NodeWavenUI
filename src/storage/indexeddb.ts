@@ -98,7 +98,7 @@ export class IndexedDbStorage implements StorageBackend {
   }
 
   private connect(): Promise<IDBDatabase> {
-    if (this.connection === null) {
+    if (!this.connection) {
       this.connection = this.open();
     }
     return this.connection;

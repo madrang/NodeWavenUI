@@ -1,13 +1,13 @@
 /**
- * The frame tiling manager: embedded frames of the workspace window, in columns beside the
- * chat and settings panes. An iframe frame loads app content inside the workspace page. A
- * webview frame loads content in its own guest process, which carries its own debug target.
- * Every frame shows a title bar with a kind badge, a hide control, a close control, and for
- * webview frames a share switch: a webview that is not shared denies every debug attach even
- * after the permission pipeline passed (see the attach order in `window-manager.ts`).
+ * The frame tiling manager of the workspace page: embedded panels beside the chat and settings
+ * panes. The main process owns the frame records and the permission checks; this module builds
+ * and owns the panels it is asked to build, and answers the frame commands the main process
+ * pushes. An iframe frame loads app content inside the workspace page. A webview frame loads
+ * content in its own guest process, which carries its own debug target behind the share switch
+ * of its title bar.
  */
 
-import type { ChildWindowManager, FrameEmbed, WindowCaller } from './window-manager.js';
+import { readBridge } from '../shared/bridge.js';
 
 /** The kind of one embedded frame. An iframe shares the workspace page, a webview runs its own guest process. */
 export type FrameKind = 'iframe' | 'webview';
@@ -33,26 +33,17 @@ export interface FrameOpenResult {
   readonly side: FrameSide;
 }
 
-/** The slice of the webview element API the frame manager uses. */
-interface WebviewElement extends HTMLElement {
-  readonly showDevTools: () => void;
-  readonly terminate: () => void;
-}
-
-/** The loadcommit event of a webview guest: the committed address and its frame level. */
-interface WebviewCommitEvent extends Event {
+/** The build request the main process sends for one new frame. */
+export interface FrameBuildRequest {
+  readonly id: number;
+  readonly kind: FrameKind;
   readonly url: string;
-  readonly isTopLevel: boolean;
+  readonly title: string;
+  readonly side: FrameSide;
 }
 
-/** Reads the DOM element behind one id, or throws when the page lacks it. */
-function requireElement<T extends HTMLElement>(id: string): T {
-  const element = document.querySelector(id);
-  if (!element) {
-    throw new Error(`The element ${id} is missing from the page.`);
-  }
-  return element as T;
-}
+/** The frame command the main process pushes for one tracked frame. */
+export type FrameCommand = { readonly id: number; readonly command: 'close' } | { readonly id: number; readonly command: 'navigate'; readonly url: string };
 
 /**
  * Checks that a value names one frame kind.
@@ -74,6 +65,15 @@ export function isFrameSide(value: unknown): value is FrameSide {
   return value === 'left' || value === 'right';
 }
 
+/** Reads the DOM element behind one id, or throws when the page lacks it. */
+function requireElement<T extends HTMLElement>(id: string): T {
+  const element = document.querySelector(id);
+  if (!element) {
+    throw new Error(`The element ${id} is missing from the page.`);
+  }
+  return element as T;
+}
+
 /** True when a frame address carries a scheme, so it is absolute. */
 function isAbsoluteUrl(url: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url);
@@ -82,11 +82,10 @@ function isAbsoluteUrl(url: string): boolean {
 /**
  * Maps one frame address to the address the embed loads.
  * A relative path resolves against the origin of the workspace page, whose root is the app
- * root. An iframe loads it same-origin, and a webview guest holds the extension origin, so
- * the module scripts of an app page run in both. An absolute address loads as given.
+ * root. An absolute address loads as given.
  *
  * @param url The frame address from the open arguments.
- * @param origin The origin of the workspace page, for example `chrome-extension://<id>`.
+ * @param origin The origin of the workspace page, for example `app://renderer`.
  * @returns The address for the embed.
  */
 export function resolveFrameUrl(url: string, origin: string): string {
@@ -96,195 +95,171 @@ export function resolveFrameUrl(url: string, origin: string): string {
   return `${origin.replace(/\/+$/, '')}/${url.replace(/^[/\\]+/, '')}`;
 }
 
-/** The default title of one frame: the last path segment of its address, or the address itself. */
-function defaultFrameTitle(url: string): string {
-  const segment = url.split('/').filter((part) => part.length > 0).at(-1);
-  return segment ?? url;
+/** The absolute path of the app root, read once so the guest preload path resolves. */
+let appRoot = '';
+
+/** The title label of one address: the last path segment without its query, or the address itself. */
+function titleOf(url: string): string {
+  const clean = url.split(/[?#]/)[0] ?? url;
+  return clean.split('/').filter((part) => part.length > 0).at(-1) ?? url;
 }
 
-/** Builds and owns the frame panels of the workspace window. */
-export class FrameManager {
-  /**
-   * @param manager The window manager that tracks the frames and owns their debug sessions.
-   * @param origin The origin of the workspace page, for relative frame addresses.
-   */
-  constructor(
-    private readonly manager: ChildWindowManager,
-    private readonly origin: string,
-  ) {}
+/** The panels of one frame id, so the frame commands find them. */
+const panels = new Map<number, { readonly panel: HTMLDivElement; readonly setUrl: (url: string) => void }>();
 
-  /**
-   * Opens one embedded frame beside the panes.
-   * The open runs through the same permission path as a child window open, so the default ask
-   * of the agent and MCP principals applies.
-   *
-   * @param caller The caller that opens the frame.
-   * @param options The frame address, kind, column, and title.
-   * @returns The frame id from the child id space, with the kind and the column.
-   * @throws Error when the permission pipeline denies the open.
-   */
-  async openFrame(caller: WindowCaller, options: OpenFrameOptions): Promise<FrameOpenResult> {
-    const side: FrameSide = options.side ?? 'right';
-    const url = resolveFrameUrl(options.url, this.origin);
-    await this.manager.requireFrameOpen(caller, url);
-    const title = options.title !== undefined && options.title.length > 0 ? options.title : defaultFrameTitle(url);
-    const built = this.buildPanel(options.kind, url, title, side);
-    const frameId = this.manager.registerFrame(url, title, built.embed);
-    built.panel.dataset.frameId = String(frameId);
-    return { frameId, kind: options.kind, side };
+/** Builds the panel of one frame the main process registered. */
+function buildFramePanel(request: FrameBuildRequest): void {
+  const bridge = readBridge();
+  if (!bridge) {
+    throw new Error('The frame panels need the nodewavenui bridge of an app window.');
   }
+  const column = requireElement<HTMLDivElement>(request.side === 'left' ? '#frames-left' : '#frames-right');
+  const panel = document.createElement('div');
+  panel.className = 'frame-panel';
+  panel.dataset.frameId = String(request.id);
 
-  /**
-   * Builds one frame panel with its title bar and its embed.
-   *
-   * @param kind The frame kind.
-   * @param url The address the embed loads.
-   * @param title The title the title bar shows.
-   * @param side The column the panel joins.
-   * @returns The embed the window manager drives, and the panel element.
-   */
-  private buildPanel(kind: FrameKind, url: string, title: string, side: FrameSide): { readonly embed: FrameEmbed; readonly panel: HTMLDivElement } {
-    const column = requireElement<HTMLDivElement>(side === 'left' ? '#frames-left' : '#frames-right');
-    const panel = document.createElement('div');
-    panel.className = 'frame-panel';
+  const titlebar = document.createElement('div');
+  titlebar.className = 'frame-titlebar';
+  const badge = document.createElement('span');
+  badge.className = `frame-kind ${request.kind}`;
+  badge.textContent = request.kind;
+  badge.title =
+    request.kind === 'webview' ?
+      'A webview frame runs its own guest process and carries its own debug target.' :
+      'An iframe frame shares the process and the debug target of the workspace window.';
+  const label = document.createElement('span');
+  label.className = 'frame-title';
+  label.textContent = request.title;
+  titlebar.append(badge, label);
 
-    const titlebar = document.createElement('div');
-    titlebar.className = 'frame-titlebar';
-    const badge = document.createElement('span');
-    badge.className = `frame-kind ${kind}`;
-    badge.textContent = kind;
-    badge.title =
-      kind === 'webview'
-        ? 'A webview frame runs its own guest process and carries its own debug target.'
-        : 'An iframe frame shares the process and the debug target of the workspace window.';
-    const label = document.createElement('span');
-    label.className = 'frame-title';
-    label.textContent = title;
-    titlebar.append(badge, label);
-
-    const content = document.createElement('div');
-    content.className = 'frame-content';
-    let embed: FrameEmbed;
-    if (kind === 'webview') {
-      const webview = document.createElement('webview') as WebviewElement;
-      webview.setAttribute('partition', 'trusted');
-      // No allownw: a guest stays without Node, even for app pages.
-      webview.setAttribute('src', url);
-      // The guest reports every committed top-level address, whatever drove the navigation:
-      // a src swap, a debug-protocol navigate, or a link the guest followed on its own.
-      // The first commit matches the open, so a custom title survives it.
-      let committedUrl = url;
-      webview.addEventListener('loadcommit', (event) => {
-        const commit = event as WebviewCommitEvent;
-        if (!commit.isTopLevel) {
-          return;
-        }
-        const id = Number(panel.dataset.frameId);
-        if (!Number.isFinite(id) || id <= 0) {
-          return;
-        }
-        if (commit.url !== committedUrl) {
-          committedUrl = commit.url;
-          label.textContent = defaultFrameTitle(commit.url);
-        }
-        this.manager.noteFrameUrl(id, commit.url);
-      });
-      embed = {
-        kind,
-        shared: false,
-        close: () => {
-          try {
-            webview.terminate();
-          } catch {
-            // A guest that already left needs no termination.
-          }
-          panel.remove();
-          column.hidden = column.childElementCount === 0;
-        },
-        navigate: (next) => {
-          webview.setAttribute('src', next);
-        },
-        openDevTools: () => {
-          webview.showDevTools();
-        },
-        readTitle: () => null,
-        injectGlobals: () => {},
-      };
-      content.append(webview);
+  const content = document.createElement('div');
+  content.className = 'frame-content';
+  const setUrl = (url: string): void => {
+    label.textContent = titleOf(url);
+    if (embed instanceof HTMLIFrameElement) {
+      embed.src = url;
     } else {
-      const iframe = document.createElement('iframe');
-      iframe.src = url;
-      embed = {
-        kind,
-        shared: false,
-        close: () => {
-          panel.remove();
-          column.hidden = column.childElementCount === 0;
-        },
-        navigate: (next) => {
-          iframe.src = next;
-          label.textContent = defaultFrameTitle(next);
-        },
-        openDevTools: null,
-        readTitle: () => {
-          try {
-            return iframe.contentDocument?.title ?? null;
-          } catch {
-            return null;
-          }
-        },
-        injectGlobals: (globals) => {
-          try {
-            const target = iframe.contentWindow as { nodewavenMcp?: unknown } | null;
-            if (target) {
-              target.nodewavenMcp = globals;
-            }
-          } catch {
-            // A cross-origin page refuses the globals and stays without them.
-          }
-        },
-      };
-      content.append(iframe);
+      embed.setAttribute('src', url);
     }
-
-    if (kind === 'webview') {
-      const share = document.createElement('button');
-      share.type = 'button';
-      share.className = 'frame-share';
-      share.textContent = 'Not shared';
-      share.setAttribute('aria-pressed', 'false');
-      share.title = 'Sharing decides whether a debug session may attach. Attach still runs through the permission pipeline first.';
-      share.addEventListener('click', () => {
-        embed.shared = !embed.shared;
-        share.textContent = embed.shared ? 'Shared' : 'Not shared';
-        share.setAttribute('aria-pressed', `${embed.shared}`);
-      });
-      titlebar.append(share);
-    }
-
-    const hide = document.createElement('button');
-    hide.type = 'button';
-    hide.className = 'frame-hide';
-    hide.textContent = '–';
-    hide.title = 'Hide the frame content. The frame stays and a webview guest keeps running.';
-    hide.addEventListener('click', () => {
-      panel.classList.toggle('collapsed');
-    });
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.className = 'frame-close';
-    close.textContent = '×';
-    close.title = 'Close the frame.';
-    close.addEventListener('click', () => {
-      const id = Number(panel.dataset.frameId);
-      if (Number.isFinite(id) && id > 0) {
-        void this.manager.closeChild({ principal: 'user' }, id);
+  };
+  let embed: HTMLIFrameElement | HTMLElement;
+  if (request.kind === 'webview') {
+    const webview = document.createElement('webview');
+    webview.setAttribute('preload', `file://${appRoot}/src/preload/webview-preload.cjs`);
+    // The token binds the guest to its frame record: the guest preload announces it.
+    webview.setAttribute('src', `${request.url}${request.url.includes('?') ? '&' : '?'}nvframe=${request.id}`);
+    webview.addEventListener('did-navigate', (event) => {
+      const url = (event as Event & { url?: string }).url;
+      if (typeof url === 'string' && url.length > 0) {
+        label.textContent = titleOf(url);
       }
     });
-    titlebar.append(hide, close);
-    panel.append(titlebar, content);
-    column.hidden = false;
-    column.append(panel);
-    return { embed, panel };
+    embed = webview;
+  } else {
+    const iframe = document.createElement('iframe');
+    // A plugin page rides the renderer host, so it stays same-origin with the workspace page.
+    iframe.src = request.url.replace('app://plugins/', 'app://renderer/plugins/');
+    iframe.addEventListener('load', () => {
+      // The page API injects into same-origin iframes, the way it always reached app pages.
+      try {
+        const target = iframe.contentWindow as { nodewavenMcp?: unknown } | null;
+        if (target) {
+          target.nodewavenMcp = (globalThis as { nodewavenMcp?: unknown }).nodewavenMcp;
+        }
+      } catch {
+        // A cross-origin page refuses the globals and stays without them.
+      }
+    });
+    embed = iframe;
   }
+  content.append(embed);
+
+  if (request.kind === 'webview') {
+    const share = document.createElement('button');
+    share.type = 'button';
+    share.className = 'frame-share';
+    share.textContent = 'Not shared';
+    share.setAttribute('aria-pressed', 'false');
+    share.title = 'Sharing decides whether a debug session may attach. Attach still runs through the permission pipeline first.';
+    share.addEventListener('click', () => {
+      const shared = share.getAttribute('aria-pressed') !== 'true';
+      share.textContent = shared ? 'Shared' : 'Not shared';
+      share.setAttribute('aria-pressed', `${shared}`);
+      void bridge.workspace.notifyFrameShared(request.id, shared);
+    });
+    titlebar.append(share);
+  }
+
+  const hide = document.createElement('button');
+  hide.type = 'button';
+  hide.className = 'frame-hide';
+  hide.textContent = '–';
+  hide.title = 'Hide the frame content. The frame stays and a webview guest keeps running.';
+  hide.addEventListener('click', () => {
+    panel.classList.toggle('collapsed');
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'frame-close';
+  close.textContent = '×';
+  close.title = 'Close the frame.';
+  close.addEventListener('click', () => {
+    void bridge.workspace.closeFrameAsUser(request.id);
+  });
+  titlebar.append(hide, close);
+  panel.append(titlebar, content);
+  column.hidden = false;
+  column.append(panel);
+  panels.set(request.id, { panel, setUrl });
+}
+
+/** Removes the panel of one frame and hides its column when it empties. */
+function removeFramePanel(id: number): void {
+  const entry = panels.get(id);
+  if (!entry) {
+    return;
+  }
+  panels.delete(id);
+  entry.panel.remove();
+  for (const selector of ['#frames-left', '#frames-right']) {
+    const column = document.querySelector<HTMLElement>(selector);
+    if (column !== null && column.childElementCount === 0) {
+      column.hidden = true;
+    }
+  }
+}
+
+/**
+ * Serves the frame channels of the workspace page: the build requests route through the shared
+ * request router, and the pushed commands land in the panels.
+ *
+ * @param route The router registration of the workspace page.
+ */
+export async function serveFrames(
+  route: (channel: string, handler: (payload: unknown) => Promise<unknown>) => void,
+): Promise<void> {
+  const bridge = readBridge();
+  if (!bridge) {
+    return;
+  }
+  appRoot = await bridge.app.appRoot();
+  route('frames.build', async (payload) => {
+    const request = payload as FrameBuildRequest | null;
+    if (typeof request?.id !== 'number' || !isFrameKind(request.kind) || typeof request.url !== 'string') {
+      throw new Error('The frame build request breaks its shape.');
+    }
+    buildFramePanel({ id: request.id, kind: request.kind, url: request.url, title: request.title, side: isFrameSide(request.side) ? request.side : 'right' });
+    return null;
+  });
+  bridge.workspace.onWorkspaceEvent('frames.command', (payload) => {
+    const command = payload as FrameCommand | null;
+    if (typeof command?.id !== 'number') {
+      return;
+    }
+    if (command.command === 'close') {
+      removeFramePanel(command.id);
+      return;
+    }
+    panels.get(command.id)?.setUrl(command.url);
+  });
 }

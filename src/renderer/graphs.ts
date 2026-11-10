@@ -222,10 +222,10 @@ function drawFrame(
 
 /** Draws the title and the legend of one drawing. Returns the top edge of the plot. */
 function drawHead(plot: Plot, title: string | null, legend: readonly LegendEntry[]): number {
-  if (title !== null) {
+  if (title) {
     surface.append(svgText(view.width / 2, 26, title, 'graph-title'));
   }
-  const legendY = title !== null ? 48 : 16;
+  const legendY = title ? 48 : 16;
   let x = plot.x1;
   for (const entry of [...legend].reverse()) {
     const label = svgText(x, legendY, entry.name, 'legend-text', 'end');
@@ -244,7 +244,7 @@ function drawHead(plot: Plot, title: string | null, legend: readonly LegendEntry
     );
     x -= textWidth + 34;
   }
-  return title !== null ? 62 : 26;
+  return title ? 62 : 26;
 }
 
 /** Draws one series list as polylines (line) or point markers (scatter). */
@@ -260,12 +260,16 @@ function drawSeriesPlot(spec: LineGraphSpec | ScatterGraphSpec, markers: boolean
     .map((series, seriesIndex) => ({ name: series.name ?? '', seriesIndex }))
     .filter((entry) => entry.name.length > 0);
   const title = readTitle(spec as unknown as Record<string, unknown>);
-  const y0 = drawHead({ x0: MARGIN.left, x1: view.width - MARGIN.right, y0: 0, y1: view.height - MARGIN.bottom }, title, legend);
+  const frame = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: 0, y1: view.height - MARGIN.bottom };
+  const y0 = drawHead(frame, title, legend);
   const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0, y1: view.height - MARGIN.bottom };
   // The vertical scale maps into the plot below the head, so the highest point stays under title and legend.
   const yScale = scaleOf(Math.min(...ys), Math.max(...ys), view.height - MARGIN.bottom, y0);
   const xStep = niceStep(xScale.max - xScale.min);
-  const xLabels = ticksFor(xScale.min, xScale.max).map((tick) => ({ at: map(xScale, tick), text: formatTick(tick, xStep) }));
+  const xLabels = ticksFor(xScale.min, xScale.max).map((tick) => ({
+    at: map(xScale, tick),
+    text: formatTick(tick, xStep),
+  }));
   drawFrame(surface, plot, yScale, xLabels);
   spec.series.forEach((series, index) => {
     if (markers) {
@@ -295,7 +299,8 @@ function drawBars(spec: BarGraphSpec): string {
   }
   const values = spec.bars.map((bar) => bar.value);
   const title = readTitle(spec as unknown as Record<string, unknown>);
-  const y0 = drawHead({ x0: MARGIN.left, x1: view.width - MARGIN.right, y0: 0, y1: view.height - MARGIN.bottom }, title, []);
+  const frame = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: 0, y1: view.height - MARGIN.bottom };
+  const y0 = drawHead(frame, title, []);
   const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0, y1: view.height - MARGIN.bottom };
   // The vertical scale maps into the plot below the head, so the tallest bar stays under the title.
   const yScale = scaleOf(Math.min(0, ...values), Math.max(0, ...values), view.height - MARGIN.bottom, y0);
@@ -393,7 +398,12 @@ function startLive(spec: unknown): string {
   surface.replaceChildren();
   lastDraw = null;
   emptyHint.hidden = true;
-  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: title !== null ? 62 : 26, y1: view.height - MARGIN.bottom };
+  const plot: Plot = {
+    x0: MARGIN.left,
+    x1: view.width - MARGIN.right,
+    y0: title ? 62 : 26,
+    y1: view.height - MARGIN.bottom,
+  };
   drawHead({ ...plot, y0: 0 }, title, []);
   const frame = svgElement('g', {});
   const line = svgElement('polyline', { fill: 'none', class: 'line-series-0' });
@@ -401,7 +411,7 @@ function startLive(spec: unknown): string {
   const meanLabel = svgText(plot.x1, 0, '', 'mean-label', 'end');
   surface.append(frame, line, meanLine, meanLabel);
   liveChart = {
-    spec: { ...(title !== null ? { title } : {}), window: record['window'], ...(wantMean ? { mean: true } : {}), unit },
+    spec: { ...(title ? { title } : {}), window: record['window'], ...(wantMean ? { mean: true } : {}), unit },
     values: [],
     line,
     meanLine,
@@ -421,7 +431,12 @@ function replayLive(): void {
   }
   surface.replaceChildren();
   const title = chart.spec.title ?? null;
-  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: title !== null ? 62 : 26, y1: view.height - MARGIN.bottom };
+  const plot: Plot = {
+    x0: MARGIN.left,
+    x1: view.width - MARGIN.right,
+    y0: title ? 62 : 26,
+    y1: view.height - MARGIN.bottom,
+  };
   drawHead({ ...plot, y0: 0 }, title, []);
   chart.frame = svgElement('g', {});
   chart.line = svgElement('polyline', { fill: 'none', class: 'line-series-0' });
@@ -450,13 +465,22 @@ function updateLive(): void {
   if (!chart) {
     return;
   }
-  const plot: Plot = { x0: MARGIN.left, x1: view.width - MARGIN.right, y0: chart.spec.title ? 62 : 26, y1: view.height - MARGIN.bottom };
+  const plot: Plot = {
+    x0: MARGIN.left,
+    x1: view.width - MARGIN.right,
+    y0: chart.spec.title ? 62 : 26,
+    y1: view.height - MARGIN.bottom,
+  };
   // The x axis spans the whole window, so the line grows from the left edge and scrolls once the window fills.
   const xScale = scaleOf(0, chart.spec.window - 1, plot.x0, plot.x1);
   const ys = chart.values;
-  const yScale = ys.length > 0 ? scaleOf(Math.min(...ys), Math.max(...ys), plot.y1, plot.y0) : scaleOf(0, 1, plot.y1, plot.y0);
+  const yScale =
+    ys.length > 0 ? scaleOf(Math.min(...ys), Math.max(...ys), plot.y1, plot.y0) : scaleOf(0, 1, plot.y1, plot.y0);
   const xStep = niceStep(xScale.max - xScale.min);
-  const xLabels = ticksFor(xScale.min, xScale.max).map((tick) => ({ at: map(xScale, tick), text: formatTick(tick, xStep) }));
+  const xLabels = ticksFor(xScale.min, xScale.max).map((tick) => ({
+    at: map(xScale, tick),
+    text: formatTick(tick, xStep),
+  }));
   const yTicks = ticksFor(yScale.min, yScale.max);
   const frameKey = `${xLabels.map((label) => label.text).join(',')}|${yTicks.join(',')}`;
   if (frameKey !== chart.frameKey) {

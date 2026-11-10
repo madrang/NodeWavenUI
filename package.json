@@ -1,45 +1,37 @@
 {
   "name": "nodewavenui",
   "version": "0.2.0",
-  "description": "A NW.js AI Workspace UI",
+  "description": "An Electron AI workspace UI",
   "license": "MIT",
   "author": "Marc-Andre Ferland",
   "private": true,
-  "main": "dist/renderer/index.html",
-  "window": {
-    "title": "NodeWavenUI",
-    "icon": "icons/icon.png",
-    "width": 300,
-    "height": 120,
-    "position": "center",
-    "frame": false,
-    "transparent": true,
-    "resizable": false
-  },
-  "chromium-args": "--enable-logging=stderr --silent-debugger-extension-api",
-  "webview": {
-    "partitions": [
-      { "name": "trusted", "accessible_resources": ["<all_urls>"] }
-    ]
-  },
+  "type": "module",
+  "main": "dist/main/main.js",
   "scripts": {
     "build": "tsc -b && node scripts/copy-assets.mjs",
     "watch": "node scripts/copy-assets.mjs && tsc -b --watch",
     "clean": "node scripts/clean.mjs",
-    "test": "npm run build && mocha dist/tests",
-    "start": "npm run build && nw ."
+    "test": "npm run lint && npm run build && mocha dist/tests",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "start": "npm run build && node scripts/check-electron-sandbox.mjs && electron ."
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@stylistic/eslint-plugin": "^5.10.0",
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.6.5",
     "chai": "^6.3.0",
+    "electron": "^45.2.3",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
     "jasmine-core": "^7.0.2",
     "mocha": "^12.0.3",
-    "nw": "0.116.0",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1"
   }
 }

@@ -81,13 +81,21 @@ declare global {
       listener: (this: EditContext, event: EditContextEventMap[K]) => void,
       options?: boolean | AddEventListenerOptions,
     ): void;
-    addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
+    addEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions,
+    ): void;
     removeEventListener<K extends keyof EditContextEventMap>(
       type: K,
       listener: (this: EditContext, event: EditContextEventMap[K]) => void,
       options?: boolean | EventListenerOptions,
     ): void;
-    removeEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions): void;
+    removeEventListener(
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | EventListenerOptions,
+    ): void;
   }
 
   interface HTMLElement {

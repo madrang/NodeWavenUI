@@ -4,7 +4,7 @@
  * random chat key that the settings storage holds, so the files stay closed without the password.
  */
 
-import type { ChatImage, ToolCall } from '../providers/provider.js';
+import type { ChatImage, ThinkingLevel, ToolCall } from '../providers/provider.js';
 import {
   base64ToBytes,
   bytesToBase64,
@@ -14,7 +14,7 @@ import {
   sealRecord,
   type EncryptionKey,
 } from '../storage/encryption.js';
-import { fileSystem, joinPath, listDirectoryNames, readTextFile } from './file-system.js';
+import { joinPath, listDirectoryNames, makeDirectory, readTextFile, removePath, writeTextFile } from './file-system.js';
 import type { WorkspaceSettingsStore } from './settings-store.js';
 
 /** The folder of the session files, inside the workspace folder. */
@@ -85,6 +85,13 @@ export interface StoredChatSession {
   readonly outputTokens?: number;
   /** The system prompt the chat bound on its first send, when it sent one. */
   readonly systemPrompt?: StoredSystemPrompt;
+  /** The reasoning effort the chat pinned, when it pins one. Unset follows the workspace default. */
+  readonly thinkingLevel?: ThinkingLevel;
+}
+
+/** Checks that a value is one thinking level. */
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return value === 'low' || value === 'medium' || value === 'high';
 }
 
 /** Reads one stored tool call. Returns null on an invalid shape. */
@@ -131,9 +138,9 @@ function readChatEntry(value: unknown): ChatEntry | null {
   const toolName = candidate.toolName;
   const mcpSession = candidate.mcpSession;
   const queued = candidate.queued;
-  const toolCalls = Array.isArray(candidate.toolCalls)
-    ? candidate.toolCalls.map((call) => readToolCall(call))
-    : undefined;
+  const toolCalls = Array.isArray(candidate.toolCalls) ?
+    candidate.toolCalls.map((call) => readToolCall(call)) :
+    undefined;
   const images = Array.isArray(candidate.images) ? candidate.images.map((image) => readChatImage(image)) : undefined;
   if (
     (reasoning !== undefined && typeof reasoning !== 'string') ||
@@ -149,13 +156,15 @@ function readChatEntry(value: unknown): ChatEntry | null {
   return {
     role,
     content: candidate.content,
+    // eslint-disable-next-line local/prefer-truthiness -- a false or zero json payload must stay on the record
     ...(candidate.json !== undefined ? { json: candidate.json } : {}),
-    ...(reasoning !== undefined ? { reasoning } : {}),
-    ...(toolCalls !== undefined ? { toolCalls: toolCalls as readonly ToolCall[] } : {}),
-    ...(toolCallId !== undefined ? { toolCallId } : {}),
-    ...(toolName !== undefined ? { toolName } : {}),
-    ...(images !== undefined ? { images: images as readonly ChatImage[] } : {}),
-    ...(mcpSession !== undefined ? { mcpSession } : {}),
+    ...(reasoning ? { reasoning } : {}),
+    ...(toolCalls ? { toolCalls: toolCalls as readonly ToolCall[] } : {}),
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolName ? { toolName } : {}),
+    ...(images ? { images: images as readonly ChatImage[] } : {}),
+    ...(mcpSession ? { mcpSession } : {}),
+    // eslint-disable-next-line local/prefer-truthiness -- queued false is a real state, not an absent field
     ...(queued !== undefined ? { queued } : {}),
   };
 }
@@ -208,7 +217,7 @@ export function readStoredChatSession(value: unknown): StoredChatSession | null 
   const entries: ChatEntry[] = [];
   for (const entry of candidate.entries) {
     const read = readChatEntry(entry);
-    if (read === null) {
+    if (!read) {
       return null;
     }
     entries.push(read);
@@ -217,14 +226,14 @@ export function readStoredChatSession(value: unknown): StoredChatSession | null 
   const boundModel = candidate.boundModel;
   const contextTokens = candidate.contextTokens;
   const outputTokens = candidate.outputTokens;
-  const systemPrompt =
-    candidate.systemPrompt === undefined ? null : readStoredSystemPrompt(candidate.systemPrompt);
+  const systemPrompt = readStoredSystemPrompt(candidate.systemPrompt);
   if (
     (boundProviderId !== undefined && typeof boundProviderId !== 'string') ||
     (boundModel !== undefined && typeof boundModel !== 'string') ||
     (contextTokens !== undefined && typeof contextTokens !== 'number') ||
     (outputTokens !== undefined && typeof outputTokens !== 'number') ||
-    (candidate.systemPrompt !== undefined && systemPrompt === null)
+    (candidate.systemPrompt !== undefined && systemPrompt === null) ||
+    (candidate.thinkingLevel !== undefined && !isThinkingLevel(candidate.thinkingLevel))
   ) {
     return null;
   }
@@ -233,11 +242,14 @@ export function readStoredChatSession(value: unknown): StoredChatSession | null 
     title: candidate.title,
     createdAt: candidate.createdAt,
     entries,
-    ...(boundProviderId !== undefined ? { boundProviderId } : {}),
-    ...(boundModel !== undefined ? { boundModel } : {}),
+    ...(boundProviderId ? { boundProviderId } : {}),
+    ...(boundModel ? { boundModel } : {}),
+    // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
     ...(contextTokens !== undefined ? { contextTokens } : {}),
+    // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
+    ...(isThinkingLevel(candidate.thinkingLevel) ? { thinkingLevel: candidate.thinkingLevel } : {}),
   };
 }
 
@@ -302,7 +314,7 @@ export class ChatSessionStore {
     if (!this.encrypted) {
       return;
     }
-    let raw: string | null = null;
+    let raw: string | null;
     try {
       raw = await this.store.loadChatKey();
     } catch (error) {
@@ -310,11 +322,12 @@ export class ChatSessionStore {
       console.warn(`[NodeWavenUI] the chat key could not be read. The chat sessions stay in memory: ${message}`);
       return;
     }
+    // eslint-disable-next-line local/prefer-truthiness -- an empty key file is present but invalid, it must reach the shape warning
     let record = raw === null ? null : readChatKeyRecord(safeParse(raw));
     if (raw !== null && record === null) {
       console.warn('[NodeWavenUI] the stored chat key carries an invalid shape. A new key is generated.');
     }
-    if (record === null) {
+    if (!record) {
       record = { v: 1, cipher: 'aes-256-gcm', key: bytesToBase64(randomBytes(CHAT_KEY_BYTES)) };
       try {
         await this.store.saveChatKey(JSON.stringify(record));
@@ -339,8 +352,8 @@ export class ChatSessionStore {
    * @returns The sessions in creation order.
    */
   async loadSessions(): Promise<readonly StoredChatSession[]> {
-    const names = listDirectoryNames(this.chatsPath);
-    if (names === null) {
+    const names = await listDirectoryNames(this.chatsPath);
+    if (!names) {
       return [];
     }
     const sessions: StoredChatSession[] = [];
@@ -349,13 +362,14 @@ export class ChatSessionStore {
       if (!SESSION_ID_PATTERN.test(id)) {
         continue;
       }
-      const text = readTextFile(joinPath(this.chatsPath, name));
+      const text = await readTextFile(joinPath(this.chatsPath, name));
+      // eslint-disable-next-line local/prefer-truthiness -- an empty session file is present but invalid, it must reach the shape warning
       if (text === null) {
         console.warn(`[NodeWavenUI] the chat session file "${name}" could not be read. It is ignored.`);
         continue;
       }
       let plain: string;
-      if (this.fileKey !== null) {
+      if (this.fileKey) {
         try {
           plain = await openRecord(FILE_SUITE, this.fileKey, name, text);
         } catch (error) {
@@ -368,8 +382,8 @@ export class ChatSessionStore {
       }
       // The file name is the session id, so a renamed or copied record cannot move a session elsewhere.
       const parsed = safeParse(plain);
-      const session = readStoredChatSession(typeof parsed === 'object' && parsed !== null ? { ...parsed, id } : null);
-      if (session === null) {
+      const session = readStoredChatSession(typeof parsed === 'object' && parsed ? { ...parsed, id } : null);
+      if (!session) {
         console.warn(`[NodeWavenUI] the chat session file "${name}" carries an invalid shape. It is ignored.`);
         continue;
       }
@@ -409,29 +423,20 @@ export class ChatSessionStore {
     if (this.encrypted && this.fileKey === null) {
       return;
     }
-    const fs = fileSystem();
-    if (fs === null) {
-      console.warn('[NodeWavenUI] the filesystem is not reachable, so the chat session was not saved.');
-      return;
-    }
-    fs.mkdirSync(this.chatsPath, { recursive: true });
+    await makeDirectory(this.chatsPath);
     const fileName = `${session.id}.json`;
     const json = JSON.stringify(session, null, 2);
     const contents =
-      this.fileKey !== null ? await sealRecord(FILE_SUITE, this.fileKey, fileName, json) : `${json}\n`;
-    fs.writeFileSync(joinPath(this.chatsPath, fileName), contents);
+      this.fileKey ? await sealRecord(FILE_SUITE, this.fileKey, fileName, json) : `${json}\n`;
+    await writeTextFile(joinPath(this.chatsPath, fileName), contents);
   }
 
   /** Removes one session file. A missing file counts as removed. */
-  private removeSession(id: string): void {
+  private async removeSession(id: string): Promise<void> {
     if (!SESSION_ID_PATTERN.test(id)) {
       return;
     }
-    const fs = fileSystem();
-    if (fs === null) {
-      return;
-    }
-    fs.rmSync(joinPath(this.chatsPath, `${id}.json`), { force: true });
+    await removePath(joinPath(this.chatsPath, `${id}.json`));
   }
 }
 

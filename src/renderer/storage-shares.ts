@@ -4,7 +4,7 @@
  * none or read-only, set in the settings section. The record persists in the `shared-storages` record.
  */
 
-import type { StorageSetup } from '../plugins.js';
+import type { StorageSetup } from './plugins.js';
 import type { StorageBackend } from '../storage/storage.js';
 
 /** The access one shared storage grants the chat agent. */
@@ -103,9 +103,9 @@ export class StorageShareRegistry {
     for (const entry of record.storages) {
       kept.add(entry.id);
       const existing = this.opened.get(entry.id);
-      if (existing !== undefined) {
+      if (existing) {
         if (existing.entry !== entry) {
-          this.reopen(entry, existing);
+          this.reopen(entry);
         }
         continue;
       }
@@ -120,14 +120,14 @@ export class StorageShareRegistry {
     }
   }
 
-  private reopen(entry: SharedStorageEntry, open: OpenEntry): void {
+  private reopen(entry: SharedStorageEntry): void {
     this.opened.set(entry.id, { entry, backend: null, error: null });
     this.open(entry, this.opened.get(entry.id) as OpenEntry);
   }
 
   private open(entry: SharedStorageEntry, open: OpenEntry): void {
     const setup = this.resolveSetup(entry.setupId);
-    if (setup === undefined) {
+    if (!setup) {
       open.error = `The storage setup "${entry.setupId}" is not registered.`;
       return;
     }
@@ -135,7 +135,7 @@ export class StorageShareRegistry {
       open.backend = setup.open({
         directoryPath: this.directoryPath,
         config: entry.config,
-        ...(entry.password !== null ? { password: entry.password } : {}),
+        ...(entry.password ? { password: entry.password } : {}),
       });
       open.error = null;
     } catch (error) {
@@ -197,7 +197,7 @@ export class StorageShareRegistry {
             `The storage "${storageId}" is not shared with the chat agent. Flip its access to read-only in the settings.`,
           );
         }
-        if (open.backend === null) {
+        if (!open.backend) {
           throw new Error(`The storage "${storageId}" did not open: ${open.error ?? 'unknown error'}`);
         }
         return open.backend.get(key);

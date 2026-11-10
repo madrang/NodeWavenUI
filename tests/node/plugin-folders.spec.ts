@@ -6,7 +6,7 @@ import { expect } from 'chai';
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
 import * as nodePath from 'node:path';
-import { PluginManager, type PluginDescriptor } from '../../dist/plugins.js';
+import { PluginManager, type PluginDescriptor } from '../../dist/renderer/plugins.js';
 import {
   hashPluginFolder,
   isPluginFolderManifest,
@@ -15,8 +15,8 @@ import {
   type PluginFolderFs,
 } from '../../dist/renderer/plugin-folders.js';
 
-/** The real Node fs stands in for the NW.js slice the app reads through. */
-const fs = nodeFs as unknown as PluginFolderFs;
+/** The Node fs promises stand in for the bridge slice the app reads through. */
+const fs = nodeFs.promises as unknown as PluginFolderFs;
 
 /** One scratch app root with a plugins folder, removed after the test. */
 function scratchAppRoot(): { root: string; cleanup: () => void } {
@@ -25,7 +25,12 @@ function scratchAppRoot(): { root: string; cleanup: () => void } {
   return { root, cleanup: () => nodeFs.rmSync(root, { recursive: true, force: true }) };
 }
 
-function writePlugin(root: string, folder: string, manifest: Record<string, unknown>, files: Record<string, string> = {}): void {
+function writePlugin(
+  root: string,
+  folder: string,
+  manifest: Record<string, unknown>,
+  files: Record<string, string> = {},
+): void {
   const folderPath = nodePath.join(root, 'plugins', folder);
   nodeFs.mkdirSync(folderPath, { recursive: true });
   nodeFs.writeFileSync(nodePath.join(folderPath, 'plugin.json'), JSON.stringify(manifest));
@@ -56,13 +61,13 @@ describe('the manifest guard', () => {
 });
 
 describe('the folder scan', () => {
-  it('accepts manifest folders and skips the rest with a reason', () => {
+  it('accepts manifest folders and skips the rest with a reason', async () => {
     const { root, cleanup } = scratchAppRoot();
     try {
       writePlugin(root, 'selftest', { id: 'selftest', name: 'Self Test', entry: 'index.js' }, { 'index.js': 'module.exports = {};' });
       writePlugin(root, 'broken', { id: 'broken' });
       nodeFs.mkdirSync(nodePath.join(root, 'plugins', 'no-manifest'), { recursive: true });
-      const scan = scanPluginFolders(root, fs);
+      const scan = await scanPluginFolders(root, fs);
       expect(scan.plugins).to.have.lengthOf(1);
       expect(scan.plugins[0]?.manifest.id).to.equal('selftest');
       expect(scan.plugins[0]?.manifest.entry).to.equal('index.js');
@@ -73,10 +78,10 @@ describe('the folder scan', () => {
     }
   });
 
-  it('reports an empty scan when the plugins folder is missing', () => {
+  it('reports an empty scan when the plugins folder is missing', async () => {
     const root = nodeFs.mkdtempSync(nodePath.join(nodeFs.realpathSync(nodeOs.tmpdir()), 'plugin-empty-'));
     try {
-      const scan = scanPluginFolders(root, fs);
+      const scan = await scanPluginFolders(root, fs);
       expect(scan.plugins).to.deep.equal([]);
       expect(scan.skipped).to.deep.equal([]);
     } finally {

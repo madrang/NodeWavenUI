@@ -11,4 +11,13 @@
   --accent: #2563eb;
   --on-accent: #ffffff;
   --error: #b3261e;
+  /* The strong accent fills what carries text, with contrast headroom over the plain accent. */
+  --accent-strong: #1e51c4;
+  /* The categorical palette of the Graphs window: distinct dark hues that never reuse the semantic colors. */
+  --chart-1: #2563eb;
+  --chart-2: #1e8e5a;
+  --chart-3: #a16a0e;
+  --chart-4: #7a4fd0;
+  --chart-5: #0e7d94;
+  --chart-6: #c0447f;
 }

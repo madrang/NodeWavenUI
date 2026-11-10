@@ -5,11 +5,11 @@
  */
 
 import { OpenAiInferenceProvider } from '../providers/openai.js';
-import type { ChatImage, ChatMessage, CompletionDelta, ToolCall } from '../providers/provider.js';
-import type { StorageSetup, SystemPromptSetup } from '../plugins.js';
+import type { ChatImage, ChatMessage, CompletionDelta, ThinkingLevel, ToolCall } from '../providers/provider.js';
+import type { StorageSetup, SystemPromptSetup } from './plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
-import { closeWindow, minimizeWindow } from '../shared/nw.js';
+import { closeWindow, minimizeWindow } from './window-ops.js';
 import type {
   ModelEntry,
   ProviderAccount,
@@ -17,6 +17,7 @@ import type {
   WorkspaceSettings,
 } from '../shared/workspace.js';
 import { emptyProviderRegistry } from '../shared/workspace.js';
+import { presetOfAccount, PROVIDER_PRESETS } from '../shared/provider-presets/index.js';
 import {
   agentToolDefinition,
   agentToolRule,
@@ -27,10 +28,10 @@ import {
   type AgentToolDeps,
   type AgentToolOutput,
 } from './agent-tools.js';
-import { ChatSessionStore, type ChatEntry, type StoredChatSession, type StoredSystemPrompt } from './chat-sessions.js';
+import { type ChatSessionStore, type ChatEntry, type StoredChatSession, type StoredSystemPrompt } from './chat-sessions.js';
 import { JsonViewerElement } from './json-viewer-element.js';
-import type { McpClientManager } from './mcp-client/manager.js';
-import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from './mcp-host.js';
+import type { McpClientSurface } from './mcp-client-adapter.js';
+import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from '../shared/window-tools.js';
 import type { NotificationHub } from './notification-hub.js';
 import type { PermissionGate } from './permission-gate.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
@@ -39,7 +40,7 @@ import { requireElement } from './dom.js';
 import type { WorkspaceSettingsStore } from './settings-store.js';
 import {
   EMPTY_SHARED_STORAGES,
-  StorageShareRegistry,
+  type StorageShareRegistry,
   type SharedStoragesRecord,
   type StorageAccess,
   type SharedStorageEntry,
@@ -47,9 +48,7 @@ import {
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
 import type { PluginFolderController } from './plugin-folders.js';
-import type { FrameManager } from './frames.js';
 import { defaultSystemPromptSetup, NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
-import type { ChildWindowManager } from './window-manager.js';
 
 /** The longest edge of a pasted or dropped image, in pixels. Bigger pictures scale down. */
 const MAX_IMAGE_EDGE = 1280;
@@ -76,7 +75,7 @@ function reasoningTailOf(text: string): string {
 
 /** Reads the image files out of one clipboard or drag file list. */
 function imageFilesOf(files: FileList | null): readonly File[] {
-  if (files === null) {
+  if (!files) {
     return [];
   }
   return Array.from(files).filter((file) => file.type.startsWith('image/'));
@@ -93,6 +92,7 @@ function splitCommandLine(line: string): { readonly command: string; readonly ar
 
 /** Formats one token count for the status bar: plain below 1000, one decimal in k above. */
 function formatTokenCount(count: number | undefined): string {
+  // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real count, only absence shows the dash
   if (count === undefined) {
     return '–';
   }
@@ -126,6 +126,8 @@ interface Chat {
   contextTokens?: number;
   /** The output tokens of the whole chat, summed over the requests the provider reported. */
   outputTokens?: number;
+  /** The reasoning effort of this chat. Unset follows the workspace default. */
+  thinkingLevel?: ThinkingLevel;
 }
 
 /** One render slot: an entry with its list index, the key of the reasoning open-state. */
@@ -137,9 +139,9 @@ interface EntrySlot {
 /** One render group of the message list: one entry, an MCP request with its reply, or one agent
  * turn: the tool calls of an assistant reply with the tool results that answer them. */
 type MessageGroup =
-  | { readonly kind: 'single'; readonly slot: EntrySlot }
-  | { readonly kind: 'pair'; readonly request: EntrySlot; readonly reply: EntrySlot | null }
-  | { readonly kind: 'agent'; readonly request: EntrySlot; readonly replies: readonly EntrySlot[] };
+  | { readonly kind: 'single'; readonly slot: EntrySlot } |
+  { readonly kind: 'pair'; readonly request: EntrySlot; readonly reply: EntrySlot | null } |
+  { readonly kind: 'agent'; readonly request: EntrySlot; readonly replies: readonly EntrySlot[] };
 
 /** Drives the main app screen. */
 export class MainApp implements McpSessionSink {
@@ -147,9 +149,7 @@ export class MainApp implements McpSessionSink {
   private readonly store: WorkspaceSettingsStore;
   private readonly storageLabel: string;
   private readonly permissionGate: PermissionGate | null;
-  private readonly windowManager: ChildWindowManager;
-  private readonly frames: FrameManager;
-  private readonly mcpClients: McpClientManager;
+  private readonly mcpClients: McpClientSurface;
   private readonly notificationHub: NotificationHub;
   private readonly workspacePath: string;
   private readonly storageShares: StorageShareRegistry;
@@ -176,6 +176,8 @@ export class MainApp implements McpSessionSink {
   private chatAbort: AbortController | null = null;
   /** How many provider rounds one message may spend on tool calls. Null means no limit. */
   private agentTurnLimit: number | null = null;
+  /** The default reasoning effort of the chats. Null means the endpoint default. */
+  private agentThinkingDefault: ThinkingLevel | null = null;
 
   private readonly tabSettings = requireElement<HTMLButtonElement>('#tab-settings');
   private readonly chatTabs = requireElement<HTMLElement>('#chat-tab-list');
@@ -193,6 +195,7 @@ export class MainApp implements McpSessionSink {
   private readonly providerList = requireElement<HTMLElement>('#provider-list');
   private readonly providerAdd = requireElement<HTMLDetailsElement>('#provider-add');
   private readonly providerAddForm = requireElement<HTMLFormElement>('#provider-add-form');
+  private readonly providerAddPreset = requireElement<HTMLSelectElement>('#provider-add-preset');
   private readonly providerAddLabel = requireElement<HTMLInputElement>('#provider-add-label');
   private readonly providerAddUrl = requireElement<HTMLInputElement>('#provider-add-url');
   private readonly providerAddKey = requireElement<HTMLInputElement>('#provider-add-key');
@@ -228,8 +231,6 @@ export class MainApp implements McpSessionSink {
    * @param store The settings store of the workspace.
    * @param storageLabel The display label of the storage the workspace uses.
    * @param permissionGate The permission gate of the workspace, or null before one exists.
-   * @param windowManager The child window manager the agent tools drive.
-   * @param frames The frame tiling manager, for the agent tools.
    * @param mcpClients The MCP client manager of the workspace.
    * @param notificationHub The notification hub of the workspace.
    * @param workspacePath The absolute path of the workspace directory.
@@ -244,9 +245,7 @@ export class MainApp implements McpSessionSink {
     store: WorkspaceSettingsStore,
     storageLabel: string,
     permissionGate: PermissionGate | null,
-    windowManager: ChildWindowManager,
-    frames: FrameManager,
-    mcpClients: McpClientManager,
+    mcpClients: McpClientSurface,
     notificationHub: NotificationHub,
     workspacePath: string,
     storageShares: StorageShareRegistry,
@@ -259,8 +258,6 @@ export class MainApp implements McpSessionSink {
     this.store = store;
     this.storageLabel = storageLabel;
     this.permissionGate = permissionGate;
-    this.windowManager = windowManager;
-    this.frames = frames;
     this.mcpClients = mcpClients;
     this.notificationHub = notificationHub;
     this.workspacePath = workspacePath;
@@ -330,10 +327,10 @@ export class MainApp implements McpSessionSink {
     this.renderPluginFolders();
     this.initializeProviderSection();
     requireElement<HTMLButtonElement>('#app-close').addEventListener('click', () => {
-      closeWindow();
+      void closeWindow();
     });
     requireElement<HTMLButtonElement>('#app-minimize').addEventListener('click', () => {
-      minimizeWindow();
+      void minimizeWindow();
     });
     this.tabSettings.addEventListener('click', () => {
       this.activateSettings();
@@ -417,13 +414,20 @@ export class MainApp implements McpSessionSink {
         entries: [...session.entries],
         ...(session.boundProviderId ? { boundProviderId: session.boundProviderId } : {}),
         ...(session.boundModel ? { boundModel: session.boundModel } : {}),
+        // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
         ...(session.contextTokens !== undefined ? { contextTokens: session.contextTokens } : {}),
+        // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
         ...(session.outputTokens !== undefined ? { outputTokens: session.outputTokens } : {}),
         ...(session.systemPrompt ? { boundSystemPrompt: session.systemPrompt } : {}),
+        ...(session.thinkingLevel ? { thinkingLevel: session.thinkingLevel } : {}),
       };
       this.nextChatId += 1;
       this.chats.push(chat);
     }
+    // The id counter also names new chats. A closed chat drops its file, so a restored title
+    // can carry a number above the session count, and the counter must clear it.
+    const highestChatNumber = Math.max(0, ...this.chats.map((chat) => Number(/^Chat (\d+)$/.exec(chat.title)?.[1] ?? 0)));
+    this.nextChatId = Math.max(this.nextChatId, highestChatNumber + 1);
     const newest = this.chats.at(-1) ?? null;
     if (!newest) {
       this.newChat();
@@ -444,9 +448,12 @@ export class MainApp implements McpSessionSink {
       entries: chat.entries,
       ...(chat.boundProviderId ? { boundProviderId: chat.boundProviderId } : {}),
       ...(chat.boundModel ? { boundModel: chat.boundModel } : {}),
+      // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
       ...(chat.contextTokens !== undefined ? { contextTokens: chat.contextTokens } : {}),
+      // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
       ...(chat.outputTokens !== undefined ? { outputTokens: chat.outputTokens } : {}),
       ...(chat.boundSystemPrompt ? { systemPrompt: chat.boundSystemPrompt } : {}),
+      ...(chat.thinkingLevel ? { thinkingLevel: chat.thinkingLevel } : {}),
     };
     this.chatSessions.saveSession(session);
   }
@@ -523,13 +530,13 @@ export class MainApp implements McpSessionSink {
       this.showMcpEndpointStatus('The command is required.', true);
       return;
     }
-    const transport: McpEndpoint['transport'] = isHttp
-      ? { kind: 'http', url: this.mcpAddUrl.value.trim(), ...(token.length > 0 ? { token } : {}) }
-      : {
-          kind: 'stdio',
-          command: commandLine.command,
-          ...(commandLine.args.length > 0 ? { args: commandLine.args } : {}),
-        };
+    const transport: McpEndpoint['transport'] = isHttp ?
+      { kind: 'http', url: this.mcpAddUrl.value.trim(), ...(token.length > 0 ? { token } : {}) } :
+      {
+        kind: 'stdio',
+        command: commandLine.command,
+        ...(commandLine.args.length > 0 ? { args: commandLine.args } : {}),
+      };
     const endpoint: McpEndpoint = {
       id: crypto.randomUUID(),
       label,
@@ -581,7 +588,10 @@ export class MainApp implements McpSessionSink {
   }
 
   /** One endpoint card: label, transport, live state, the mode dropdown, and the remove action. */
-  private buildMcpEndpointCard(endpoint: McpEndpoint, state: { state: string; error: string | null } | null): HTMLElement {
+  private buildMcpEndpointCard(
+    endpoint: McpEndpoint,
+    state: { state: string; error: string | null } | null,
+  ): HTMLElement {
     const card = document.createElement('div');
     card.className = 'mcp-endpoint';
     const title = document.createElement('span');
@@ -594,11 +604,11 @@ export class MainApp implements McpSessionSink {
     const stateText = document.createElement('span');
     stateText.className = `mcp-endpoint-state ${state?.state ?? 'dormant'}`;
     stateText.textContent =
-      !state
-        ? 'disabled'
-        : state.state === 'error' && state.error
-          ? `error: ${state.error}`
-          : state.state;
+      !state ?
+        'disabled' :
+        state.state === 'error' && state.error ?
+          `error: ${state.error}` :
+          state.state;
     const modeSelect = document.createElement('select');
     modeSelect.className = 'mcp-endpoint-mode';
     for (const [value, label] of [
@@ -823,7 +833,7 @@ export class MainApp implements McpSessionSink {
       }
       for (const name of ['read', 'evaluate']) {
         // A rule that already governs the tool holds the user's choice, so a repeated seeding adds nothing.
-        if (agentToolRule(name, gate.listRules()) !== null) {
+        if (agentToolRule(name, gate.listRules())) {
           continue;
         }
         await gate.addRule({
@@ -958,9 +968,9 @@ export class MainApp implements McpSessionSink {
       row.className = 'mcp-endpoint';
       const name = document.createElement('span');
       name.className = 'mcp-endpoint-label';
-      const versionText = state.version !== undefined ? ` ${state.version}` : '';
+      const versionText = state.version ? ` ${state.version}` : '';
       name.textContent = `${state.name}${versionText}`;
-      if (state.description !== undefined) {
+      if (state.description) {
         name.title = state.description;
       }
       const detail = document.createElement('span');
@@ -989,11 +999,11 @@ export class MainApp implements McpSessionSink {
       }
       // A reset row shows the stored digest beside the digest of the changed folder, so the
       // cause of the disabled state reads at a glance.
-      if (state.previousDigest !== undefined) {
+      if (state.previousDigest) {
         row.append(this.pluginDigestLine(`sha256 old ${state.previousDigest}`));
       }
-      if (state.digest !== undefined) {
-        row.append(this.pluginDigestLine(`sha256 ${state.previousDigest === undefined ? '' : 'new '}${state.digest}`));
+      if (state.digest) {
+        row.append(this.pluginDigestLine(`sha256 ${state.previousDigest ? 'new ' : ''}${state.digest}`));
       }
       this.pluginFolderList.append(row);
     }
@@ -1125,7 +1135,14 @@ export class MainApp implements McpSessionSink {
   }
 
   /** McpSessionSink: one tool result of a session lands in the host tab, a JSON reply in the viewer, an image reply as thumbnails. */
-  toolResult(sessionId: string, toolName: string, summary: string, isError: boolean, json?: unknown, images?: readonly ChatImage[]): void {
+  toolResult(
+    sessionId: string,
+    toolName: string,
+    summary: string,
+    isError: boolean,
+    json?: unknown,
+    images?: readonly ChatImage[],
+  ): void {
     this.appendMcpEntry(sessionId, isError ? 'error' : 'assistant', summary, json, toolName, images);
   }
 
@@ -1195,9 +1212,9 @@ export class MainApp implements McpSessionSink {
     if (requests.length === 0 && all.length > 0) {
       const notice = document.createElement('p');
       notice.className = 'permission-request-waiting';
-      notice.textContent = hostTabActive
-        ? 'A permission request waits in a chat tab. Open the tab to answer it.'
-        : 'A permission request waits in the MCP Host tab. Open the tab to answer it.';
+      notice.textContent = hostTabActive ?
+        'A permission request waits in a chat tab. Open the tab to answer it.' :
+        'A permission request waits in the MCP Host tab. Open the tab to answer it.';
       this.permissionRequests.append(notice);
     }
     this.permissionRequests.hidden = this.permissionRequests.childElementCount === 0;
@@ -1259,7 +1276,7 @@ export class MainApp implements McpSessionSink {
     });
   }
 
-  /** Loads the agent tool round limit of the workspace and wires the dropdown of the settings pane. */
+  /** Loads the agent round limit and thinking default of the workspace and wires the dropdowns of the settings pane. */
   private async initializeAgentTurnControls(): Promise<void> {
     try {
       this.agentTurnLimit = await this.store.loadAgentTurnLimit();
@@ -1268,7 +1285,7 @@ export class MainApp implements McpSessionSink {
       console.warn(`[NodeWavenUI] the stored agent round limit could not be read, no limit applies: ${message}`);
     }
     const turnsSelect = requireElement<HTMLSelectElement>('#agent-turns-select');
-    turnsSelect.value = this.agentTurnLimit === null ? '' : String(this.agentTurnLimit);
+    turnsSelect.value = this.agentTurnLimit ? String(this.agentTurnLimit) : '';
     turnsSelect.addEventListener('change', () => {
       const value = Number(turnsSelect.value);
       this.agentTurnLimit = turnsSelect.value === '' ? null : value;
@@ -1277,11 +1294,49 @@ export class MainApp implements McpSessionSink {
         console.warn(`[NodeWavenUI] the agent round limit could not be saved: ${message}`);
       });
     });
+    try {
+      this.agentThinkingDefault = await this.store.loadAgentThinking();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the stored agent thinking default could not be read, the endpoint default applies: ${message}`);
+    }
+    const thinkingSelect = requireElement<HTMLSelectElement>('#agent-thinking-select');
+    thinkingSelect.value = this.agentThinkingDefault ?? '';
+    thinkingSelect.addEventListener('change', () => {
+      const value = thinkingSelect.value;
+      this.agentThinkingDefault = value === 'low' || value === 'medium' || value === 'high' ? value : null;
+      this.store.saveAgentThinking(this.agentThinkingDefault).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[NodeWavenUI] the agent thinking default could not be saved: ${message}`);
+      });
+    });
   }
 
   /** Renders the provider cards. The add form is a collapsed disclosure below the list. */
   private initializeProviderSection(): void {
     this.renderProviders();
+    // The preset list offers every known endpoint; picking one prefills the label and the URL.
+    const custom = document.createElement('option');
+    custom.value = '';
+    custom.textContent = 'Custom endpoint';
+    this.providerAddPreset.append(custom);
+    for (const preset of PROVIDER_PRESETS) {
+      const option = document.createElement('option');
+      option.value = preset.id;
+      option.textContent = `${preset.label} — ${preset.baseUrl}`;
+      this.providerAddPreset.append(option);
+    }
+    this.providerAddPreset.addEventListener('change', () => {
+      const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === this.providerAddPreset.value);
+      if (!preset) {
+        return;
+      }
+      if (this.providerAddLabel.value.trim().length === 0) {
+        this.providerAddLabel.value = preset.label;
+      }
+      this.providerAddUrl.value = preset.baseUrl;
+      this.updateAddFormState();
+    });
     for (const field of [this.providerAddLabel, this.providerAddUrl, this.providerAddKey]) {
       field.addEventListener('input', () => {
         this.updateAddFormState();
@@ -1345,7 +1400,7 @@ export class MainApp implements McpSessionSink {
 
   /** Reads the vision flag of one model of an account. An unknown model reads text only. */
   private modelVision(account: ProviderAccount, modelId: string | null): boolean {
-    if (modelId === null) {
+    if (!modelId) {
       return false;
     }
     return account.models.find((model) => model.id === modelId)?.vision ?? false;
@@ -1383,8 +1438,10 @@ export class MainApp implements McpSessionSink {
       label: this.providerAddLabel.value.trim() || 'Provider',
       baseUrl,
       apiKey: this.providerAddKey.value.trim(),
+      ...(this.providerAddPreset.value ? { presetId: this.providerAddPreset.value } : {}),
       models: [],
     };
+    this.providerAddPreset.value = '';
     this.providerAddLabel.value = '';
     this.providerAddUrl.value = '';
     this.providerAddKey.value = '';
@@ -1596,7 +1653,10 @@ export class MainApp implements McpSessionSink {
       return;
     }
     this.persistRegistry(
-      { ...this.registry, accounts: this.registry.accounts.map((candidate) => (candidate.id === id ? rewrite(candidate) : candidate)) },
+      {
+        ...this.registry,
+        accounts: this.registry.accounts.map((candidate) => (candidate.id === id ? rewrite(candidate) : candidate)),
+      },
       successText,
     );
   }
@@ -1658,7 +1718,9 @@ export class MainApp implements McpSessionSink {
     this.persistRegistry(
       {
         ...this.registry,
-        accounts: this.registry.accounts.map((candidate) => (candidate.id === id ? { ...candidate, models } : candidate)),
+        accounts: this.registry.accounts.map((candidate) =>
+          candidate.id === id ? { ...candidate, models } : candidate,
+        ),
         defaultModel: nextDefault,
       },
       'Model removed.',
@@ -1713,9 +1775,9 @@ export class MainApp implements McpSessionSink {
       return null;
     }
     const model =
-      chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel)
-        ? chat.pendingModel
-        : this.effectiveDefaultModel(account);
+      chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel) ?
+        chat.pendingModel :
+        this.effectiveDefaultModel(account);
     if (!model) {
       return null;
     }
@@ -1773,7 +1835,7 @@ export class MainApp implements McpSessionSink {
     if (!chat.boundSystemPrompt && !this.chatHasConversation(chat)) {
       // The first send binds the prompt source and snapshots its text, so the chat keeps what it sent.
       const setup = this.selectedSystemPromptSetup(chat);
-      if (setup === null) {
+      if (!setup) {
         chat.boundSystemPrompt = { sourceId: NONE_SYSTEM_PROMPT_SETUP_ID, title: 'No system prompt', text: '' };
       } else {
         let promptText: string;
@@ -1800,17 +1862,19 @@ export class MainApp implements McpSessionSink {
     if (!connection) {
       chat.entries.push({
         role: chat.boundProviderId ? 'error' : 'notice',
-        content: chat.boundProviderId
-          ? 'The provider of this chat no longer exists. Open a new chat tab for a different model.'
-          : 'No provider is configured. Open the Settings tab, add a provider, and give it a model.',
+        content: chat.boundProviderId ?
+          'The provider of this chat no longer exists. Open a new chat tab for a different model.' :
+          'No provider is configured. Open the Settings tab, add a provider, and give it a model.',
       });
       this.renderMessages();
       this.persistChat(chat);
       return;
     }
+    const preset = presetOfAccount(connection.account);
     const provider = new OpenAiInferenceProvider({
       baseUrl: connection.account.baseUrl,
       apiKey: connection.account.apiKey,
+      ...(preset?.beforeRequest ? { beforeRequest: preset.beforeRequest } : {}),
     });
     if (!chat.boundProviderId) {
       // The first send binds the chat to this provider and model, and locks the status bar.
@@ -1824,7 +1888,15 @@ export class MainApp implements McpSessionSink {
     this.renderMessages();
     let stopped = false;
     try {
-      await this.runAgentTurn(chat, provider, connection.model, connection.vision, this.agentTurnLimit, abort.signal);
+      await this.runAgentTurn(
+        chat,
+        provider,
+        connection.model,
+        connection.vision,
+        this.agentTurnLimit,
+        chat.thinkingLevel ?? this.agentThinkingDefault ?? undefined,
+        abort.signal,
+      );
     } catch (error) {
       if (abort.signal.aborted) {
         stopped = true;
@@ -1911,7 +1983,7 @@ export class MainApp implements McpSessionSink {
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext('2d');
-    if (context === null) {
+    if (!context) {
       throw new Error('The page could not create a drawing context.');
     }
     context.drawImage(bitmap, 0, 0, width, height);
@@ -1947,7 +2019,6 @@ export class MainApp implements McpSessionSink {
   /** The dependencies the agent tools build from. The rule reader feeds the tool rule layer. */
   private agentToolDeps(): AgentToolDeps {
     return {
-      windowManager: this.windowManager,
       gate:
         this.permissionGate ?? {
           check: async () => {
@@ -1955,7 +2026,6 @@ export class MainApp implements McpSessionSink {
           },
         },
       mcpClients: this.mcpClients,
-      frames: this.frames,
       workspacePath: this.workspacePath,
       storageShares: this.storageShares,
       toolRules: () => this.permissionGate?.listRules() ?? [],
@@ -1974,6 +2044,7 @@ export class MainApp implements McpSessionSink {
     model: string,
     vision: boolean,
     limit: number | null,
+    thinkingLevel: string | undefined,
     signal: AbortSignal,
   ): Promise<void> {
     let turn = 0;
@@ -1986,6 +2057,7 @@ export class MainApp implements McpSessionSink {
         model,
         messages,
         tools: tools.map(agentToolDefinition),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
         onDelta: streaming.onDelta,
         signal,
       });
@@ -2122,7 +2194,10 @@ export class MainApp implements McpSessionSink {
    * The entry is tracked by identity, because a message queued mid-run appends after it.
    * The renders stay throttled, so a long stream does not thrash the message list.
    */
-  private beginStreamingEntry(chat: Chat): { onDelta: (delta: CompletionDelta) => void; settle: (entry: ChatEntry) => void } {
+  private beginStreamingEntry(chat: Chat): {
+    onDelta: (delta: CompletionDelta) => void;
+    settle: (entry: ChatEntry) => void;
+  } {
     let liveContent = '';
     let liveReasoning = '';
     // The slot is tracked through its replacements, because a message queued mid-run appends after it.
@@ -2191,7 +2266,7 @@ export class MainApp implements McpSessionSink {
     const tail = item.querySelector(':scope > details.reasoning > summary > .reasoning-tail');
     if (reasoning && tail instanceof HTMLElement) {
       tail.textContent = reasoningTailOf(reasoning);
-      if (this.reasoningTailTimer !== null) {
+      if (this.reasoningTailTimer) {
         window.clearTimeout(this.reasoningTailTimer);
       }
       // Reasoning that stops mid-stream clears its tail, and the settled render drops it entirely.
@@ -2347,6 +2422,35 @@ export class MainApp implements McpSessionSink {
     this.chatTabs.querySelector<HTMLElement>('.tab-group.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
+  /** The thinking select of one chat: Default follows the workspace setting, a level pins the chat. */
+  private buildThinkingSelect(chat: Chat): HTMLSelectElement {
+    const select = document.createElement('select');
+    select.title = 'The reasoning effort of this chat. Default follows the workspace setting.';
+    const levels: readonly (readonly [string, string])[] = [
+      ['', 'Default'],
+      ['low', 'Low'],
+      ['medium', 'Medium'],
+      ['high', 'High'],
+    ];
+    for (const [value, label] of levels) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      select.append(option);
+    }
+    select.value = chat.thinkingLevel ?? '';
+    select.addEventListener('change', () => {
+      const value = select.value;
+      if (value === 'low' || value === 'medium' || value === 'high') {
+        chat.thinkingLevel = value;
+      } else {
+        delete chat.thinkingLevel;
+      }
+      this.persistChat(chat);
+    });
+    return select;
+  }
+
   /** Renders the status bar of the active chat: the provider and model of the tab, and the token usage.
    * The provider and model stand as selects until the first send binds the chat, then as locked labels. */
   private renderChatStatus(): void {
@@ -2368,14 +2472,14 @@ export class MainApp implements McpSessionSink {
       modelLabel.className = 'chat-status-label';
       modelLabel.textContent =
         account && chat.boundModel ? this.modelDisplayName(account, chat.boundModel) : (chat.boundModel ?? '–');
-      this.chatStatus.append(providerLabel, modelLabel, usage);
+      this.chatStatus.append(providerLabel, modelLabel, this.buildThinkingSelect(chat), usage);
       return;
     }
     if (this.registry.accounts.length === 0) {
       const empty = document.createElement('span');
       empty.className = 'chat-status-label';
       empty.textContent = 'No provider';
-      this.chatStatus.append(empty, usage);
+      this.chatStatus.append(empty, this.buildThinkingSelect(chat), usage);
       return;
     }
     const selectedAccount =
@@ -2404,9 +2508,9 @@ export class MainApp implements McpSessionSink {
         modelSelect.append(option);
       }
       const pending =
-        chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel)
-          ? chat.pendingModel
-          : this.effectiveDefaultModel(account);
+        chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel) ?
+          chat.pendingModel :
+          this.effectiveDefaultModel(account);
       if (pending) {
         modelSelect.value = pending;
       }
@@ -2423,7 +2527,7 @@ export class MainApp implements McpSessionSink {
     modelSelect.addEventListener('change', () => {
       chat.pendingModel = modelSelect.value;
     });
-    this.chatStatus.append(providerSelect, modelSelect, usage);
+    this.chatStatus.append(providerSelect, modelSelect, this.buildThinkingSelect(chat), usage);
   }
 
   /** Groups the entries of one chat for the message list: an MCP request pairs with the reply that
@@ -2534,6 +2638,15 @@ export class MainApp implements McpSessionSink {
     return item;
   }
 
+  /** The text body of one tool reply: a pre when the content carries new lines, so its formatting
+   * survives the page layout, a span for a single line. */
+  private buildToolText(content: string): HTMLElement {
+    const body = document.createElement(content.includes('\n') ? 'pre' : 'span');
+    body.className = 'tool-reply-text';
+    body.textContent = content;
+    return body;
+  }
+
   /** One request/response pair: the framed group card with the labeled request section over the
    * labeled reply section. A missing reply shows the wait hint. */
   private buildToolPair(toolName: string, args: unknown, reply: ChatEntry | null, session?: string): HTMLElement {
@@ -2574,9 +2687,7 @@ export class MainApp implements McpSessionSink {
         replyViewer.value = reply.json;
         replySection.append(replyViewer);
       } else {
-        const body = document.createElement('span');
-        body.textContent = reply.content;
-        replySection.append(body);
+        replySection.append(this.buildToolText(reply.content));
       }
       if (reply.images && reply.images.length > 0) {
         replySection.append(this.buildImageStrip(reply.images));
@@ -2604,9 +2715,7 @@ export class MainApp implements McpSessionSink {
       viewer.value = entry.json;
       card.append(viewer);
     } else {
-      const body = document.createElement('span');
-      body.textContent = entry.content;
-      card.append(body);
+      card.append(this.buildToolText(entry.content));
     }
     if (entry.images && entry.images.length > 0) {
       card.append(this.buildImageStrip(entry.images));
@@ -2784,9 +2893,9 @@ export class MainApp implements McpSessionSink {
       option.textContent = source.label;
       select.append(option);
     }
-    select.value = this.promptSources.some((source) => source.id === selected)
-      ? selected
-      : (this.promptSources[0]?.id ?? '');
+    select.value = this.promptSources.some((source) => source.id === selected) ?
+      selected :
+      (this.promptSources[0]?.id ?? '');
     select.addEventListener('change', () => {
       chat.pendingSystemPromptId = select.value;
     });

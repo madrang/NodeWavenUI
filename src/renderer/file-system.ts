@@ -1,12 +1,20 @@
 /**
- * Shared filesystem access for the renderer pages, through the NW.js require global.
- * `fileSystem` answers the validated fs slice for callers that read error details, for example
- * the missing-file code of a marker read. The two silent helpers cover the callers that only
- * need a value or its absence: they answer with null on every failure, and the caller decides
- * what the failure means. Nothing here works outside NW.js.
+ * Shared filesystem access for the renderer pages, through the `nodewavenui` bridge of the
+ * preload. The read helpers answer with null on every failure, and the caller decides what the
+ * failure means. The mutations pass the bridge error through. Nothing here works outside an app
+ * window of the Electron main process.
  */
 
-import { requireNodeModule } from '../shared/node-access.js';
+import { readBridge } from '../shared/bridge.js';
+
+/** Reads the bridge, or throws when the page runs outside the app. */
+function bridge() {
+  const bridge = readBridge();
+  if (!bridge) {
+    throw new Error('The filesystem needs the nodewavenui bridge of an app window.');
+  }
+  return bridge;
+}
 
 /**
  * Joins a directory path and a file name into one path.
@@ -20,53 +28,15 @@ export function joinPath(directory: string, file: string): string {
   return `${directory.replace(/[\\/]+$/, '')}/${file}`;
 }
 
-/** The slice of the Node fs module the renderer uses. */
-export interface NodeFileSystem {
-  readdirSync(path: string): readonly string[];
-  readFileSync(path: string, encoding: 'utf-8'): string;
-  readFileSync(path: string): Uint8Array;
-  writeFileSync(path: string, contents: string): void;
-  mkdirSync(path: string, options: { recursive: boolean }): void;
-  rmSync(path: string, options: { force: boolean }): void;
-  statSync(path: string): { isDirectory(): boolean };
-}
-
-/**
- * Reads the Node fs module with its shape validated.
- *
- * @returns The module, or null outside NW.js or when the shape does not match.
- */
-export function fileSystem(): NodeFileSystem | null {
-  const module = requireNodeModule('fs');
-  if (module === null || typeof module !== 'object') {
-    return null;
-  }
-  const fs = module as Partial<NodeFileSystem>;
-  return [
-    fs.readdirSync,
-    fs.readFileSync,
-    fs.writeFileSync,
-    fs.mkdirSync,
-    fs.rmSync,
-    fs.statSync,
-  ].every((method) => typeof method === 'function')
-    ? (fs as NodeFileSystem)
-    : null;
-}
-
 /**
  * Lists the file and folder names of one directory.
  *
  * @param directory The absolute directory path.
- * @returns The names, or null when the filesystem is unreachable or the directory cannot be read.
+ * @returns The names, or null when the bridge is missing or the directory cannot be read.
  */
-export function listDirectoryNames(directory: string): readonly string[] | null {
-  const fs = fileSystem();
-  if (fs === null) {
-    return null;
-  }
+export async function listDirectoryNames(directory: string): Promise<readonly string[] | null> {
   try {
-    return fs.readdirSync(directory).filter((name): name is string => typeof name === 'string');
+    return await bridge().fs.list(directory);
   } catch {
     return null;
   }
@@ -76,15 +46,93 @@ export function listDirectoryNames(directory: string): readonly string[] | null 
  * Reads one text file.
  *
  * @param path The absolute file path.
- * @returns The file text, or null when the filesystem is unreachable or the file cannot be read.
+ * @returns The file text, or null when the bridge is missing or the file cannot be read.
  */
-export function readTextFile(path: string): string | null {
-  const fs = fileSystem();
-  if (fs === null) {
+export async function readTextFile(path: string): Promise<string | null> {
+  try {
+    return await bridge().fs.readText(path);
+  } catch {
     return null;
   }
+}
+
+/**
+ * Reads one file as bytes.
+ *
+ * @param path The absolute file path.
+ * @returns The bytes, or null when the bridge is missing or the file cannot be read.
+ */
+export async function readDataFile(path: string): Promise<Uint8Array | null> {
   try {
-    return fs.readFileSync(path, 'utf-8');
+    return await bridge().fs.readData(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Writes one text file, replacing what it held.
+ *
+ * @param path The absolute file path.
+ * @param text The text to write.
+ * @throws Error when the bridge is missing or the file cannot be written.
+ */
+export async function writeTextFile(path: string, text: string): Promise<void> {
+  await bridge().fs.writeText(path, text);
+}
+
+/**
+ * Writes one file from bytes, replacing what it held.
+ *
+ * @param path The absolute file path.
+ * @param data The bytes to write.
+ * @throws Error when the bridge is missing or the file cannot be written.
+ */
+export async function writeDataFile(path: string, data: Uint8Array): Promise<void> {
+  await bridge().fs.writeData(path, data);
+}
+
+/**
+ * Creates one directory, with every missing parent.
+ *
+ * @param path The absolute directory path.
+ * @throws Error when the bridge is missing or the directory cannot be created.
+ */
+export async function makeDirectory(path: string): Promise<void> {
+  await bridge().fs.makeDirectory(path);
+}
+
+/**
+ * Removes one file or directory tree, also when partly absent.
+ *
+ * @param path The absolute path.
+ * @throws Error when the bridge is missing or the path cannot be removed.
+ */
+export async function removePath(path: string): Promise<void> {
+  await bridge().fs.remove(path);
+}
+
+/**
+ * Renames or moves one file or directory.
+ *
+ * @param from The absolute source path.
+ * @param to The absolute target path.
+ * @throws Error when the bridge is missing or the move fails.
+ */
+export async function renamePath(from: string, to: string): Promise<void> {
+  await bridge().fs.rename(from, to);
+}
+
+/**
+ * Reads one path.
+ *
+ * @param path The absolute path.
+ * @returns The stat with its directory flag, or null when the bridge is missing or nothing sits there.
+ */
+export async function statPath(path: string): Promise<{ directory: boolean } | null> {
+  try {
+    const stat = await bridge().fs.stat(path);
+    return stat ? { directory: stat.directory } : null;
   } catch {
     return null;
   }

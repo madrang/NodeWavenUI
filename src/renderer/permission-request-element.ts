@@ -22,7 +22,7 @@ export class PermissionRequestElement extends HTMLElement {
 
   /** Registers the element once. */
   static define(): void {
-    if (customElements.get('permission-request') === undefined) {
+    if (!customElements.get('permission-request')) {
       customElements.define('permission-request', PermissionRequestElement);
     }
   }
@@ -35,7 +35,7 @@ export class PermissionRequestElement extends HTMLElement {
 
   private dispatchResolve(approve: boolean, remember: boolean): void {
     const info = this.info;
-    if (info === null) {
+    if (!info) {
       return;
     }
     this.dispatchEvent(
@@ -48,7 +48,7 @@ export class PermissionRequestElement extends HTMLElement {
   private render(): void {
     const info = this.info;
     this.replaceChildren();
-    if (info === null) {
+    if (!info) {
       return;
     }
     const line = document.createElement('p');

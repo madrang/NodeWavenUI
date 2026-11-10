@@ -1,8 +1,11 @@
 /**
- * Access to the Node crypto and fs modules for the storage layer.
- * The require global read comes from `src/shared/node-access.ts`, which every compile context shares.
+ * Access to the Node crypto module and the fs slice for the storage layer.
+ * The require global read comes from `src/shared/node-access.ts`, which every compile context
+ * shares. The fs slice rides the `nodewavenui` bridge, because the storage backends run in
+ * sandboxed app windows.
  */
 
+import { readBridge } from '../shared/bridge.js';
 import { requireNodeModule } from '../shared/node-access.js';
 
 /** The slice of the Node crypto module the storage layer uses. */
@@ -52,6 +55,14 @@ export interface NodeFileSystem {
   existsSync(path: string): boolean;
 }
 
+/** The async fs slice the JSON settings file reads through. */
+export interface JsonFileFs {
+  read(path: string): Promise<string>;
+  write(path: string, text: string): Promise<void>;
+  rename(from: string, to: string): Promise<void>;
+  exists(path: string): Promise<boolean>;
+}
+
 /**
  * Reads the Node crypto module.
  *
@@ -66,23 +77,19 @@ export function nodeCrypto(): NodeCrypto | null {
 }
 
 /**
- * Reads the Node fs module.
+ * Builds the JSON settings fs slice over the `nodewavenui` bridge.
  *
- * @returns The module, or null when the page runs without the NW.js Node context or the module lacks a needed function.
+ * @returns The slice, or null when the page runs outside an app window.
  */
-export function nodeFileSystem(): NodeFileSystem | null {
-  const module = requireNodeModule('fs');
-  if (typeof module !== 'object' || module === null) {
+export function bridgeJsonFileFs(): JsonFileFs | null {
+  const fs = readBridge()?.fs;
+  if (!fs) {
     return null;
   }
-  const candidate = module as Partial<NodeFileSystem>;
-  if (
-    typeof candidate.readFileSync !== 'function' ||
-    typeof candidate.writeFileSync !== 'function' ||
-    typeof candidate.renameSync !== 'function' ||
-    typeof candidate.existsSync !== 'function'
-  ) {
-    return null;
-  }
-  return candidate as NodeFileSystem;
+  return {
+    read: (path) => fs.readText(path),
+    write: (path, text) => fs.writeText(path, text),
+    rename: (from, to) => fs.rename(from, to),
+    exists: async (path) => (await fs.stat(path)) !== null,
+  };
 }

@@ -140,7 +140,7 @@ export class PermissionGate {
    */
   async resolveRequest(id: number, approve: boolean, remember: boolean): Promise<void> {
     const request = this.pending.get(id);
-    if (request === undefined) {
+    if (!request) {
       return;
     }
     this.pending.delete(id);

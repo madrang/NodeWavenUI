@@ -1,40 +1,20 @@
 /**
- * NW.js globals the renderer pages read.
- * The Node require global and the platform read live in `src/shared/node-access.ts`,
- * which every compile context shares.
+ * The app facts the renderer pages read over the `nodewavenui` bridge: the app root and the
+ * platform. The bridge itself lives in `src/shared/bridge.ts`.
  */
 
-/** The slice of the Node child_process module the renderer uses. */
-export interface NodeChildProcess {
-  execFile?: (
-    command: string,
-    args: readonly string[],
-    callback: (error: unknown, stdout: string) => void,
-  ) => unknown;
-}
+import { readBridge } from '../shared/bridge.js';
 
 /**
  * Reads the root directory of the app, the directory that holds the package.json.
- * The NW.js start path is the reliable source; the working directory is the fallback,
- * because NW.js starts the process there for an unpacked app.
  *
- * @returns The absolute directory path, or null outside NW.js or when neither source reports a string.
+ * @returns The absolute directory path, or null outside an app window.
  */
-export function readAppRootPath(): string | null {
-  const nw = (globalThis as { nw?: { App?: { startPath?: unknown } } }).nw;
-  if (typeof nw?.App?.startPath === 'string' && nw.App.startPath.length > 0) {
-    return nw.App.startPath;
+export async function readAppRootPath(): Promise<string | null> {
+  const bridge = readBridge();
+  if (!bridge) {
+    return null;
   }
-  const process = (globalThis as { process?: { cwd?: unknown } }).process;
-  if (typeof process?.cwd === 'function') {
-    try {
-      const cwd = (process.cwd as () => unknown)();
-      if (typeof cwd === 'string' && cwd.length > 0) {
-        return cwd;
-      }
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  const root = await bridge.app.appRoot();
+  return root.length > 0 ? root : null;
 }

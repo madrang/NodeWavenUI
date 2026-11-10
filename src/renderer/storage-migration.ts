@@ -44,14 +44,14 @@ export async function migrateLegacyStorage(
   password: string | null,
 ): Promise<StorageMigrationResult | null> {
   const successor = JSON_SUCCESSORS[settings.storageId];
-  if (successor === undefined) {
+  if (!successor) {
     return null;
   }
   const suite: EncryptionSuiteId | undefined = suiteFromConfig(settings.storageConfig);
   const jsonBackend = new JsonFileStorage({
     path: jsonSettingsFilePath(directoryPath),
-    ...(password !== null ? { password } : {}),
-    ...(suite !== undefined ? { suite } : {}),
+    ...(password ? { password } : {}),
+    ...(suite ? { suite } : {}),
   });
   let copiedCount: number;
   try {
@@ -65,7 +65,7 @@ export async function migrateLegacyStorage(
   }
   const migratedSettings: WorkspaceSettings = { ...settings, storageId: successor };
   const writeError = writeWorkspaceMarker(directoryPath, migratedSettings);
-  if (writeError !== null) {
+  if (writeError) {
     console.warn(
       `[NodeWavenUI] the migrated marker could not be written. The workspace opens on the old storage: ${writeError}`,
     );

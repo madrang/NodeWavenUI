@@ -1,7 +1,9 @@
 /**
- * The command line arguments of the app, read from the forwarded arguments of the NW.js App argv.
+ * The command line arguments and the version of the app, read over the `nodewavenui` bridge.
  * The print-and-quit arguments (`--version`, `--help`) run before any workspace opens.
  */
+
+import { readBridge } from '../shared/bridge.js';
 
 /** The app arguments the renderer reacts to. */
 export interface AppArguments {
@@ -21,27 +23,14 @@ export const HELP_TEXT = `Arguments:
   --expose-main-window           Expose the main window to chats and the MCP host. Dangerous.
   <workspace path>               Open this workspace at startup.`;
 
-/** Reads the forwarded command line arguments of the running app. */
-function forwardedArgv(): string[] {
-  const argv: string[] = [];
-  const processArgv = (globalThis as { process?: { argv?: unknown } }).process?.argv;
-  if (Array.isArray(processArgv)) {
-    argv.push(...processArgv.filter((item): item is string => typeof item === 'string'));
-  }
-  const appArgv = (globalThis as { nw?: { App?: { argv?: unknown } } }).nw?.App?.argv;
-  if (Array.isArray(appArgv)) {
-    argv.push(...appArgv.filter((item): item is string => typeof item === 'string'));
-  }
-  return argv;
-}
-
 /**
  * Reads the app arguments from the command line.
  *
- * @returns The present arguments.
+ * @returns The present arguments. No bridge yields the empty set.
  */
-export function readAppArguments(): AppArguments {
-  const argv = forwardedArgv();
+export async function readAppArguments(): Promise<AppArguments> {
+  const bridge = readBridge();
+  const argv = bridge ? await bridge.app.arguments() : [];
   return {
     version: argv.includes('--version'),
     help: argv.includes('--help'),
@@ -50,12 +39,15 @@ export function readAppArguments(): AppArguments {
 }
 
 /**
- * Reads the version of the running app from the NW.js manifest.
+ * Reads the version of the running app.
  *
- * @returns The version string, or "0.0.0" when the manifest is unreachable.
+ * @returns The version string, or "0.0.0" when the bridge is missing.
  */
-export function readAppVersion(): string {
-  const manifest = (globalThis as { nw?: { App?: { manifest?: { version?: unknown } } } }).nw?.App?.manifest;
-  const version = manifest?.version;
-  return typeof version === 'string' && version.length > 0 ? version : '0.0.0';
+export async function readAppVersion(): Promise<string> {
+  const bridge = readBridge();
+  if (!bridge) {
+    return '0.0.0';
+  }
+  const version = await bridge.app.version();
+  return version.length > 0 ? version : '0.0.0';
 }

@@ -27,8 +27,8 @@ export interface EncryptionSuiteOption {
 
 /** The derived key material of a suite. */
 export type EncryptionKey =
-  | { readonly kind: 'webcrypto'; readonly key: CryptoKey }
-  | { readonly kind: 'bytes'; readonly bytes: Uint8Array<ArrayBuffer> };
+  | { readonly kind: 'webcrypto'; readonly key: CryptoKey } |
+  { readonly kind: 'bytes'; readonly bytes: Uint8Array<ArrayBuffer> };
 
 /** The parameters record that fixes a suite to one salt. */
 export interface KdfParameters {
@@ -105,7 +105,7 @@ export function readEncryptionSuite(value: unknown): EncryptionSuiteId {
 
 function subtle(): SubtleCrypto {
   const subtleApi = globalThis.crypto?.subtle;
-  if (subtleApi === undefined) {
+  if (!subtleApi) {
     throw new StorageError('The Web Crypto API needs a secure context, and this page is not one.');
   }
   return subtleApi;

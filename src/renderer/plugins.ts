@@ -1,14 +1,17 @@
 /**
  * Plugin management for user-loaded providers and storage backends.
  * A plugin is a CommonJS module that exports a PluginDescriptor, directly or as its default export.
- * The NW.js page context loads plugin modules through its Node require global, so a plugin can reach native modules and the filesystem.
- * That reach is what enables platform-specific plugins, for example a DPAPI storage backend on Windows.
+ * The entries load in the main process, which holds the only require, and the registrations cross
+ * the bridge. Harness documents cross whole; the function-bearing registrations wait for the host
+ * to grow a proxy for them.
  */
 
-import { isInferenceProvider, type InferenceProvider } from './providers/provider.js';
-import { currentPlatform, nodeRequire } from './shared/node-access.js';
-import { isRecord } from './shared/records.js';
-import { isStorageBackend, type StorageBackend } from './storage/storage.js';
+import { isInferenceProvider, type InferenceProvider } from '../providers/provider.js';
+import { readBridge } from '../shared/bridge.js';
+import type { BridgePluginEntry } from '../shared/bridge.js';
+import { nodeRequire } from '../shared/node-access.js';
+import { isRecord } from '../shared/records.js';
+import { isStorageBackend, type StorageBackend } from '../storage/storage.js';
 
 /** What a plugin module exports. CommonJS form: `module.exports = descriptor`. */
 export interface PluginDescriptor {
@@ -141,25 +144,16 @@ export class PluginError extends Error {
 }
 
 /**
- * Checks that a value satisfies the PluginDescriptor shape.
+ * Checks that a value satisfies the BridgePluginEntry shape, the answer of the main-side load.
  *
  * @param value The value to check. It can have any type.
- * @returns True when the value carries an id string, a setup function, and a valid platform list.
+ * @returns True when the value carries an id string, the skip flag, and the harness doc list.
  */
-function hasDescriptorShape(value: unknown): value is PluginDescriptor {
+function isBridgePluginEntry(value: unknown): value is BridgePluginEntry {
   if (!isRecord(value)) {
     return false;
   }
-  const platforms = value.platforms;
-  const platformsValid =
-    platforms === undefined ||
-    (Array.isArray(platforms) && platforms.every((platform) => typeof platform === 'string'));
-  return (
-    typeof value.id === 'string' &&
-    value.id.length > 0 &&
-    typeof value.setup === 'function' &&
-    platformsValid
-  );
+  return typeof value.id === 'string' && value.id.length > 0 && typeof value.skipped === 'boolean' && Array.isArray(value.harnessDocs);
 }
 
 const FIELD_KINDS = ['text', 'password', 'select'];
@@ -247,23 +241,6 @@ function isHarnessDocSetup(value: unknown): value is HarnessDocSetup {
     typeof value.description === 'string' &&
     value.description.length > 0
   );
-}
-
-/**
- * Reads the plugin descriptor out of a module's exports.
- *
- * @param exports The module exports. It can have any type.
- * @returns The descriptor.
- * @throws PluginError when the exports carry no descriptor.
- */
-function readDescriptor(exports: unknown): PluginDescriptor {
-  if (isRecord(exports) && hasDescriptorShape(exports.default)) {
-    return exports.default;
-  }
-  if (hasDescriptorShape(exports)) {
-    return exports;
-  }
-  throw new PluginError('The plugin module exports no PluginDescriptor.');
 }
 
 /** Loads plugins and hands out the contributions they registered. */
@@ -369,32 +346,43 @@ export class PluginManager implements PluginRegistry {
   }
 
   /**
-   * Loads one plugin module and registers its contributions.
-   * A plugin that declares another platform loads nothing and reports no error.
-   *
-   * @param modulePath The CommonJS module to load, or any id the require resolves.
-   * @throws PluginError when require is missing, the module fails to load, the exports carry no descriptor, or the plugin id is taken.
-   */
+ * Loads one plugin entry through the main-side plugin host and registers its contributions.
+ * The entry runs in the main process, because the sandboxed page has no require.
+ * A plugin that declares another platform loads nothing and reports no error.
+ *
+ * @param modulePath The CommonJS module to load, or any id the main-side require resolves.
+ * @throws PluginError when no bridge serves the page, the entry fails to load, the answer carries no valid entry, or the plugin id is taken.
+ */
   async loadPlugin(modulePath: string): Promise<void> {
-    const require = nodeRequire();
-    if (require === null) {
-      throw new PluginError('Plugin loading needs the Node require of the NW.js page context.');
+    const bridge = readBridge();
+    if (!bridge) {
+      throw new PluginError('Plugin loading needs the nodewavenui bridge, because the entries load in the main process.');
     }
-    let exports: unknown;
+    let answer: unknown;
     try {
-      exports = require(modulePath);
+      answer = await bridge.plugins.loadEntry(modulePath);
     } catch (error) {
-      throw new PluginError(`Could not load the plugin module "${modulePath}".`, { cause: error });
+      const message = error instanceof Error ? error.message : String(error);
+      throw new PluginError(message);
     }
-    const descriptor = readDescriptor(exports);
-    if (this.plugins.has(descriptor.id)) {
-      throw new PluginError(`A plugin with the id "${descriptor.id}" is already loaded.`);
+    if (!isBridgePluginEntry(answer)) {
+      throw new PluginError('The main process answered no valid plugin entry.');
     }
-    if (descriptor.platforms !== undefined && !descriptor.platforms.includes(currentPlatform())) {
+    if (this.plugins.has(answer.id)) {
+      throw new PluginError(`A plugin with the id "${answer.id}" is already loaded.`);
+    }
+    if (answer.skipped) {
       return;
     }
-    this.plugins.set(descriptor.id, descriptor);
-    descriptor.setup(this);
+    // The setup already ran in the main process, so the stored descriptor keeps the id and platforms only.
+    this.plugins.set(answer.id, {
+      id: answer.id,
+      ...(Array.isArray(answer.platforms) ? { platforms: answer.platforms } : {}),
+      setup: () => {},
+    });
+    for (const doc of answer.harnessDocs) {
+      this.registerHarnessDoc(doc);
+    }
   }
 
   /**
@@ -407,7 +395,7 @@ export class PluginManager implements PluginRegistry {
    */
   async loadPluginsFromDirectory(directory: string): Promise<void> {
     const require = nodeRequire();
-    if (require === null) {
+    if (!require) {
       throw new PluginError('Plugin loading needs the Node require of the NW.js page context.');
     }
     let entries: readonly string[];

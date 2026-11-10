@@ -3,7 +3,7 @@
  * The default source joins the harness AGENTS.md document with the AGENTS.md file of the workspace.
  */
 
-import type { PluginRegistry, SystemPromptContext, SystemPromptSetup } from '../plugins.js';
+import type { PluginRegistry, SystemPromptContext, SystemPromptSetup } from './plugins.js';
 import { readHarnessDoc } from './doc-resources.js';
 import { joinPath, readTextFile } from './file-system.js';
 
@@ -26,6 +26,7 @@ const WORKSPACE_AGENTS_FILE = 'AGENTS.md';
 async function buildAgentsPrompt(context: SystemPromptContext): Promise<string> {
   const harness = await readHarnessDoc(AGENTS_HARNESS_URI);
   const workspaceDoc = readTextFile(joinPath(context.workspacePath, WORKSPACE_AGENTS_FILE));
+  // eslint-disable-next-line local/prefer-truthiness -- an empty AGENTS.md is present, only a failed read counts as absent
   if (workspaceDoc === null) {
     return `${harness}\n\nThe workspace directory holds no ${WORKSPACE_AGENTS_FILE} file.\n`;
   }

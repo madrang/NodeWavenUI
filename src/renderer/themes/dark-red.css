@@ -11,4 +11,14 @@
   --accent: #e05f55;
   --on-accent: #ffffff;
   --error: #ff8d80;
+  /* The strong accent fills what carries text, where the plain accent misses the contrast bar. */
+  --accent-strong: #c74a41;
+  /* The categorical palette of the Graphs window: distinct hues that never reuse the semantic colors.
+     The muted gray stands last, because a pink would sit too close to the accent. */
+  --chart-1: #e05f55;
+  --chart-2: #3dd68c;
+  --chart-3: #e8b34b;
+  --chart-4: #b58cff;
+  --chart-5: #4fc3d9;
+  --chart-6: #ad9497;
 }

@@ -17,8 +17,7 @@ import type {
   PluginFieldDefinition,
   PluginRegistry,
   StorageConfiguration,
-  StorageSetup,
-} from '../plugins.js';
+} from './plugins.js';
 
 const MINIMUM_PASSWORD_LENGTH = 8;
 
@@ -125,7 +124,7 @@ export function registerBuiltinStorageSetups(registry: PluginRegistry): void {
     readConfiguration: readPasswordConfiguration,
     open: ({ directoryPath, config, password }) => {
       const suite = suiteFromConfig(config);
-      const encryptionConfig: PasswordEncryptedStorageConfig = suite !== undefined ? { suite } : {};
+      const encryptionConfig: PasswordEncryptedStorageConfig = suite ? { suite } : {};
       return new PasswordEncryptedStorage(
         new IndexedDbStorage({ databaseName: databaseNameFor(directoryPath) }),
         password ?? '',
@@ -151,7 +150,7 @@ export function registerBuiltinStorageSetups(registry: PluginRegistry): void {
       return new JsonFileStorage({
         path: jsonSettingsFilePath(directoryPath),
         password: password ?? '',
-        ...(suite !== undefined ? { suite } : {}),
+        ...(suite ? { suite } : {}),
       });
     },
   });

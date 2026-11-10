@@ -1,6 +1,6 @@
 # NodeWavenUI agent overview
 
-NodeWavenUI is an NW.js desktop app: one Chromium renderer with Node.js in one process. It tracks child windows you can inspect and drive, runs a chat agent with tools, and connects remote MCP servers.
+NodeWavenUI is an Electron desktop app: sandboxed renderer windows over a Node main process, joined by a typed preload bridge. It tracks child windows you can inspect and drive, runs a chat agent with tools, and connects remote MCP servers.
 
 # Surfaces
 

@@ -1,12 +1,14 @@
 /**
- * The DOM specs of the app self test. They run inside the real NW.js engine, in a child
- * window of the app, so they verify the environment the app pages actually run in.
+ * The DOM specs of the app self test. They run inside the real Electron engine, in a child
+ * window or an embedded frame of the app, so they verify the environment the app pages run in.
  */
 
-describe('the NW.js engine of the app', function () {
-  it('exposes the nw global to app pages', function () {
-    expect(typeof globalThis.nw).toBe('object');
-    expect(globalThis.nw).not.toBe(null);
+describe('the app engine of the Electron main process', function () {
+  it('exposes the nodewavenui bridge to app pages', function () {
+    expect(typeof globalThis.nodewavenui).toBe('object');
+    expect(globalThis.nodewavenui).not.toBe(null);
+    expect(typeof globalThis.nodewavenui.app.version).toBe('function');
+    expect(typeof globalThis.nodewavenui.fs.readText).toBe('function');
   });
 
   it('ships the EditContext API the Editor window builds on', function () {
@@ -30,9 +32,11 @@ describe('the child window environment', function () {
 
   it('serves the plugin folder as a web root', function () {
     // This page itself loads from plugins/selftest/, and the Jasmine bundle with it.
-    const link = document.querySelector('link[rel="stylesheet"]');
-    expect(link).not.toBe(null);
-    expect(link.getAttribute('href')).toBe('vendor/jasmine.css');
+    // The app theme link may sit before the bundle, so the spec looks for the bundle itself.
+    const hrefs = Array.prototype.map.call(document.querySelectorAll('link[rel="stylesheet"]'), function (link) {
+      return link.getAttribute('href');
+    });
+    expect(hrefs).toContain('vendor/jasmine.css');
     expect(typeof globalThis.jasmine).toBe('object');
   });
 });

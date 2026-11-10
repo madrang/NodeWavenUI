@@ -6,6 +6,9 @@
 /** The actors the permission model knows. The level orders them. */
 export type PrincipalKind = 'user' | 'plugin' | 'mcp' | 'agent';
 
+/** The origin the chat agent's permission requests carry, so the chat pane routes them to their tab. */
+export const CHAT_AGENT_SOURCE = 'chat-agent';
+
 /** The access level of each principal. A higher level outranks a lower one. */
 export const PRINCIPAL_LEVELS: Readonly<Record<PrincipalKind, number>> = {
   user: 4,
@@ -66,10 +69,10 @@ export interface PermissionRule {
 
 /** What one guarded call targets. */
 export type PermissionTarget =
-  | { readonly kind: 'window'; readonly url: string }
-  | { readonly kind: 'storage'; readonly storageId: string; readonly key: string }
-  | { readonly kind: 'file'; readonly path: string }
-  | { readonly kind: 'tool'; readonly name: string };
+  | { readonly kind: 'window'; readonly url: string } |
+  { readonly kind: 'storage'; readonly storageId: string; readonly key: string } |
+  { readonly kind: 'file'; readonly path: string } |
+  { readonly kind: 'tool'; readonly name: string };
 
 /** The window actions that only read. */
 export const WINDOW_READ_ACTIONS: ReadonlySet<string> = new Set(['attach', 'screenshot', 'console.read']);

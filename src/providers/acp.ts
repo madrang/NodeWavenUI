@@ -24,9 +24,9 @@ import {
 /** Where to reach an ACP agent. */
 export type AcpConnection =
   /** Spawns a local process and speaks ACP over its stdio. */
-  | { readonly kind: 'process'; readonly command: string; readonly args?: readonly string[] }
+  | { readonly kind: 'process'; readonly command: string; readonly args?: readonly string[] } |
   /** Connects to a WebSocket URL and speaks ACP over text frames. */
-  | { readonly kind: 'url'; readonly url: string };
+  { readonly kind: 'url'; readonly url: string };
 
 /** Configuration for one ACP agent. */
 export interface AcpProviderConfig {
@@ -151,7 +151,7 @@ class ProcessAcpTransport implements AcpTransport {
         this.closeHandler?.(null);
       });
       const stdout = child.stdout;
-      if (stdout === null) {
+      if (!stdout) {
         child.kill();
         reject(new Error(`The ACP process "${this.connection.command}" opened without a stdout pipe.`));
         return;
@@ -177,7 +177,7 @@ class ProcessAcpTransport implements AcpTransport {
 
   send(message: unknown): void {
     const stdin = this.child?.stdin ?? null;
-    if (stdin !== null) {
+    if (stdin) {
       stdin.write(`${JSON.stringify(message)}\n`);
     }
   }
@@ -372,7 +372,7 @@ class AcpAgent {
       return;
     }
     const call = this.pending.get(message.id);
-    if (call === undefined) {
+    if (!call) {
       return;
     }
     this.pending.delete(message.id);
@@ -480,7 +480,7 @@ export class AcpInferenceProvider implements InferenceProvider {
   }
 
   private async ensureAgent(): Promise<AcpAgent> {
-    if (this.agent !== null) {
+    if (this.agent) {
       return this.agent;
     }
     const connection = this.config.connection;

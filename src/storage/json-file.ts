@@ -21,7 +21,7 @@ import {
   type KdfParameters,
   type UnlockedKey,
 } from './encryption.js';
-import { nodeFileSystem, type NodeFileSystem } from './node-access.js';
+import { bridgeJsonFileFs, type JsonFileFs } from './node-access.js';
 
 /** Configuration for the JSON file backend. */
 export interface JsonFileStorageConfig {
@@ -123,14 +123,14 @@ export class JsonFileStorage implements StorageBackend {
   }
 
   private requireValues(): Map<string, string> {
-    if (this.values === null) {
+    if (!this.values) {
       throw new StorageError('The settings file did not load.');
     }
     return this.values;
   }
 
   private ensureReady(): Promise<void> {
-    if (this.ready === null) {
+    if (!this.ready) {
       this.ready = this.load();
     }
     return this.ready;
@@ -140,16 +140,17 @@ export class JsonFileStorage implements StorageBackend {
   private async load(): Promise<void> {
     const fileSystem = this.requireFileSystem();
     let contents: string | null = null;
-    if (fileSystem.existsSync(this.path)) {
+    if (await fileSystem.exists(this.path)) {
       try {
-        contents = fileSystem.readFileSync(this.path, 'utf-8');
+        contents = await fileSystem.read(this.path);
       } catch (error) {
         throw new StorageError(`The settings file "${this.path}" could not be read.`, { cause: error });
       }
     }
+    // eslint-disable-next-line local/prefer-truthiness -- an existing empty settings file is corruption, only a missing file starts fresh
     if (contents === null) {
       this.values = new Map();
-      if (this.password !== null) {
+      if (this.password) {
         const parameters = createKdfParameters(this.suiteId, this.iterations);
         this.unlocked = { key: await deriveKey(this.password, parameters), parameters };
         await this.persist();
@@ -167,7 +168,7 @@ export class JsonFileStorage implements StorageBackend {
       this.values = content.values;
       return;
     }
-    if (this.password === null) {
+    if (!this.password) {
       throw new StorageError('The settings file carries a password, but no password was given.');
     }
     if (content.kdf === null || content.check === null || content.data === null) {
@@ -229,11 +230,11 @@ export class JsonFileStorage implements StorageBackend {
     const fileSystem = this.requireFileSystem();
     const values = this.requireValues();
     let file: string;
-    if (this.password === null) {
+    if (!this.password) {
       file = JSON.stringify({ v: FILE_VERSION, encrypted: false, values: Object.fromEntries(values) }, null, 2);
     } else {
       const unlocked = this.unlocked;
-      if (unlocked === null) {
+      if (!unlocked) {
         throw new StorageError('The encrypted settings file carries no derived key.');
       }
       const plain = JSON.stringify(Object.fromEntries(values));
@@ -251,17 +252,17 @@ export class JsonFileStorage implements StorageBackend {
     }
     const temporaryPath = `${this.path}.tmp`;
     try {
-      fileSystem.writeFileSync(temporaryPath, `${file}\n`);
-      fileSystem.renameSync(temporaryPath, this.path);
+      await fileSystem.write(temporaryPath, `${file}\n`);
+      await fileSystem.rename(temporaryPath, this.path);
     } catch (error) {
       throw new StorageError(`The settings file "${this.path}" could not be written.`, { cause: error });
     }
   }
 
-  private requireFileSystem(): NodeFileSystem {
-    const fileSystem = nodeFileSystem();
-    if (fileSystem === null) {
-      throw new StorageError('The settings file needs the Node fs module of the NW.js page context.');
+  private requireFileSystem(): JsonFileFs {
+    const fileSystem = bridgeJsonFileFs();
+    if (!fileSystem) {
+      throw new StorageError('The settings file needs the nodewavenui bridge of an app window.');
     }
     return fileSystem;
   }

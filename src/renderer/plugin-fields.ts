@@ -4,7 +4,7 @@
  * Every surface that configures a plugin (the setup wizard, the settings pane) shows the same controls through this one renderer, so plugin UI never gets tracked independently of the plugin.
  */
 
-import type { PluginFieldDefinition } from '../plugins.js';
+import type { PluginFieldDefinition } from './plugins.js';
 
 /** One rendered plugin UI definition. */
 export class PluginFieldGroup {
@@ -43,12 +43,12 @@ export class PluginFieldGroup {
         const text = document.createElement('input');
         text.type = field.kind === 'password' ? 'password' : 'text';
         text.autocomplete = field.kind === 'password' ? 'new-password' : 'off';
-        if (field.placeholder !== undefined) {
+        if (field.placeholder) {
           text.placeholder = field.placeholder;
         }
         input = text;
       }
-      if (field.prefill !== undefined) {
+      if (field.prefill) {
         input.value = field.prefill;
       }
       label.append(input);

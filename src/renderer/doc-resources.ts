@@ -140,11 +140,11 @@ export function listHarnessDocs(): readonly HarnessDocInfo[] {
  */
 export async function readHarnessDoc(uri: string): Promise<string> {
   const cached = cache.get(uri);
-  if (cached !== undefined) {
+  if (cached) {
     return cached;
   }
   const doc = [...DOCS, ...pluginDocs].find((candidate) => candidate.uri === uri);
-  if (doc === undefined) {
+  if (!doc) {
     const list = [...DOCS, ...pluginDocs].map((candidate) => candidate.uri).join(', ');
     throw new Error(`No harness document matches ${uri}. Valid: ${list}.`);
   }
@@ -163,5 +163,5 @@ export async function readHarnessDoc(uri: string): Promise<string> {
 /** Appends the plugin document section to the overview text. */
 function withPluginSection(text: string): string {
   const section = pluginDocumentSection(pluginDocs);
-  return section === null ? text : `${text}\n${section}`;
+  return section ? `${text}\n${section}` : text;
 }

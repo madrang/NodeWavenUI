@@ -1,10 +1,10 @@
 /**
  * The remembered geometry of the main app window.
  * The window remembers its outer position and its size across sessions, in the local storage of the window.
- * The launcher centers through the manifest `position` option instead, so only the main app carries a placement.
+ * The launcher centers through its creation options instead, so only the main app carries a placement.
  */
 
-import { moveWindow, onWindowEvent, readWindowPlacement, resizeWindowResizable } from '../shared/nw.js';
+import { onWindowEvent, readWindowPlacement, setWindowBounds } from './window-ops.js';
 
 const GEOMETRY_STORAGE_KEY = 'main-window-geometry';
 const SAVE_DELAY_MILLISECONDS = 500;
@@ -53,15 +53,16 @@ function saveGeometry(geometry: WindowGeometry): void {
 
 /** Reads the placement once the user stops dragging, then stores it. */
 const scheduleSave = (): void => {
-  if (saveTimer !== undefined) {
+  if (saveTimer) {
     window.clearTimeout(saveTimer);
   }
   saveTimer = window.setTimeout(() => {
     saveTimer = undefined;
-    const placement = readWindowPlacement();
-    if (placement !== null) {
-      saveGeometry(placement);
-    }
+    void readWindowPlacement().then((placement) => {
+      if (placement) {
+        saveGeometry(placement);
+      }
+    });
   }, SAVE_DELAY_MILLISECONDS);
 };
 
@@ -70,9 +71,9 @@ const scheduleSave = (): void => {
  *
  * @returns True when a remembered placement was applied.
  */
-export function restoreMainWindowGeometry(): boolean {
+export async function restoreMainWindowGeometry(): Promise<boolean> {
   const stored = window.localStorage.getItem(GEOMETRY_STORAGE_KEY);
-  if (stored === null) {
+  if (!stored) {
     return false;
   }
   let parsed: unknown;
@@ -84,8 +85,9 @@ export function restoreMainWindowGeometry(): boolean {
   if (!isWindowGeometry(parsed)) {
     return false;
   }
-  resizeWindowResizable(parsed.width, parsed.height);
-  moveWindow(parsed.x, parsed.y);
+  // Outer bounds in one call, so the placement restores exactly. A content resize here would
+  // drop the window frame and the placement would drift by its size on every restore.
+  await setWindowBounds(parsed.x, parsed.y, parsed.width, parsed.height);
   return true;
 }
 
@@ -98,6 +100,6 @@ export function rememberMainWindowGeometry(): void {
     return;
   }
   tracking = true;
-  onWindowEvent('move', scheduleSave);
-  onWindowEvent('resize', scheduleSave);
+  onWindowEvent('moved', scheduleSave);
+  onWindowEvent('resized', scheduleSave);
 }

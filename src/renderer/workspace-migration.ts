@@ -43,7 +43,7 @@ const FORMAT_MIGRATION_STEPS: readonly FormatMigrationStep[] = [];
  */
 export function formatPrefixOf(version: string): string {
   const match = /^(\d+)\.(\d+)/.exec(version.trim());
-  return match === null ? '0.0' : `${match[1]}.${match[2]}`;
+  return match ? `${match[1]}.${match[2]}` : '0.0';
 }
 
 /** Compares two format prefixes numerically: negative when the first is older, zero when equal. */
@@ -74,7 +74,7 @@ export async function migrateWorkspaceData(
   directoryPath: string,
   settings: WorkspaceSettings,
 ): Promise<WorkspaceSettings | null> {
-  const runningVersion = readAppVersion();
+  const runningVersion = await readAppVersion();
   const detectedPrefix = formatPrefixOf(settings?.version ?? '0.0');
   const runningPrefix = formatPrefixOf(runningVersion);
   if (compareFormatPrefix(detectedPrefix, runningPrefix) > 0) {
@@ -99,8 +99,8 @@ export async function migrateWorkspaceData(
     return null;
   }
   const migrated: WorkspaceSettings = { ...current, version: runningVersion };
-  const writeError = writeWorkspaceMarker(directoryPath, migrated);
-  if (writeError !== null) {
+  const writeError = await writeWorkspaceMarker(directoryPath, migrated);
+  if (writeError) {
     console.warn(`[NodeWavenUI] the migrated marker could not be written: ${writeError}`);
     return null;
   }

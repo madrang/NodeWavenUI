@@ -5,14 +5,45 @@
  * stored enable flag is on and the folder digest still matches the stored digest.
  */
 
-import type { PluginManager } from '../plugins.js';
+import type { PluginManager } from './plugins.js';
+import { listDirectoryNames, readDataFile, readTextFile, statPath } from './file-system.js';
 
 /** The fs slice the plugin folder system reads through. */
 export interface PluginFolderFs {
-  readdirSync(path: string): readonly string[];
-  readFileSync(path: string, encoding: 'utf-8'): string;
-  readFileSync(path: string): Uint8Array;
-  statSync(path: string): { isDirectory(): boolean };
+  readdir(path: string): Promise<readonly string[]>;
+  readFile(path: string, encoding: 'utf-8'): Promise<string>;
+  readFile(path: string): Promise<Uint8Array>;
+  stat(path: string): Promise<{ isDirectory(): boolean }>;
+}
+
+/**
+ * Builds the plugin folder fs slice over the `nodewavenui` bridge. Every read throws when the
+ * bridge is missing or the path fails, matching the seam contract.
+ *
+ * @returns The fs slice for the scans of an app window.
+ */
+export function bridgePluginFolderFs(): PluginFolderFs {
+  const unreadable = (path: string): Error => new Error(`The path "${path}" could not be read through the bridge.`);
+  const notNull = <T>(value: T | null, path: string): T => {
+    // eslint-disable-next-line local/prefer-truthiness -- the bridge marks a failed read with null, an empty value is valid data
+    if (value === null) {
+      throw unreadable(path);
+    }
+    return value;
+  };
+  return {
+    readdir: (path) => listDirectoryNames(path).then((names) => notNull(names, path)),
+    readFile: ((path: string, encoding?: 'utf-8') => {
+      if (encoding === 'utf-8') {
+        return readTextFile(path).then((text) => notNull(text, path));
+      }
+      return readDataFile(path).then((data) => notNull(data, path));
+    }) as PluginFolderFs['readFile'],
+    stat: async (path) => {
+      const stat = notNull(await statPath(path), path);
+      return { isDirectory: () => stat.directory };
+    },
+  };
 }
 
 /** The manifest of one plugin folder: the `plugin.json` file. */
@@ -117,12 +148,12 @@ function readStoredPluginFolder(value: unknown): StoredPluginFolder {
  * @param fs The filesystem slice to read through.
  * @returns The accepted plugin folders and the skipped ones.
  */
-export function scanPluginFolders(appRoot: string, fs: PluginFolderFs): PluginFolderScan {
+export async function scanPluginFolders(appRoot: string, fs: PluginFolderFs): Promise<PluginFolderScan> {
   const plugins: PluginFolder[] = [];
   const skipped: SkippedPluginFolder[] = [];
   let names: readonly string[];
   try {
-    names = fs.readdirSync(`${appRoot.replace(/[\\/]+$/, '')}/plugins`);
+    names = await fs.readdir(`${appRoot.replace(/[\\/]+$/, '')}/plugins`);
   } catch {
     return { plugins, skipped };
   }
@@ -132,7 +163,7 @@ export function scanPluginFolders(appRoot: string, fs: PluginFolderFs): PluginFo
     }
     const folderPath = `${appRoot.replace(/[\\/]+$/, '')}/plugins/${folder}`;
     try {
-      if (!fs.statSync(folderPath).isDirectory()) {
+      if (!(await fs.stat(folderPath)).isDirectory()) {
         continue;
       }
     } catch {
@@ -140,7 +171,7 @@ export function scanPluginFolders(appRoot: string, fs: PluginFolderFs): PluginFo
     }
     let manifest: unknown;
     try {
-      manifest = JSON.parse(fs.readFileSync(`${folderPath}/plugin.json`, 'utf-8'));
+      manifest = JSON.parse(await fs.readFile(`${folderPath}/plugin.json`, 'utf-8'));
     } catch {
       skipped.push({ folder, reason: 'plugin.json is missing or holds no valid JSON.' });
       continue;
@@ -155,15 +186,15 @@ export function scanPluginFolders(appRoot: string, fs: PluginFolderFs): PluginFo
 }
 
 /** Collects the relative paths of every file under one folder, in sorted order. */
-function collectFilePaths(fs: PluginFolderFs, directory: string, prefix: string, paths: string[]): void {
-  for (const name of fs.readdirSync(directory)) {
+async function collectFilePaths(fs: PluginFolderFs, directory: string, prefix: string, paths: string[]): Promise<void> {
+  for (const name of await fs.readdir(directory)) {
     if (name.startsWith('.')) {
       continue;
     }
     const path = `${directory}/${name}`;
     const relative = prefix.length === 0 ? name : `${prefix}/${name}`;
-    if (fs.statSync(path).isDirectory()) {
-      collectFilePaths(fs, path, relative, paths);
+    if ((await fs.stat(path)).isDirectory()) {
+      await collectFilePaths(fs, path, relative, paths);
       continue;
     }
     paths.push(relative);
@@ -182,14 +213,14 @@ function collectFilePaths(fs: PluginFolderFs, directory: string, prefix: string,
  */
 export async function hashPluginFolder(folderPath: string, fs: PluginFolderFs): Promise<string> {
   const paths: string[] = [];
-  collectFilePaths(fs, folderPath, '', paths);
+  await collectFilePaths(fs, folderPath, '', paths);
   const encoder = new TextEncoder();
   const chunks: Uint8Array[] = [];
   let length = 0;
   for (const path of paths) {
     const nameBytes = encoder.encode(path);
     const zero = Uint8Array.of(0);
-    const fileBytes = fs.readFileSync(`${folderPath}/${path}`);
+    const fileBytes = await fs.readFile(`${folderPath}/${path}`);
     chunks.push(nameBytes, zero, fileBytes, zero);
     length += nameBytes.length + 1 + fileBytes.length + 1;
   }
@@ -241,10 +272,10 @@ export class PluginFolderController {
    * A folder whose digest changed resets to disabled, so changed code never loads by itself.
    */
   async initialize(): Promise<void> {
-    if (this.fs === null) {
+    if (!this.fs) {
       return;
     }
-    const scan = scanPluginFolders(this.appRoot, this.fs);
+    const scan = await scanPluginFolders(this.appRoot, this.fs);
     const stored = await this.store.load();
     for (const folder of scan.plugins) {
       // Every accepted folder gets its digest computed, so every settings row shows one.
@@ -298,10 +329,10 @@ export class PluginFolderController {
    * @param enabled True enables the folder, false disables it.
    */
   async setEnabled(id: string, enabled: boolean): Promise<void> {
-    if (this.fs === null) {
+    if (!this.fs) {
       return;
     }
-    const scan = scanPluginFolders(this.appRoot, this.fs);
+    const scan = await scanPluginFolders(this.appRoot, this.fs);
     const folder = scan.plugins.find((candidate) => candidate.manifest.id === id);
     if (!folder) {
       return;
@@ -342,11 +373,11 @@ export class PluginFolderController {
     return {
       id: folder.manifest.id,
       name: folder.manifest.name,
-      ...(folder.manifest.version !== undefined ? { version: folder.manifest.version } : {}),
-      ...(folder.manifest.description !== undefined ? { description: folder.manifest.description } : {}),
+      ...(folder.manifest.version ? { version: folder.manifest.version } : {}),
+      ...(folder.manifest.description ? { description: folder.manifest.description } : {}),
       enabled,
-      ...(digest !== undefined ? { digest } : {}),
-      ...(previousDigest !== undefined ? { previousDigest } : {}),
+      ...(digest ? { digest } : {}),
+      ...(previousDigest ? { previousDigest } : {}),
       status,
       detail,
     };

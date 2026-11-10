@@ -2,7 +2,7 @@
 
 A desktop AI workspace where agents do more than chat: they open windows, build pages, and debug them live.
 
-NodeWavenUI is an NW.js app (Chromium plus Node.js in one process). Its chat agent carries a full set of window tools: it opens child windows, attaches Chromium debug sessions to them, evaluates JavaScript, reads captured consoles, takes screenshots, navigates, and opens DevTools. An agent can build a page, drive it, and inspect its own work end to end. The built-in Graphs window shows the pattern: the agent opens it, draws SVG graphs through a page global, and verifies the result with a screenshot.
+NodeWavenUI is an Electron app: a sandboxed renderer per window, with every Node reach served by the main process over a typed preload bridge. Its chat agent carries a full set of window tools: it opens child windows, attaches Chromium debug sessions to them, evaluates JavaScript, reads captured consoles, takes screenshots, navigates, and opens DevTools. An agent can build a page, drive it, and inspect its own work end to end. The built-in Graphs window shows the pattern: the agent opens it, draws SVG graphs through a page global, and verifies the result with a screenshot.
 
 Two MCP surfaces multiply what agents can reach:
 
@@ -11,7 +11,7 @@ Two MCP surfaces multiply what agents can reach:
 
 ## Highlights
 
-- **Agent-driven windows** — open, close, and navigate child windows; attach debug sessions through the Chromium debugger (SDK build); capture consoles and screenshots; open DevTools. The chat agent and the MCP host share the exact same tool implementations.
+- **Agent-driven windows** — open, close, and navigate child windows; attach per-window debug sessions through the Electron debugger; capture consoles and screenshots; open DevTools. The chat agent and the MCP host share the exact same tool implementations.
 - **The Graphs window** — an empty SVG surface agents draw on through the `nodewavenGraphs` page global (`line`, `scatter`, `bars`, `clear`). Colors follow the active theme.
 - **The page API** — every child window receives the `nodewavenMcp` global, so evaluated code reaches the connected MCP endpoints from any window.
 - **Permission model** — principals (user, plugin, mcp, agent) with per-action rules. Gated actions queue approval cards in the chat with an Always checkbox that persists a rule.
@@ -28,6 +28,7 @@ Two MCP surfaces multiply what agents can reach:
 ## Prerequisites
 - Node.js 22 or newer. Development uses 24.14.1 through nvm: `export PATH="$HOME/.nvm/versions/node/v24.14.1/bin:$PATH"`.
 - A Linux desktop with X11, to run the app.
+- On Linux, the sandbox needs the setuid helper configured once: `sudo chown root:root node_modules/electron/dist/chrome-sandbox && sudo chmod 4755 node_modules/electron/dist/chrome-sandbox`. `npm start` prints the commands when they are needed.
 
 ## Setup
 

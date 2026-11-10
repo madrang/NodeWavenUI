@@ -70,6 +70,14 @@
             <option value="48">48 rounds</option>
           </select>
         </label>
+        <label class="field">Agent thinking
+          <select id="agent-thinking-select">
+            <option value="">Endpoint default</option>
+            <option value="low">Low</option>
+            <option value="medium">Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
         <p class="status">The window frame applies the next time the workspace window opens.</p>
       </fieldset>
       <section id="provider-section">
@@ -78,6 +86,9 @@
         <details id="provider-add" class="provider-add">
           <summary>Add a provider</summary>
           <form id="provider-add-form">
+            <label class="field">Preset
+              <select id="provider-add-preset"></select>
+            </label>
             <label class="field">Label
               <input id="provider-add-label" type="text" placeholder="Moonshot" autocomplete="off">
             </label>

@@ -22,7 +22,7 @@ export function nodeRequire(): ((id: string) => unknown) | null {
  */
 export function requireNodeModule(id: string): unknown {
   const require = nodeRequire();
-  if (require === null) {
+  if (!require) {
     return null;
   }
   try {

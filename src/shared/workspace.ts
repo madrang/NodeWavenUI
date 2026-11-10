@@ -100,6 +100,8 @@ export interface ProviderAccount {
   readonly baseUrl: string;
   /** Bearer key of the endpoint. */
   readonly apiKey: string;
+  /** The id of the known endpoint preset the account follows, when it follows one. */
+  readonly presetId?: string;
   /** The models the account offers. */
   readonly models: readonly ModelEntry[];
 }
@@ -150,6 +152,7 @@ function isProviderAccount(value: unknown): value is ProviderAccount {
     typeof candidate.label === 'string' &&
     typeof candidate.baseUrl === 'string' &&
     typeof candidate.apiKey === 'string' &&
+    (candidate.presetId === undefined || (typeof candidate.presetId === 'string' && candidate.presetId.length > 0)) &&
     Array.isArray(candidate.models) &&
     candidate.models.every((model) => readModelEntry(model) !== null)
   );

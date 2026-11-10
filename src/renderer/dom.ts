@@ -11,7 +11,7 @@
  */
 export function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
-  if (element === null) {
+  if (!element) {
     throw new Error(`Renderer bootstrap failed: missing required element ${selector}.`);
   }
   return element;

@@ -8,7 +8,6 @@ import { isRecord } from '../shared/records.js';
 import {
   ProviderError,
   type ChatMessage,
-  type CompletionDelta,
   type CompletionRequest,
   type CompletionResult,
   type CompletionUsage,
@@ -24,6 +23,12 @@ export interface OpenAiProviderConfig {
   readonly baseUrl: string;
   /** Bearer key that authorizes the calls. */
   readonly apiKey: string;
+  /**
+   * Rewrites the outgoing request body of every call. It runs after the standard build, before
+   * the request leaves, and may change or add any field — so an endpoint quirk needs no support
+   * in this core.
+   */
+  readonly beforeRequest?: (body: Record<string, unknown>) => void;
 }
 
 /** Statuses the retry policy treats as transient. */
@@ -225,13 +230,13 @@ export class OpenAiInferenceProvider implements InferenceProvider {
         throw new ProviderError(`Provider "${this.id}" streamed no completion choice.`);
       }
       const toolCalls =
-        toolCallParts.size > 0
-          ? [...toolCallParts.entries()].sort((left, right) => left[0] - right[0]).map(([, part]) => ({
-              id: part.id,
-              name: part.name,
-              arguments: part.args,
-            }))
-          : undefined;
+        toolCallParts.size > 0 ?
+          [...toolCallParts.entries()].sort((left, right) => left[0] - right[0]).map(([, part]) => ({
+            id: part.id,
+            name: part.name,
+            arguments: part.args,
+          })) :
+          undefined;
       return {
         content,
         model: model ?? request.model,
@@ -272,15 +277,15 @@ export class OpenAiInferenceProvider implements InferenceProvider {
             },
             onToolCall: (fragment) => {
               const existing = toolCallParts.get(fragment.index) ?? { id: '', name: '', args: '' };
-            if (fragment.id) {
-              existing.id = fragment.id;
-            }
-            if (fragment.name) {
-              existing.name = fragment.name;
-            }
-            if (fragment.argumentsPiece) {
-              existing.args += fragment.argumentsPiece;
-            }
+              if (fragment.id) {
+                existing.id = fragment.id;
+              }
+              if (fragment.name) {
+                existing.name = fragment.name;
+              }
+              if (fragment.argumentsPiece) {
+                existing.args += fragment.argumentsPiece;
+              }
               toolCallParts.set(fragment.index, existing);
               sawChoice = true;
             },
@@ -422,12 +427,18 @@ export class OpenAiInferenceProvider implements InferenceProvider {
         function: { name: tool.name, description: tool.description, parameters: tool.inputSchema },
       }));
     }
+    // eslint-disable-next-line local/prefer-truthiness -- temperature zero is a valid deterministic setting
     if (request.temperature !== undefined) {
       body.temperature = request.temperature;
     }
-    if (request.maxOutputTokens !== undefined) {
+    if (request.maxOutputTokens) {
       body.max_completion_tokens = request.maxOutputTokens;
     }
+    if (request.thinkingLevel) {
+      body.reasoning_effort = request.thinkingLevel;
+    }
+    // The endpoint preset holds the last word on the wire shape.
+    this.config.beforeRequest?.(body);
     for (let attempt = 0; ; attempt += 1) {
       let response: Response | null = null;
       let networkError: unknown = null;

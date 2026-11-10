@@ -74,53 +74,53 @@ body {
   font-size: 11px;
 }
 
-/* Six series colors cycle: two palette hues, their mixes with the text color, the muted gray, and a hue blend. */
+/* Six series colors cycle: the categorical chart palette of the theme, never its semantic colors. */
 .line-series-0 {
-  stroke: var(--accent);
+  stroke: var(--chart-1);
 }
 
 .line-series-1 {
-  stroke: var(--error);
+  stroke: var(--chart-2);
 }
 
 .line-series-2 {
-  stroke: color-mix(in srgb, var(--accent) 45%, var(--text));
+  stroke: var(--chart-3);
 }
 
 .line-series-3 {
-  stroke: color-mix(in srgb, var(--error) 45%, var(--text));
+  stroke: var(--chart-4);
 }
 
 .line-series-4 {
-  stroke: var(--muted);
+  stroke: var(--chart-5);
 }
 
 .line-series-5 {
-  stroke: color-mix(in srgb, var(--accent) 50%, var(--error));
+  stroke: var(--chart-6);
 }
 
 .fill-series-0 {
-  fill: var(--accent);
+  fill: var(--chart-1);
 }
 
 .fill-series-1 {
-  fill: var(--error);
+  fill: var(--chart-2);
 }
 
 .fill-series-2 {
-  fill: color-mix(in srgb, var(--accent) 45%, var(--text));
+  fill: var(--chart-3);
 }
 
 .fill-series-3 {
-  fill: color-mix(in srgb, var(--error) 45%, var(--text));
+  fill: var(--chart-4);
 }
 
 .fill-series-4 {
-  fill: var(--muted);
+  fill: var(--chart-5);
 }
 
 .fill-series-5 {
-  fill: color-mix(in srgb, var(--accent) 50%, var(--error));
+  fill: var(--chart-6);
 }
 
 [hidden] {

@@ -1,29 +1,21 @@
 /**
  * Workspace folder inspection and marker file handling.
- * The NW.js page context reaches the filesystem through its Node require global, so these functions work only inside NW.js.
+ * The pages reach the filesystem through the `nodewavenui` bridge, so these functions work only
+ * inside an app window.
  */
 
 import { WORKSPACE_MARKER_FILE, isWorkspaceSettings, type WorkspaceSettings } from '../shared/workspace.js';
-import { fileSystem, joinPath } from './file-system.js';
+import { joinPath, listDirectoryNames, readTextFile, writeTextFile } from './file-system.js';
 
 /**
  * Lists the entries of a folder.
  *
  * @param directory The absolute folder path.
- * @returns The entry names, or null when the filesystem is unreachable or the folder cannot be read.
+ * @returns The entry names, or null when the folder cannot be read.
  */
-export function readDirectoryEntries(directory: string): string[] | null {
-  const nodeFs = fileSystem();
-  if (nodeFs === null) {
-    return null;
-  }
-  try {
-    return [...nodeFs.readdirSync(directory)];
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[NodeWavenUI] the folder "${directory}" could not be read: ${message}`);
-    return null;
-  }
+export async function readDirectoryEntries(directory: string): Promise<string[] | null> {
+  const names = await listDirectoryNames(directory);
+  return names ? [...names] : null;
 }
 
 /**
@@ -32,21 +24,12 @@ export function readDirectoryEntries(directory: string): string[] | null {
  * @param directory The absolute folder path.
  * @returns The workspace settings from the marker, or null when no valid marker exists.
  */
-export function readWorkspaceMarker(directory: string): WorkspaceSettings | null {
-  const nodeFs = fileSystem();
-  if (nodeFs === null) {
-    return null;
-  }
-  let contents: string;
-  try {
-    contents = nodeFs.readFileSync(joinPath(directory, WORKSPACE_MARKER_FILE), 'utf-8');
-  } catch (error) {
-    // A missing marker is the normal state of a fresh folder. Every other failure hides a real problem.
-    if ((error as { code?: unknown }).code === 'ENOENT') {
-      return null;
-    }
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`[NodeWavenUI] the workspace marker of "${directory}" could not be read: ${message}`);
+export async function readWorkspaceMarker(directory: string): Promise<WorkspaceSettings | null> {
+  const path = joinPath(directory, WORKSPACE_MARKER_FILE);
+  const contents = await readTextFile(path);
+  if (!contents) {
+    // A missing marker is the normal state of a fresh folder, and a read failure stays equally
+    // quiet: both leave the folder fresh for the wizard.
     return null;
   }
   let parsed: unknown;
@@ -70,13 +53,9 @@ export function readWorkspaceMarker(directory: string): WorkspaceSettings | null
  * @param settings The workspace settings to persist.
  * @returns An error message, or null on success.
  */
-export function writeWorkspaceMarker(directory: string, settings: WorkspaceSettings): string | null {
-  const nodeFs = fileSystem();
-  if (nodeFs === null) {
-    return 'The filesystem is not reachable. Start the app under NW.js.';
-  }
+export async function writeWorkspaceMarker(directory: string, settings: WorkspaceSettings): Promise<string | null> {
   try {
-    nodeFs.writeFileSync(joinPath(directory, WORKSPACE_MARKER_FILE), `${JSON.stringify(settings, null, 2)}\n`);
+    await writeTextFile(joinPath(directory, WORKSPACE_MARKER_FILE), `${JSON.stringify(settings, null, 2)}\n`);
     return null;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);

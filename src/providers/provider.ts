@@ -7,6 +7,9 @@
 /** Role of a message in a conversation. */
 export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 
+/** The reasoning effort of a request, when the model supports levels. */
+export type ThinkingLevel = 'low' | 'medium' | 'high';
+
 /** One tool the model may call. */
 export interface ToolDefinition {
   readonly name: string;
@@ -55,6 +58,9 @@ export interface CompletionRequest {
   readonly messages: readonly ChatMessage[];
   readonly temperature?: number;
   readonly maxOutputTokens?: number;
+  /** The reasoning effort token the endpoint expects. The app vocabulary is low, medium, high;
+   * a provider preset may map a level onto the endpoint's own token. Absent means the endpoint default. */
+  readonly thinkingLevel?: string;
   /** Receives every streamed piece. A backend that cannot stream completes without calling it. */
   readonly onDelta?: (delta: CompletionDelta) => void;
   /** The tools the model may call. An empty list sends no tools. */

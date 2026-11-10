@@ -5,7 +5,8 @@
  * mint a session id that every later POST echoes (see the vault note `Projects/Scoped Vault MCP/MCP Standard.md`).
  */
 
-import { asRecord } from '../../shared/records.js';
+import { spawn } from 'node:child_process';
+import { asRecord } from '../shared/records.js';
 
 /** One JSON-RPC reply of a server. */
 export interface JsonRpcReply {
@@ -26,7 +27,7 @@ export interface McpTransport {
 
 /** Reads one JSON-RPC reply and returns its result or throws its error. */
 function settleReply(reply: JsonRpcReply, method: string): unknown {
-  if (reply.error !== undefined) {
+  if (reply.error) {
     throw new Error(`The MCP call "${method}" failed with code ${reply.error.code}: ${reply.error.message}`);
   }
   return reply.result;
@@ -68,7 +69,7 @@ async function readEventStreamReply(
           continue;
         }
         const reply = asRecord(parsed);
-        if (reply === null) {
+        if (!reply) {
           continue;
         }
         if (typeof reply.method === 'string' && reply.id === undefined) {
@@ -121,7 +122,7 @@ export class HttpMcpTransport implements McpTransport {
     if (this.token !== undefined && this.token.length > 0) {
       headers.Authorization = `Bearer ${this.token}`;
     }
-    if (this.sessionId !== null) {
+    if (this.sessionId) {
       headers['Mcp-Session-Id'] = this.sessionId;
     }
     const response = await fetch(this.url, {
@@ -138,7 +139,7 @@ export class HttpMcpTransport implements McpTransport {
       const suffix = detail.length > 0 ? ` ${detail.slice(0, 200)}` : '';
       throw new Error(`The MCP endpoint answered HTTP ${response.status}.${suffix}`);
     }
-    if (message.id === undefined) {
+    if (!message.id) {
       return {};
     }
     const contentType = response.headers.get('content-type') ?? '';
@@ -147,7 +148,7 @@ export class HttpMcpTransport implements McpTransport {
     }
     const payload: unknown = await response.json().catch(() => null);
     const reply = asRecord(payload);
-    if (reply === null) {
+    if (!reply) {
       throw new Error('The MCP endpoint returned a body that is not JSON-RPC.');
     }
     return reply as JsonRpcReply;
@@ -156,11 +157,6 @@ export class HttpMcpTransport implements McpTransport {
   close(): void {
     // HTTP keeps no connection open between calls.
   }
-}
-
-/** The slice of the Node child_process module the stdio transport uses. */
-interface NodeChildProcessModule {
-  spawn(command: string, args: readonly string[], options: { readonly stdio: readonly string[] }): NodeChild;
 }
 
 interface NodeChildStream {
@@ -208,30 +204,13 @@ export class StdioMcpTransport implements McpTransport {
   }
 
   private async ensureChild(): Promise<NodeChild> {
-    if (this.child !== null) {
+    if (this.child) {
       return this.child;
     }
     if (this.closed) {
       throw new Error('The MCP stdio transport is closed.');
     }
-    // The Node require global reads the module lazily, because the renderer may run without Node.
-    const nodeRequire = (globalThis as { require?: (id: string) => unknown }).require;
-    if (typeof nodeRequire !== 'function') {
-      throw new Error('The MCP stdio transport needs the Node require global. It is unavailable in this context.');
-    }
-    let raw: unknown;
-    try {
-      raw = nodeRequire('child_process');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`The Node child_process module could not load: ${message}`);
-    }
-    const record = asRecord(raw);
-    if (record === null || typeof record.spawn !== 'function') {
-      throw new Error('The Node child_process module carries no spawn function.');
-    }
-    const spawn = record.spawn as NodeChildProcessModule['spawn'];
-    const child = spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.command, this.args, { stdio: ['pipe', 'pipe', 'pipe'] }) as unknown as NodeChild;
     await new Promise<void>((resolve, reject) => {
       child.once('error', (error: Error) => {
         reject(new Error(`The MCP stdio process "${this.command}" did not start: ${error.message}`));
@@ -245,7 +224,7 @@ export class StdioMcpTransport implements McpTransport {
       this.failPending('The MCP stdio process closed before the reply arrived.');
     });
     const stdout = child.stdout;
-    if (stdout === null) {
+    if (!stdout) {
       throw new Error('The MCP stdio process carries no stdout pipe.');
     }
     stdout.setEncoding('utf8');
@@ -264,7 +243,7 @@ export class StdioMcpTransport implements McpTransport {
       }
     });
     const stderr = child.stderr;
-    if (stderr !== null) {
+    if (stderr) {
       stderr.setEncoding('utf8');
       stderr.on('data', () => {
         // stderr is free for server logging. It never carries MCP messages.
@@ -282,18 +261,18 @@ export class StdioMcpTransport implements McpTransport {
       return;
     }
     const record = asRecord(parsed);
-    if (record === null) {
+    if (!record) {
       return;
     }
     const id = record.id;
     if (record.result !== undefined || record.error !== undefined) {
       if (typeof id === 'number') {
         const pending = this.pending.get(id);
-        if (pending === undefined) {
+        if (!pending) {
           return;
         }
         this.pending.delete(id);
-        if (record.error !== undefined) {
+        if (record.error) {
           const error = asRecord(record.error);
           const code = error !== null && typeof error.code === 'number' ? error.code : -32603;
           const message = error !== null && typeof error.message === 'string' ? error.message : 'unknown error';
@@ -335,7 +314,7 @@ export class StdioMcpTransport implements McpTransport {
     const id = this.nextId;
     this.nextId += 1;
     const child = this.child;
-    if (child === null) {
+    if (!child) {
       throw new Error('The MCP stdio transport did not start.');
     }
     const result = await new Promise<unknown>((resolve, reject) => {
@@ -346,7 +325,7 @@ export class StdioMcpTransport implements McpTransport {
   }
 
   notify(method: string, params?: Record<string, unknown>): void {
-    if (this.child === null) {
+    if (!this.child) {
       return;
     }
     this.writeLine(JSON.stringify({ jsonrpc: '2.0', method, params: params ?? {} }));

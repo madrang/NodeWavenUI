@@ -8,8 +8,8 @@ export type McpEndpointMode = 'native' | 'preloaded' | 'none' | 'disabled';
 
 /** The transport of one endpoint. */
 export type McpEndpointTransport =
-  | { readonly kind: 'http'; readonly url: string; readonly token?: string }
-  | { readonly kind: 'stdio'; readonly command: string; readonly args?: readonly string[] };
+  | { readonly kind: 'http'; readonly url: string; readonly token?: string } |
+  { readonly kind: 'stdio'; readonly command: string; readonly args?: readonly string[] };
 
 /** One configured MCP server endpoint. */
 export interface McpEndpoint {
@@ -101,4 +101,36 @@ export function sanitizeEndpointLabel(label: string): string {
     .replace(/^-+/, '')
     .replace(/-+$/, '');
   return sanitized.length > 0 ? sanitized : 'mcp';
+}
+
+/** One image a vision model sees, as base64 data without the data-url prefix. */
+export interface McpImage {
+  readonly data: string;
+  readonly mimeType: string;
+}
+
+/** The live state of one endpoint connection. */
+export interface McpServerState {
+  readonly id: string;
+  readonly label: string;
+  readonly mode: McpEndpoint['mode'];
+  readonly state: 'connecting' | 'connected' | 'error' | 'dormant';
+  readonly error: string | null;
+  readonly toolNames: readonly string[];
+  readonly resourceUris: readonly string[];
+}
+
+/** One agent tool descriptor that the native mode contributes to the chat tool list. */
+export interface McpNativeTool {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: Record<string, unknown>;
+  readonly endpointId: string;
+}
+
+/** One native tool call result: the text the model reads and the images a vision model sees. */
+export interface McpCallResult {
+  readonly isError: boolean;
+  readonly text: string;
+  readonly images: readonly McpImage[];
 }

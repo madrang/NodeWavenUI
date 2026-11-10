@@ -12,4 +12,14 @@
   --accent: #45e066;
   --on-accent: #0a1408;
   --error: #ff5540;
+  /* The strong accent fills what carries text. Its dark text keeps the contrast through the darker green. */
+  --accent-strong: #2fc253;
+  /* The categorical palette of the Graphs window. It stays inside the green-and-amber family of the theme,
+     so a chart keeps the phosphor look while its series stay distinct. */
+  --chart-1: #45e066;
+  --chart-2: #ffd24a;
+  --chart-3: #a4e57c;
+  --chart-4: #e8b34b;
+  --chart-5: #6ecc84;
+  --chart-6: #f5c86b;
 }

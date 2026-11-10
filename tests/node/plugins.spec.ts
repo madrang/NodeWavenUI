@@ -3,7 +3,7 @@
  */
 
 import { expect } from 'chai';
-import { PluginError, PluginManager } from '../../dist/plugins.js';
+import { PluginError, PluginManager } from '../../dist/renderer/plugins.js';
 
 describe('the plugin manager', () => {
   it('registers one system prompt source and lists it in order', () => {

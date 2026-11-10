@@ -4,12 +4,12 @@
  * The storage section lists every registered storage setup, and the selected setup renders its own configuration.
  */
 
-import { closeWindow, resizeWindowLocked } from '../shared/nw.js';
+import { closeWindow, resizeWindowLocked } from './window-ops.js';
 import type { WorkspaceDirectory, WorkspaceSettings } from '../shared/workspace.js';
 import { readAppVersion } from './arguments.js';
 import { requireElement } from './dom.js';
 import { PluginFieldGroup } from './plugin-fields.js';
-import type { StorageSetup } from '../plugins.js';
+import type { StorageSetup } from './plugins.js';
 import { writeWorkspaceMarker } from './workspace-files.js';
 
 /** Callbacks the wizard reports to the screen controller. */
@@ -79,7 +79,7 @@ export function startWizard(
       if (height <= 0) {
         return;
       }
-      resizeWindowLocked(WIZARD_WINDOW_WIDTH, height);
+      void resizeWindowLocked(WIZARD_WINDOW_WIDTH, height);
     });
   };
 
@@ -88,7 +88,7 @@ export function startWizard(
     activeSetup = setups.find((candidate) => candidate.id === storageSelect.value) ?? null;
     activeFields = null;
     storageConfigContainer.replaceChildren();
-    if (activeSetup !== null) {
+    if (activeSetup) {
       activeFields = PluginFieldGroup.mount(storageConfigContainer, activeSetup.fields ?? []);
     }
     fitWindowToContent();
@@ -104,7 +104,7 @@ export function startWizard(
   updateStorageConfig();
 
   closeButton.addEventListener('click', () => {
-    closeWindow();
+    void closeWindow();
   });
 
   backButton.addEventListener('click', () => {
@@ -116,7 +116,7 @@ export function startWizard(
     form.requestSubmit();
   });
 
-  form.addEventListener('submit', (event) => {
+  form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const setup = activeSetup;
     const name = nameInput.value.trim();
@@ -124,29 +124,27 @@ export function startWizard(
       showError('The workspace needs a name.');
       return;
     }
-    if (setup === null) {
+    if (!setup) {
       showError('Select a setting storage.');
       return;
     }
-    let config: unknown;
-    let password: string | null = null;
-    const values = activeFields !== null ? activeFields.readValues() : {};
+    const values = activeFields ? activeFields.readValues() : {};
     const configuration = setup.readConfiguration(values);
     if (typeof configuration === 'string') {
       showError(configuration);
       return;
     }
-    config = configuration.config;
-    password = configuration.password;
+    const config: unknown = configuration.config;
+    const password: string | null = configuration.password;
     const settings: WorkspaceSettings = {
       name,
       storageId: setup.id,
       storageConfig: config,
       createdAt: new Date().toISOString(),
-      version: readAppVersion(),
+      version: await readAppVersion(),
     };
-    const writeError = writeWorkspaceMarker(directory.path, settings);
-    if (writeError !== null) {
+    const writeError = await writeWorkspaceMarker(directory.path, settings);
+    if (writeError) {
       showError(writeError);
       return;
     }

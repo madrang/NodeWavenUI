@@ -4,7 +4,7 @@
  * and the target stores them under its own protection. Reserved keys of a source stay hidden, because `keys` hides them.
  */
 
-import { StorageError, type StorageBackend } from './storage.js';
+import type { StorageBackend } from './storage.js';
 
 /** What one copy run moved. */
 export interface StorageCopyReport {
@@ -26,6 +26,7 @@ export async function copyStorageValues(source: StorageBackend, target: StorageB
   const copiedKeys: string[] = [];
   for (const key of keys) {
     const value = await source.get(key);
+    // eslint-disable-next-line local/prefer-truthiness -- an empty value is real stored data, only null means absent
     if (value === null) {
       continue;
     }

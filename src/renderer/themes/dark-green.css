@@ -11,4 +11,14 @@
   --accent: #58bd85;
   --on-accent: #0a1810;
   --error: #ff8d80;
+  /* The strong accent fills what carries text. Its dark text keeps the contrast through the darker green. */
+  --accent-strong: #3fa273;
+  /* The categorical palette of the Graphs window: distinct hues that never reuse the semantic colors.
+     The teal stands second, because a green would sit too close to the accent. */
+  --chart-1: #58bd85;
+  --chart-2: #4fc3d9;
+  --chart-3: #e8b34b;
+  --chart-4: #b58cff;
+  --chart-5: #f07fb0;
+  --chart-6: #96a89a;
 }

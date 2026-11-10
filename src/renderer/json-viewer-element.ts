@@ -60,7 +60,7 @@ export class JsonViewerElement extends HTMLElement {
 
   /** Registers the element once. */
   static define(): void {
-    if (customElements.get('json-viewer') === undefined) {
+    if (!customElements.get('json-viewer')) {
       customElements.define('json-viewer', JsonViewerElement);
     }
   }
@@ -127,7 +127,7 @@ export class JsonViewerElement extends HTMLElement {
 
   /** Appends the quoted key prefix to one row, when the row carries a key. */
   private appendKey(row: HTMLElement, key: string | null): void {
-    if (key === null) {
+    if (!key) {
       return;
     }
     const name = document.createElement('span');

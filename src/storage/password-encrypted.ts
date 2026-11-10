@@ -18,7 +18,6 @@ import {
   readEncryptionSuite,
   sealRecord,
   type EncryptionSuiteId,
-  type EncryptionSuiteOption,
   type EncryptionKey,
   type KdfParameters,
   type UnlockedKey,
@@ -73,7 +72,7 @@ export class PasswordEncryptedStorage implements StorageBackend {
   async get(key: string): Promise<string | null> {
     const unlocked = await this.ensureReady();
     const envelope = await this.inner.get(key);
-    if (envelope === null) {
+    if (!envelope) {
       return null;
     }
     return openRecord(unlocked.parameters.suite, unlocked.key, key, envelope);
@@ -126,23 +125,30 @@ export class PasswordEncryptedStorage implements StorageBackend {
     const values = new Map<string, string>();
     for (const key of storedKeys) {
       const envelope = await this.inner.get(key);
-      if (envelope === null) {
+      if (!envelope) {
         continue;
       }
       values.set(key, await openRecord(unlocked.parameters.suite, unlocked.key, key, envelope));
     }
-    const newUnlocked = await this.createUnlocked(newPassword, unlocked.parameters.iterations, unlocked.parameters.suite);
+    const newUnlocked = await this.createUnlocked(
+      newPassword,
+      unlocked.parameters.iterations,
+      unlocked.parameters.suite,
+    );
     await this.inner.set(KDF_KEY, encodeKdf(newUnlocked.parameters));
     for (const [key, value] of values) {
       await this.inner.set(key, await sealRecord(newUnlocked.parameters.suite, newUnlocked.key, key, value));
     }
-    await this.inner.set(CHECK_KEY, await sealRecord(newUnlocked.parameters.suite, newUnlocked.key, CHECK_KEY, CHECK_VALUE));
+    await this.inner.set(
+      CHECK_KEY,
+      await sealRecord(newUnlocked.parameters.suite, newUnlocked.key, CHECK_KEY, CHECK_VALUE),
+    );
     this.password = newPassword;
     this.ready = Promise.resolve(newUnlocked);
   }
 
   private ensureReady(): Promise<UnlockedKey> {
-    if (this.ready === null) {
+    if (!this.ready) {
       this.ready = this.unlock();
     }
     return this.ready;
@@ -167,7 +173,7 @@ export class PasswordEncryptedStorage implements StorageBackend {
     const key: EncryptionKey = await deriveKey(this.password, parameters);
     const unlocked: UnlockedKey = { key, parameters };
     const checkEnvelope = await this.inner.get(CHECK_KEY);
-    if (checkEnvelope === null) {
+    if (!checkEnvelope) {
       await this.inner.set(CHECK_KEY, await sealRecord(parameters.suite, key, CHECK_KEY, CHECK_VALUE));
       return unlocked;
     }
@@ -177,9 +183,9 @@ export class PasswordEncryptedStorage implements StorageBackend {
 
   private async readOrCreateParameters(): Promise<KdfParameters> {
     const encoded = await this.inner.get(KDF_KEY);
-    if (encoded !== null) {
+    if (encoded) {
       const parameters = decodeKdf(encoded);
-      if (parameters !== null) {
+      if (parameters) {
         return parameters;
       }
       throw new StorageError('The store carries damaged key derivation parameters.');

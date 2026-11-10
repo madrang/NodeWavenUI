@@ -3,10 +3,9 @@
  * The results pass runtime guards at this boundary, so the manager works with typed values only.
  */
 
-import { asRecord } from '../../shared/records.js';
-import type { ChatImage } from '../../providers/provider.js';
-import type { McpEndpoint } from '../../shared/mcp-endpoints.js';
-import type { McpTransport } from './transport.js';
+import { asRecord } from '../shared/records.js';
+import type { McpCallResult, McpEndpoint, McpImage } from '../shared/mcp-endpoints.js';
+import type { McpTransport } from './mcp-transport.js';
 
 /** The protocol version the client speaks, the same as the app's own MCP host. */
 const PROTOCOL_VERSION = '2025-06-18';
@@ -39,11 +38,6 @@ export interface McpResourceContent {
 }
 
 /** One tool call result of a remote server: the text and the image blocks. */
-export interface McpCallResult {
-  readonly text: string;
-  readonly isError: boolean;
-  readonly images: readonly ChatImage[];
-}
 
 function asString(value: unknown): string | null {
   return typeof value === 'string' ? value : null;
@@ -73,7 +67,7 @@ function readListPage(
   if (Array.isArray(rawEntries)) {
     for (const raw of rawEntries) {
       const coerced = readEntry(raw);
-      if (coerced !== null) {
+      if (coerced) {
         entries.push(coerced);
       }
     }
@@ -86,10 +80,10 @@ function renderCallContent(result: unknown): McpCallResult {
   const record = asRecord(result) ?? {};
   const blocks = Array.isArray(record.content) ? record.content : [];
   const parts: string[] = [];
-  const images: ChatImage[] = [];
+  const images: McpImage[] = [];
   for (const block of blocks) {
     const entry = asRecord(block);
-    if (entry === null) {
+    if (!entry) {
       continue;
     }
     if (entry.type === 'text') {
@@ -105,8 +99,9 @@ function renderCallContent(result: unknown): McpCallResult {
       parts.push(`[resource ${readString(entry.uri)}]`);
     } else if (entry.type === 'resource') {
       const resource = asRecord(entry.resource);
-      const text = resource !== null ? asString(resource.text) : null;
-      parts.push(text !== null ? text : `[resource ${resource !== null ? readString(resource.uri) : 'unknown'}]`);
+      const text = resource ? asString(resource.text) : null;
+      // eslint-disable-next-line local/prefer-truthiness -- an empty resource text is a valid render, only null falls back
+      parts.push(text !== null ? text : `[resource ${resource ? readString(resource.uri) : 'unknown'}]`);
     }
   }
   const text = parts.length > 0 ? parts.join('\n') : JSON.stringify(result);
@@ -135,7 +130,7 @@ export class McpServerClient {
       clientInfo: { name: 'nodewavenui', version: '0.2.0' },
     });
     const record = asRecord(result);
-    if (record === null) {
+    if (!record) {
       transport.close();
       throw new Error(`The MCP endpoint "${endpoint.label}" answered no valid initialize result.`);
     }
@@ -150,7 +145,7 @@ export class McpServerClient {
     let cursor: string | null = null;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
       const params: Record<string, unknown> = {};
-      if (cursor !== null) {
+      if (cursor) {
         params.cursor = cursor;
       }
       const result = await this.transport.request('tools/list', params);
@@ -190,7 +185,7 @@ export class McpServerClient {
     let cursor: string | null = null;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
       const params: Record<string, unknown> = {};
-      if (cursor !== null) {
+      if (cursor) {
         params.cursor = cursor;
       }
       const result = await this.transport.request('resources/list', params);
@@ -212,7 +207,7 @@ export class McpServerClient {
     let cursor: string | null = null;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
       const params: Record<string, unknown> = {};
-      if (cursor !== null) {
+      if (cursor) {
         params.cursor = cursor;
       }
       const result = await this.transport.request('resources/templates/list', params);

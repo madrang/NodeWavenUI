@@ -5,6 +5,7 @@
  */
 
 import type { StorageBackend } from '../storage/storage.js';
+import type { ThinkingLevel } from '../providers/provider.js';
 import type { StoredPluginFolders } from './plugin-folders.js';
 import { isMcpEndpoints, type McpEndpoints } from '../shared/mcp-endpoints.js';
 import { isPermissionRule, type PermissionRule } from '../shared/permissions.js';
@@ -27,6 +28,7 @@ const SHARED_STORAGES_KEY = 'shared-storages';
 const THEME_KEY = 'theme';
 const FRAME_MODE_KEY = 'window-frame';
 const AGENT_TURN_LIMIT_KEY = 'agent-turn-limit';
+const AGENT_THINKING_KEY = 'agent-thinking';
 const CHAT_KEY_KEY = 'chat-key';
 const AGENT_TOOL_DEFAULTS_KEY = 'agent-tool-defaults';
 const PLUGIN_FOLDERS_KEY = 'plugin-folders';
@@ -59,11 +61,11 @@ export class WorkspaceSettingsStore {
    */
   async loadProviderRegistry(): Promise<ProviderRegistry> {
     const raw = await this.backend.get(PROVIDER_ACCOUNTS_KEY);
-    if (raw !== null) {
+    if (raw) {
       try {
         const parsed: unknown = JSON.parse(raw);
         const registry = readProviderRegistry(parsed);
-        if (registry !== null) {
+        if (registry) {
           return registry;
         }
         console.warn('[NodeWavenUI] the stored provider registry carries an invalid shape. It is ignored.');
@@ -73,7 +75,7 @@ export class WorkspaceSettingsStore {
       }
     }
     const legacy = await this.loadLegacyProviderSettings();
-    if (legacy === null) {
+    if (!legacy) {
       return emptyProviderRegistry();
     }
     const account: ProviderAccount = {
@@ -100,7 +102,7 @@ export class WorkspaceSettingsStore {
   /** Reads the old single-provider record, before the registry migration. */
   private async loadLegacyProviderSettings(): Promise<ProviderSettings | null> {
     const raw = await this.backend.get(PROVIDER_SETTINGS_KEY);
-    if (raw === null) {
+    if (!raw) {
       return null;
     }
     try {
@@ -125,7 +127,7 @@ export class WorkspaceSettingsStore {
    */
   async loadPermissionRules(): Promise<readonly PermissionRule[]> {
     const raw = await this.backend.get(PERMISSION_RULES_KEY);
-    if (raw === null) {
+    if (!raw) {
       return [];
     }
     let parsed: unknown;
@@ -167,7 +169,7 @@ export class WorkspaceSettingsStore {
    */
   async loadMcpHostToken(): Promise<string | null> {
     const raw = await this.backend.get(MCP_HOST_TOKEN_KEY);
-    if (raw === null) {
+    if (!raw) {
       return null;
     }
     if (raw.length < MINIMUM_MCP_TOKEN_LENGTH || raw.length > MAXIMUM_MCP_TOKEN_LENGTH) {
@@ -195,7 +197,7 @@ export class WorkspaceSettingsStore {
    */
   async loadMcpEndpoints(): Promise<McpEndpoints> {
     const raw = await this.backend.get(MCP_ENDPOINTS_KEY);
-    if (raw === null) {
+    if (!raw) {
       return { endpoints: [] };
     }
     let parsed: unknown;
@@ -231,7 +233,7 @@ export class WorkspaceSettingsStore {
    */
   async loadSharedStorages(): Promise<SharedStoragesRecord> {
     const raw = await this.backend.get(SHARED_STORAGES_KEY);
-    if (raw === null) {
+    if (!raw) {
       return EMPTY_SHARED_STORAGES;
     }
     let parsed: unknown;
@@ -307,7 +309,7 @@ export class WorkspaceSettingsStore {
    */
   async loadAgentTurnLimit(): Promise<number | null> {
     const raw = await this.backend.get(AGENT_TURN_LIMIT_KEY);
-    if (raw === null) {
+    if (!raw) {
       return null;
     }
     let parsed: unknown;
@@ -328,6 +330,30 @@ export class WorkspaceSettingsStore {
    */
   async saveAgentTurnLimit(limit: number | null): Promise<void> {
     await this.backend.set(AGENT_TURN_LIMIT_KEY, JSON.stringify(limit));
+  }
+
+  /**
+   * Reads the default thinking level of the workspace chats.
+   *
+   * @returns The level, or null when the endpoint default applies. A missing or invalid record means the same.
+   * @throws StorageError when the store fails.
+   */
+  async loadAgentThinking(): Promise<ThinkingLevel | null> {
+    const raw = await this.backend.get(AGENT_THINKING_KEY);
+    if (!raw) {
+      return null;
+    }
+    return raw === 'low' || raw === 'medium' || raw === 'high' ? raw : null;
+  }
+
+  /**
+   * Writes the default thinking level of the workspace chats.
+   *
+   * @param level The level to persist, or null for the endpoint default.
+   * @throws StorageError when the store fails.
+   */
+  async saveAgentThinking(level: ThinkingLevel | null): Promise<void> {
+    await this.backend.set(AGENT_THINKING_KEY, level ?? '');
   }
 
   /**
@@ -361,7 +387,7 @@ export class WorkspaceSettingsStore {
    */
   async loadAgentToolDefaults(): Promise<boolean> {
     const raw = await this.backend.get(AGENT_TOOL_DEFAULTS_KEY);
-    if (raw === null) {
+    if (!raw) {
       return false;
     }
     try {
@@ -391,7 +417,7 @@ export class WorkspaceSettingsStore {
    */
   async loadPluginFolders(): Promise<StoredPluginFolders> {
     const raw = await this.backend.get(PLUGIN_FOLDERS_KEY);
-    if (raw === null) {
+    if (!raw) {
       return {};
     }
     let parsed: unknown;
