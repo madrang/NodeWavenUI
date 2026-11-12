@@ -129,6 +129,11 @@ export interface BridgeWorkspaceApi {
   runWindowTool(name: string, args: unknown): Promise<unknown>;
   /** Applies one MCP endpoint list to the connections of the main process. */
   applyMcpEndpoints(endpoints: unknown): Promise<void>;
+  /**
+   * Registers the provider base URLs the CORS filter of the main process serves with
+   * access-control headers, so the sandboxed page may fetch its inference endpoints.
+   */
+  allowProviderCors(baseUrls: readonly string[]): Promise<void>;
   /** Reads one resource of the MCP server that lists it. */
   readMcpResource(uri: string): Promise<string>;
   /** Runs one native MCP tool of the connected endpoints. */

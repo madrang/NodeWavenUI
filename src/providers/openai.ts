@@ -35,6 +35,8 @@ export interface OpenAiProviderConfig {
 const RETRYABLE_STATUSES: readonly number[] = [429, 500, 502, 503, 504];
 /** Number of retries after the first failed attempt. */
 const RETRY_COUNT = 3;
+/** The first retry waits this long; every later retry doubles it: 3s, 6s, 12s. */
+const RETRY_BASE_DELAY = 3000;
 /**
  * The reasoning field the last response used. The next request echoes the same field, the kimi-code replay rule
  * (see the vault note `Kimi Code/Reasoning.md`). Module scope, so the dialect survives per-call provider instances.
@@ -471,7 +473,7 @@ export class OpenAiInferenceProvider implements InferenceProvider {
         throw new ProviderError(`Provider "${this.id}" could not reach ${url}.`, { cause: networkError });
       }
       await response?.text().catch(() => '');
-      await sleep(2 ** attempt * 1000);
+      await sleep(RETRY_BASE_DELAY * 2 ** attempt);
     }
   }
 }

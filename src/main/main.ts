@@ -4,13 +4,14 @@
  * preload bridge.
  */
 
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, session } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CHAT_AGENT_SOURCE } from '../shared/permissions.js';
 import { relayRendererConsole } from './diagnostics.js';
 import { createTools, parseMcpHostArgument, readMcpHostInfo, startMcpHost } from './mcp-host.js';
 import { registerAppProtocol, registerAppProtocolPrivileges, rendererUrl } from './protocol.js';
+import { registerProviderCors } from './provider-cors.js';
 import { registerServices } from './services.js';
 import { registerMcpClientService } from './mcp-client-service.js';
 import { sessions } from './session-service.js';
@@ -87,6 +88,7 @@ app.on('window-all-closed', () => {
 
 void app.whenReady().then(() => {
   registerAppProtocol();
+  registerProviderCors(session.defaultSession);
   registerServices();
   registerMcpClientService();
   registerWindowService();

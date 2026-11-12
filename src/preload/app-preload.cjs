@@ -85,6 +85,7 @@ const bridge = {
     notifyFrameShared: (id, shared) => ipcRenderer.invoke(`${CHANNEL}:frames:share`, { id, shared }),
     closeFrameAsUser: (id) => ipcRenderer.invoke(`${CHANNEL}:frames:closeUser`, { id }),
     applyMcpEndpoints: (endpoints) => ipcRenderer.invoke(`${CHANNEL}:mcp:applyEndpoints`, endpoints),
+    allowProviderCors: (baseUrls) => ipcRenderer.invoke(`${CHANNEL}:cors:allowProviders`, baseUrls),
     readMcpResource: (uri) => ipcRenderer.invoke(`${CHANNEL}:mcp:readResource`, uri),
     runMcpNativeTool: (name, args) => ipcRenderer.invoke(`${CHANNEL}:mcp:runNativeTool`, { name, args }),
   },

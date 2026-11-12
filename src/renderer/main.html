@@ -11,23 +11,39 @@
 </head>
 <body>
   <section id="screen-main" class="screen" hidden>
+    <header id="app-header">
+      <span id="workspace-name" class="app-title"></span>
+      <span class="header-spacer"></span>
+      <button id="app-settings" class="header-button" type="button" title="Settings">⚙</button>
+      <button id="app-minimize" class="header-button" type="button" title="Minimize">–</button>
+      <button id="app-close" class="header-button" type="button" title="Close">×</button>
+    </header>
     <div id="frames-layout">
       <div id="frames-left" class="frame-column" hidden></div>
-      <div id="frames-center">
-        <header id="tab-bar">
-          <button id="tab-settings" class="tab active" type="button">Settings</button>
-          <span id="chat-tabs">
-            <span id="chat-tab-list"></span>
-            <button id="new-chat" class="tab tab-icon" type="button" title="New chat">+</button>
-          </span>
-          <button id="app-minimize" class="tab tab-icon" type="button" title="Minimize">–</button>
-          <button id="app-close" class="tab tab-icon" type="button" title="Close">×</button>
-        </header>
-        <div id="pane-settings" class="pane">
-      <div class="workspace-title-row">
-        <p class="workspace-title-label">Workspace</p>
-        <h2 id="workspace-name" class="workspace-title"></h2>
+      <div id="rail-left">
+        <div class="rail-tabbar">
+          <button class="rail-tab active" data-rail-tab="events" type="button">Events</button>
+          <button class="rail-tab" data-rail-tab="files" type="button">Files</button>
+        </div>
+        <div class="rail-panel" data-rail-panel="events">
+          <div class="rail-filters">
+            <button class="rail-chip active" data-rail-filter="all" type="button">All</button>
+            <button class="rail-chip" data-rail-filter="pending" type="button">Pending</button>
+            <button class="rail-chip" data-rail-filter="completed" type="button">Completed</button>
+          </div>
+          <div id="rail-event-list" class="rail-scroll"></div>
+          <footer class="rail-foot">
+            <span id="rail-event-count" class="rail-foot-note"></span>
+            <span class="rail-spacer"></span>
+            <button id="rail-event-clear" class="rail-link" type="button" title="Clear the completed list">Clear</button>
+          </footer>
+        </div>
+        <div class="rail-panel" data-rail-panel="files" hidden>
+          <div id="rail-file-tree" class="rail-scroll"></div>
+        </div>
       </div>
+      <div id="frames-center">
+        <div id="pane-settings" class="pane" hidden>
       <fieldset class="field" id="storage-share-section">
         <legend>Storage</legend>
         <p id="workspace-storage-mode" class="status"></p>
@@ -160,7 +176,18 @@
         <div id="agent-tool-list"></div>
       </fieldset>
         </div>
-        <div id="pane-chat" class="pane pane-chat" hidden>
+        <div id="workarea-empty">
+          <div class="workarea-box">Workspace</div>
+          <span class="workarea-note">The settings gear opens the settings here.</span>
+        </div>
+      </div>
+      <div id="chat-resizer" title="Drag to resize the chat column"></div>
+      <div id="chat-column">
+        <header id="chat-tabs">
+          <span id="chat-tab-list"></span>
+          <button id="new-chat" class="tab tab-icon" type="button" title="New chat">+</button>
+        </header>
+        <div id="pane-chat" class="pane pane-chat">
       <div class="chat-scroll">
         <ol id="chat-messages"></ol>
         <button id="chat-jump-down" type="button" title="Jump to the latest message" hidden>↓</button>

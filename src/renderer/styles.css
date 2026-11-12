@@ -304,26 +304,56 @@ legend {
   margin-right: 6px;
 }
 
-/* Main screen: tab bar */
+/* Main screen: the global top bar. It carries the workspace name, the settings gear, the window
+   controls, and the drag region of the borderless window. */
 #screen-main {
   background: var(--bg);
   color: var(--text);
 }
 
-#tab-bar {
+#app-header {
   display: flex;
-  /* Tabs stand on the bottom edge of the bar, and the active one covers the bar border. */
-  align-items: flex-end;
+  align-items: center;
   gap: 4px;
-  padding: 6px 8px 0;
+  padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
+  flex: none;
 }
 
-#tab-bar .tab,
-#tab-bar .close,
-#tab-bar .icon-button {
+#app-header .header-button {
   -webkit-app-region: no-drag;
+}
+
+.app-title {
+  padding-left: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-spacer {
+  flex: 1;
+}
+
+.header-button {
+  flex: none;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.header-button:hover,
+.header-button.active {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface);
 }
 
 /* The framed workspace window: the system titlebar replaces the custom controls and the drag region. */
@@ -332,13 +362,8 @@ body.framed #app-close {
   display: none;
 }
 
-body.framed #tab-bar {
+body.framed #app-header {
   -webkit-app-region: no-drag;
-}
-
-/* The framed window drags through the system titlebar, so the strip grab area has no job. */
-body.framed #chat-tabs::after {
-  display: none;
 }
 
 /* The tab shape: rounded top corners, a box that joins the pane below when active.
@@ -378,29 +403,22 @@ body.framed #chat-tabs::after {
   flex: none;
 }
 
+/* The chat tab strip: the header of the right column. The tabs stand on its bottom edge, and the
+   active one covers the border of the chat pane below. */
 #chat-tabs {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  /* Grows so the minimize and close buttons land on the right edge of the bar.
-     It shrinks inside the bar, so a full strip cannot push them out of the window. */
-  flex: 1;
-  min-width: 0;
-}
-
-/* The grab area after the strip: a bare full-height band, so a full strip keeps a drag surface. */
-#chat-tabs::after {
-  content: '';
+  padding: 6px 6px 0;
+  border-bottom: 1px solid var(--border);
   flex: none;
-  width: 48px;
-  align-self: stretch;
 }
 
 #chat-tab-list {
   display: flex;
   align-items: flex-end;
   gap: 4px;
-  /* The strip scrolls instead of growing past the bar, with the scrollbar hidden like a browser tab strip. */
+  /* The strip scrolls instead of growing past the column, with the scrollbar hidden like a browser tab strip. */
   flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
@@ -460,22 +478,22 @@ body.framed #chat-tabs::after {
 }
 
 /* A tab with pending permission requests reads as the strongest state: the error tint frames it.
-   The Settings tab carries the badge while chat agent requests wait, because they answer in every chat tab. */
+   The settings gear carries the badge while chat agent requests wait, because they answer in every chat tab. */
 .tab-group.permissions,
 .tab-group.permissions .tab,
-#tab-settings.permissions {
+#app-settings.permissions {
   border-color: color-mix(in srgb, var(--error) 65%, var(--border));
   color: var(--text);
 }
 
 .tab-group.permissions .tab,
-#tab-settings.permissions {
+#app-settings.permissions {
   font-weight: 600;
 }
 
 /* The badge replaces the unread dot while requests wait. */
 .tab-group.permissions .tab::before,
-#tab-settings.permissions::before {
+#app-settings.permissions::before {
   content: '!';
   display: inline-block;
   width: 12px;
@@ -535,6 +553,330 @@ body.framed #chat-tabs::after {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* The workspace placeholder of the center column, shown while the settings view stays closed. */
+#workarea-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.workarea-box {
+  width: 300px;
+  max-width: 85%;
+  height: 170px;
+  border: 1.5px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.workarea-note {
+  font-size: 12px;
+}
+
+/* The right column: the chat tab strip over the chat pane. The resizer handle at its left edge
+   moves its width; the width persists across window restarts. */
+#chat-column {
+  flex: none;
+  width: 400px;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#chat-resizer {
+  flex: none;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+}
+
+#chat-resizer:hover,
+#chat-resizer.dragging {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+body.resizing-chat {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* The left rail: one tabbed column with the approvals feed and the workspace file tree. */
+#rail-left {
+  flex: none;
+  width: 300px;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 40%, var(--bg));
+}
+
+.rail-tabbar {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+/* The rail tabs share the chat tab language: rounded tops that join the panel below. */
+.rail-tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: none;
+  color: var(--muted);
+  padding: 5px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rail-tab:hover {
+  color: var(--text);
+}
+
+.rail-tab.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+
+.rail-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+/* The filter chips of the approvals feed. */
+.rail-filters {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  flex: none;
+}
+
+.rail-chip {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.rail-chip:hover {
+  color: var(--text);
+}
+
+.rail-chip.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* One approvals feed row: the state dot, the request body, and the time it arrived. A pending
+   row is clickable and opens the tab that holds its approval card. */
+.rail-event {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.rail-event.pending {
+  cursor: pointer;
+}
+
+.rail-event.pending:hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+.rail-event-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 5px;
+  flex: none;
+  background: var(--muted);
+}
+
+.rail-event.pending .rail-event-dot {
+  background: var(--accent);
+}
+
+.rail-event.completed .rail-event-dot {
+  background: var(--chart-2);
+}
+
+.rail-event.completed.denied .rail-event-dot {
+  background: var(--error);
+}
+
+.rail-event-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.rail-event-title {
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: break-word;
+}
+
+.rail-event-meta {
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: break-word;
+}
+
+.rail-event-time {
+  font-size: 10.5px;
+  color: var(--muted);
+  flex: none;
+  margin-top: 2px;
+}
+
+.rail-empty {
+  margin: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  flex: none;
+}
+
+.rail-foot-note {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+.rail-link {
+  font-size: 11px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  padding: 2px 4px;
+}
+
+.rail-link:hover {
+  color: var(--text);
+}
+
+/* One row of the files tree: the twisty, the colored type square, the name. Folders hold their
+   children in a container under the row, indented by depth. */
+.rail-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--muted);
+  padding-left: calc(10px + var(--d, 0) * 14px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-tree-row.folder {
+  cursor: pointer;
+}
+
+.rail-tree-row.folder:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+}
+
+.rail-twisty {
+  width: 12px;
+  flex: none;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+.rail-file-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 2.5px;
+  flex: none;
+  background: var(--muted);
+}
+
+.rail-file-icon.folder {
+  background: var(--accent);
+}
+
+.rail-file-icon.ts {
+  background: #3178c6;
+}
+
+.rail-file-icon.js {
+  background: #dcb02a;
+}
+
+.rail-file-icon.json {
+  background: #8bc34a;
+}
+
+.rail-file-icon.md {
+  background: #7e8ce0;
+}
+
+.rail-file-icon.html {
+  background: #e8622c;
+}
+
+.rail-file-icon.css {
+  background: #2965f1;
+}
+
+.rail-tree-children {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A narrow window shrinks the rail; the chat column width follows its stored value. */
+@media (max-width: 1100px) {
+  #rail-left {
+    width: 260px;
+  }
 }
 
 .frame-column {
@@ -723,6 +1065,155 @@ body.framed #chat-tabs::after {
   color: var(--error);
   font-size: 12px;
   background: none;
+}
+
+/* The status line of a streaming reply that received nothing yet: the pulsing accent arc of the
+   open connection. */
+.message.stream-status {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  background: none;
+}
+
+.message.stream-status svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.message.stream-status.connecting svg {
+  stroke: var(--accent);
+  animation: stream-status-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes stream-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* The bubble of a turn that died before its first streamed piece: the error icon and a short
+   label title it, the provider message fills it, and the error tint marks the status. */
+.message.error-bubble {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: color-mix(in srgb, var(--error) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--error) 60%, var(--border));
+}
+
+.error-bubble-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--error);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.error-bubble-head svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.error-bubble-body {
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* The action zone of one message: the icon row at the bottom right of the bubble. It appears on
+   hover. */
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease-in;
+}
+
+li:hover > .message-actions,
+li:focus-within > .message-actions {
+  opacity: 1;
+}
+
+/* One icon button of the zone. It inherits the bubble color, so the same button reads on the
+   accent fill of a user message and the quiet surface of a reply. */
+.message-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+.message-action:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.message-action svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The open message editor: one framed card that replaces the edited bubble, or that sits at the
+   end of a fork. The text area carries the base input styles; only its sizing lives here. */
+.message-edit {
+  align-self: stretch;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.message-editor {
+  resize: none;
+  overflow-y: auto;
+  min-height: 60px;
+  max-height: 40vh;
+  line-height: 1.4;
+}
+
+.message-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 /* The system prompt element sits first in the message list, in one message card on the assistant

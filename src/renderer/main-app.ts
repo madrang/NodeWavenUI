@@ -10,6 +10,8 @@ import type { StorageSetup, SystemPromptSetup } from './plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { closeWindow, minimizeWindow } from './window-ops.js';
+import { AppRail } from './rail.js';
+import { installChatResizer } from './chat-resizer.js';
 import type {
   ModelEntry,
   ProviderAccount,
@@ -18,6 +20,7 @@ import type {
 } from '../shared/workspace.js';
 import { emptyProviderRegistry } from '../shared/workspace.js';
 import { presetOfAccount, PROVIDER_PRESETS } from '../shared/provider-presets/index.js';
+import { readBridge } from '../shared/bridge.js';
 import {
   agentToolDefinition,
   agentToolRule,
@@ -62,6 +65,15 @@ const CHAT_PIN_THRESHOLD = 8;
 /** How long the collapsed reasoning tail stays after the last reasoning delta, in milliseconds. */
 const REASONING_TAIL_TIMEOUT = 1200;
 
+/** The icon strokes of the message action zone, drawn on a 16 by 16 grid. */
+const ICON_COPY = 'M6 6h8v8H6z M12 3H2v9';
+const ICON_EDIT = 'M2 14h3L14 5l-3-3L2 11z';
+const ICON_FORK = 'M4 14V2 M4 7c4 0 8-2 8-5 M4 9c4 0 8 2 8 5';
+const ICON_RETRY = 'M13 8a5 5 0 11-1.5-3.5 M12.5 1.5v3h3';
+/** The icon strokes of the streaming status line, drawn on a 16 by 16 grid. */
+const ICON_CONNECTING = 'M13 8a5 5 0 11-1.5-3.5';
+const ICON_ERROR = 'M4 4l8 8 M12 4l-8 8';
+
 /** Reads the trailing words of a reasoning text, for the collapsed activity tail. */
 function reasoningTailOf(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -71,6 +83,18 @@ function reasoningTailOf(text: string): string {
   const cut = flat.slice(-80);
   const firstSpace = cut.indexOf(' ');
   return firstSpace >= 0 ? cut.slice(firstSpace + 1) : cut;
+}
+
+/** Reads the one or two words that title an error, from the message the provider produced. */
+function errorLabelOf(message: string): string {
+  if (message.includes('could not reach')) {
+    return 'Unreachable';
+  }
+  const status = /answered HTTP (\d+)/.exec(message);
+  if (status?.[1]) {
+    return `HTTP ${status[1]}`;
+  }
+  return 'Failed';
 }
 
 /** Reads the image files out of one clipboard or drag file list. */
@@ -164,6 +188,12 @@ export class MainApp implements McpSessionSink {
   private readonly chats: Chat[] = [];
   private activeChatId: number | null = null;
   private nextChatId = 1;
+  /** True while the settings view fills the center workspace. The chat column stays beside it. */
+  private settingsOpen = false;
+  /** The left rail: the approvals feed and the files tree. */
+  private rail: AppRail | null = null;
+  /** The chat of the running agent turn, so a waiting approval row opens the tab that holds its card. */
+  private agentTurnChatId: number | null = null;
   /** The images that ride along with the next message, from paste or drop. */
   private pendingImages: ChatImage[] = [];
   /** True while the chat view sits at the latest message, so new content keeps it in view. */
@@ -178,11 +208,20 @@ export class MainApp implements McpSessionSink {
   private agentTurnLimit: number | null = null;
   /** The default reasoning effort of the chats. Null means the endpoint default. */
   private agentThinkingDefault: ThinkingLevel | null = null;
+  /** The one open message editor: the chat it belongs to, the entry index it replaces, and its draft.
+   * A missing index marks the draft of a fork, which appends as a new message at the end. */
+  private editing: {
+    readonly chatId: number;
+    readonly index?: number;
+    readonly text: string;
+    readonly images?: readonly ChatImage[];
+  } | null = null;
 
-  private readonly tabSettings = requireElement<HTMLButtonElement>('#tab-settings');
+  private readonly appSettings = requireElement<HTMLButtonElement>('#app-settings');
   private readonly chatTabs = requireElement<HTMLElement>('#chat-tab-list');
   private readonly newChatButton = requireElement<HTMLButtonElement>('#new-chat');
   private readonly paneSettings = requireElement<HTMLElement>('#pane-settings');
+  private readonly workareaEmpty = requireElement<HTMLElement>('#workarea-empty');
   private readonly paneChat = requireElement<HTMLElement>('#pane-chat');
   private readonly chatMessages = requireElement<HTMLOListElement>('#chat-messages');
   private readonly chatForm = requireElement<HTMLFormElement>('#chat-form');
@@ -294,6 +333,7 @@ export class MainApp implements McpSessionSink {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[NodeWavenUI] could not read the provider registry: ${message}`);
     }
+    this.syncProviderCors();
     try {
       this.mcpEndpoints = await this.store.loadMcpEndpoints();
     } catch (error) {
@@ -321,6 +361,14 @@ export class MainApp implements McpSessionSink {
     // The gate loads its rules lazily on the first check. The rule-reading UI renders before any
     // check runs, so it must await the load or it reads an empty list and shows every tool on ask.
     await this.permissionGate?.ready();
+    this.rail = new AppRail({
+      gate: this.permissionGate,
+      workspacePath: this.workspacePath,
+      openTab: (source) => {
+        this.openPermissionTab(source);
+      },
+    });
+    this.rail.start();
     await this.seedAgentToolDefaults();
     // The direct render covers a launch that seeds nothing and fires no gate or connection event.
     this.renderAgentTools();
@@ -332,9 +380,10 @@ export class MainApp implements McpSessionSink {
     requireElement<HTMLButtonElement>('#app-minimize').addEventListener('click', () => {
       void minimizeWindow();
     });
-    this.tabSettings.addEventListener('click', () => {
-      this.activateSettings();
+    this.appSettings.addEventListener('click', () => {
+      this.toggleSettings();
     });
+    installChatResizer();
     this.newChatButton.addEventListener('click', () => {
       this.newChat();
     });
@@ -1205,6 +1254,7 @@ export class MainApp implements McpSessionSink {
       card.request = request;
       card.addEventListener('permission-resolve', (event: Event) => {
         const detail = (event as CustomEvent<PermissionResolveDetail>).detail;
+        this.rail?.noteResolution(detail.id, detail.approve);
         void gate.resolveRequest(detail.id, detail.approve, detail.remember);
       });
       this.permissionRequests.append(card);
@@ -1380,6 +1430,17 @@ export class MainApp implements McpSessionSink {
     }
   }
 
+  /** Registers the base URLs of the registry with the CORS filter of the main process, so the
+   * provider fetch of the sandboxed page passes the preflight its endpoints do not answer. */
+  private syncProviderCors(): void {
+    readBridge()?.workspace
+      .allowProviderCors(this.registry.accounts.map((account) => account.baseUrl))
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[NodeWavenUI] the provider CORS allowlist could not be registered: ${message}`);
+      });
+  }
+
   /** The account the chats use: the chosen default, or the first one. */
   private effectiveDefaultAccount(): ProviderAccount | null {
     return (
@@ -1414,6 +1475,7 @@ export class MainApp implements McpSessionSink {
   /** Stores the next registry, re-renders the cards, and reports the outcome. */
   private persistRegistry(next: ProviderRegistry, successText: string): void {
     this.registry = next;
+    this.syncProviderCors();
     this.renderProviders();
     this.renderChatStatus();
     void this.store
@@ -1817,6 +1879,40 @@ export class MainApp implements McpSessionSink {
     return chat.entries.some((entry) => entry.role === 'user' || entry.role === 'assistant');
   }
 
+  /** True while a chat sits before its first sent message, so its system prompt window is open. */
+  private chatNeedsSystemPrompt(chat: Chat): boolean {
+    return !chat.boundSystemPrompt && !this.chatHasConversation(chat);
+  }
+
+  /** Binds the system prompt of a chat that sits before its first message: the menu choice snapshots
+   * its text into the chat, so the chat keeps what it sent. A chat that picks no source binds the
+   * none prompt.
+   *
+   * @returns True when the chat holds a prompt. False when the source build failed; its error entry landed.
+   */
+  private async bindChatSystemPrompt(chat: Chat): Promise<boolean> {
+    const setup = this.selectedSystemPromptSetup(chat);
+    if (!setup) {
+      chat.boundSystemPrompt = { sourceId: NONE_SYSTEM_PROMPT_SETUP_ID, title: 'No system prompt', text: '' };
+      return true;
+    }
+    let promptText: string;
+    try {
+      promptText = await setup.build({ workspacePath: this.workspacePath });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      chat.entries.push({
+        role: 'error',
+        content: `The system prompt source "${setup.label}" failed: ${message}`,
+      });
+      this.renderMessages();
+      return false;
+    }
+    chat.boundSystemPrompt = { sourceId: setup.id, title: setup.label, text: promptText };
+    this.renderMessages();
+    return true;
+  }
+
   /** Delivers one message: resolves the connection, binds the system prompt, pushes the entry, and runs the agent turn. */
   private async deliver(chat: Chat, text: string, images: readonly ChatImage[]): Promise<void> {
     const connection = this.resolveChatConnection(chat);
@@ -1832,26 +1928,10 @@ export class MainApp implements McpSessionSink {
     }
     // Only a chat without messages binds a prompt. An old chat keeps running without one.
     // The bind sits past the rejected-send guards, so a send that never reaches the transcript leaves the menu open.
-    if (!chat.boundSystemPrompt && !this.chatHasConversation(chat)) {
+    if (this.chatNeedsSystemPrompt(chat)) {
       // The first send binds the prompt source and snapshots its text, so the chat keeps what it sent.
-      const setup = this.selectedSystemPromptSetup(chat);
-      if (!setup) {
-        chat.boundSystemPrompt = { sourceId: NONE_SYSTEM_PROMPT_SETUP_ID, title: 'No system prompt', text: '' };
-      } else {
-        let promptText: string;
-        try {
-          promptText = await setup.build({ workspacePath: this.workspacePath });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          chat.entries.push({
-            role: 'error',
-            content: `The system prompt source "${setup.label}" failed: ${message}`,
-          });
-          this.renderMessages();
-          return;
-        }
-        chat.boundSystemPrompt = { sourceId: setup.id, title: setup.label, text: promptText };
-        this.renderMessages();
+      if (!(await this.bindChatSystemPrompt(chat))) {
+        return;
       }
     }
     this.chatInput.value = '';
@@ -1859,6 +1939,14 @@ export class MainApp implements McpSessionSink {
     this.pendingImages = [];
     this.renderAttachments();
     chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
+    await this.runChatTurn(chat);
+  }
+
+  /** Runs one agent turn that answers the latest user message of the chat: resolves the connection,
+   * streams the reply, records the outcome, and delivers the queue.
+   * The send, the retry of a failed turn, and the resend of an edited message all land here. */
+  private async runChatTurn(chat: Chat): Promise<void> {
+    const connection = this.resolveChatConnection(chat);
     if (!connection) {
       chat.entries.push({
         role: chat.boundProviderId ? 'error' : 'notice',
@@ -1884,6 +1972,7 @@ export class MainApp implements McpSessionSink {
     }
     const abort = new AbortController();
     this.chatAbort = abort;
+    this.agentTurnChatId = chat.id;
     this.setChatBusy(true);
     this.renderMessages();
     let stopped = false;
@@ -1919,6 +2008,7 @@ export class MainApp implements McpSessionSink {
       }
     } finally {
       this.chatAbort = null;
+      this.agentTurnChatId = null;
       this.setChatBusy(false);
       this.renderMessages();
       this.persistChat(chat);
@@ -1928,6 +2018,88 @@ export class MainApp implements McpSessionSink {
       return;
     }
     await this.drainQueued(chat);
+  }
+
+  /** Restarts the failed turn of one user message: every entry after the message drops, and the
+   * turn runs again, so the failed message sends again from that exact point. */
+  private async retryChatFrom(chat: Chat, messageIndex: number): Promise<void> {
+    if (this.chatBusy) {
+      return;
+    }
+    chat.entries.splice(messageIndex + 1);
+    this.chatPinned = true;
+    this.renderMessages();
+    await this.runChatTurn(chat);
+  }
+
+  /** Copies the history before one user message into a new chat tab, then opens the message editor
+   * there with the original text. The source chat keeps its whole conversation. */
+  private forkChatAt(chat: Chat, index: number): void {
+    const original = chat.entries[index];
+    if (!original) {
+      return;
+    }
+    const fork: Chat = {
+      id: this.nextChatId,
+      fileId: crypto.randomUUID(),
+      title: `${chat.title} fork`,
+      createdAt: new Date().toISOString(),
+      entries: chat.entries.slice(0, index).map((entry) => ({ ...entry })),
+      ...(chat.boundProviderId ? { boundProviderId: chat.boundProviderId } : {}),
+      ...(chat.boundModel ? { boundModel: chat.boundModel } : {}),
+      ...(chat.boundSystemPrompt ? { boundSystemPrompt: chat.boundSystemPrompt } : {}),
+      ...(chat.thinkingLevel ? { thinkingLevel: chat.thinkingLevel } : {}),
+    };
+    this.nextChatId += 1;
+    this.chats.push(fork);
+    this.editing = {
+      chatId: fork.id,
+      text: original.content,
+      ...(original.images && original.images.length > 0 ? { images: original.images } : {}),
+    };
+    this.activateChat(fork.id);
+  }
+
+  /** Sends the edited draft: the history from the edited message on drops, the draft replaces the
+   * message, and the turn restarts from there. A fork draft appends to the copied history. */
+  private async saveEditing(): Promise<void> {
+    const editing = this.editing;
+    const editor = this.chatMessages.querySelector('textarea.message-editor');
+    if (!editing || !(editor instanceof HTMLTextAreaElement)) {
+      return;
+    }
+    const text = editor.value.trim();
+    const chat = this.chats.find((candidate) => candidate.id === editing.chatId) ?? null;
+    this.editing = null;
+    if (!chat || this.chatBusy) {
+      this.renderMessages();
+      return;
+    }
+    const target = typeof editing.index === 'number' ? chat.entries[editing.index] : undefined;
+    const images = editing.images ?? target?.images ?? [];
+    if (text.length === 0 && images.length === 0) {
+      this.renderMessages();
+      return;
+    }
+    if (this.chatNeedsSystemPrompt(chat)) {
+      // A fork draft at the head of its tab is a first message, so the menu choice binds here too.
+      if (!(await this.bindChatSystemPrompt(chat))) {
+        return;
+      }
+    }
+    chat.entries.splice(editing.index ?? chat.entries.length);
+    chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
+    this.chatPinned = true;
+    this.renderMessages();
+    await this.runChatTurn(chat);
+  }
+
+  /** Copies one message text to the clipboard. */
+  private copyEntryText(text: string): void {
+    navigator.clipboard.writeText(text).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the message text could not be copied: ${message}`);
+    });
   }
 
   /** Delivers the first queued message of a chat after a finished run. The entry moves to the end as it delivers. */
@@ -2330,7 +2502,13 @@ export class MainApp implements McpSessionSink {
       this.chatSessions.deleteSession(chat.fileId);
     }
     if (this.activeChatId === id) {
-      this.activateSettings();
+      // The chat column keeps a chat: a neighbor takes over, or a fresh chat opens when none stays.
+      const neighbor = this.chats[Math.min(index, this.chats.length - 1)];
+      if (neighbor) {
+        this.activateChat(neighbor.id);
+      } else {
+        this.newChat();
+      }
       return;
     }
     this.renderTabs();
@@ -2344,8 +2522,6 @@ export class MainApp implements McpSessionSink {
     if (chat) {
       chat.unread = false;
     }
-    this.paneSettings.hidden = true;
-    this.paneChat.hidden = false;
     // The MCP host tab logs traffic. The host cannot push a message to the connected clients,
     // so the tab carries no message input and no status bar of a chat that cannot send.
     const sessionLog = Boolean(chat?.isMcpHostLog);
@@ -2360,12 +2536,28 @@ export class MainApp implements McpSessionSink {
     }
   }
 
-  private activateSettings(): void {
-    this.activeChatId = null;
-    this.paneSettings.hidden = false;
-    this.paneChat.hidden = true;
-    this.renderTabs();
-    this.renderChatStatus();
+  /** Opens or closes the settings view of the center workspace. The chat column stays beside it. */
+  private toggleSettings(): void {
+    this.settingsOpen = !this.settingsOpen;
+    this.paneSettings.hidden = !this.settingsOpen;
+    this.workareaEmpty.hidden = this.settingsOpen;
+    this.appSettings.classList.toggle('active', this.settingsOpen);
+  }
+
+  /** Activates the tab that holds the approval cards of one request source: the host log for host
+   * sessions, the chat of the running agent turn for the chat agent. */
+  private openPermissionTab(source: string | null): void {
+    if (source !== CHAT_AGENT_SOURCE) {
+      const host = this.mcpHostTab();
+      if (host) {
+        this.activateChat(host.id);
+      }
+      return;
+    }
+    const target = this.chats.find((chat) => chat.id === this.agentTurnChatId) ?? this.activeChat();
+    if (target) {
+      this.activateChat(target.id);
+    }
   }
 
   private activeChat(): Chat | null {
@@ -2415,9 +2607,8 @@ export class MainApp implements McpSessionSink {
       group.append(tab, close);
       this.chatTabs.append(group);
     }
-    // The host tab holds the id 0, so the settings tab must check for a non-number id, not a falsy one.
-    this.tabSettings.classList.toggle('active', typeof this.activeChatId !== 'number');
-    this.tabSettings.classList.toggle('permissions', pendingSources.has(CHAT_AGENT_SOURCE));
+    // The settings gear carries the badge while chat agent requests wait, because they answer in every chat tab.
+    this.appSettings.classList.toggle('permissions', pendingSources.has(CHAT_AGENT_SOURCE));
     // The active tab scrolls into view, so a full strip keeps it reachable.
     this.chatTabs.querySelector<HTMLElement>('.tab-group.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
@@ -2604,24 +2795,75 @@ export class MainApp implements McpSessionSink {
     return { disclosure, body };
   }
 
-  /** Builds one message item of a single entry: the bubble, the tool cards, or the reasoning disclosure. */
-  private buildMessageItem(slot: EntrySlot, openReasoning: ReadonlySet<string>, isStreaming = false): HTMLLIElement {
+  /** Builds one message item of a single entry: the bubble, the tool cards, or the reasoning disclosure.
+   * The user, assistant, and error bubbles carry the action zone at their bottom right.
+   * Returns null for one error entry the empty slot before it already rendered as its bubble body. */
+  private buildMessageItem(
+    chat: Chat,
+    slot: EntrySlot,
+    openReasoning: ReadonlySet<string>,
+    isStreaming = false,
+  ): HTMLLIElement | null {
     const { index, entry } = slot;
+    if (this.editing?.chatId === chat.id && this.editing.index === index) {
+      return this.buildMessageEditor(this.editing);
+    }
     const item = document.createElement('li');
     item.dataset.entryIndex = String(index);
     if (entry.role === 'tool' || (entry.toolName && entry.role !== 'user')) {
       item.append(this.buildToolReplyCard(entry));
       return item;
     }
-    if (entry.role === 'assistant' && (entry.reasoning || isStreaming)) {
-      // The streaming entry carries the disclosure from the start, so its collapsed state shows before the first reasoning.
+    if (entry.role === 'assistant' && entry.reasoning) {
+      // The disclosure mounts with the first reasoning piece, never before it.
       item.className = 'message assistant';
       const { disclosure, body } = this.buildReasoningDisclosure(index, openReasoning);
-      body.textContent = entry.reasoning ?? '';
+      body.textContent = entry.reasoning;
       const text = document.createElement('span');
       text.className = 'message-text';
       text.textContent = entry.content;
       item.append(disclosure, text);
+      const actions = this.buildMessageActions(chat, slot);
+      if (actions) {
+        item.append(actions);
+      }
+      return item;
+    }
+    if (entry.role === 'assistant' && !entry.content && !isStreaming && chat.entries[index + 1]?.role === 'error') {
+      // The turn died before its first piece: one error bubble, the icon and a short label as its
+      // title, the provider message as its content.
+      const failure = chat.entries[index + 1];
+      item.className = 'message error-bubble';
+      const head = document.createElement('div');
+      head.className = 'error-bubble-head';
+      head.append(this.buildIconSvg(ICON_ERROR));
+      const title = document.createElement('span');
+      title.textContent = errorLabelOf(failure?.content ?? '');
+      head.append(title);
+      const body = document.createElement('div');
+      body.className = 'error-bubble-body';
+      body.textContent = failure?.content ?? '';
+      item.append(head, body);
+      return item;
+    }
+    if (
+      entry.role === 'error' &&
+      !entry.toolName &&
+      chat.entries[index - 1]?.role === 'assistant' &&
+      !chat.entries[index - 1]?.content &&
+      !chat.entries[index - 1]?.reasoning &&
+      !chat.entries[index - 1]?.toolCalls
+    ) {
+      // The empty slot before this error rendered the pair as one bubble.
+      return null;
+    }
+    if (entry.role === 'assistant' && !entry.content && isStreaming) {
+      // The slot holds nothing yet: the pulsing accent icon of the open connection.
+      item.className = 'message stream-status connecting';
+      item.append(this.buildIconSvg(ICON_CONNECTING));
+      const label = document.createElement('span');
+      label.textContent = 'Connecting…';
+      item.append(label);
       return item;
     }
     item.className = `message ${entry.role}${entry.queued ? ' queued' : ''}`;
@@ -2635,7 +2877,152 @@ export class MainApp implements McpSessionSink {
     if (entry.images && entry.images.length > 0) {
       item.append(this.buildImageStrip(entry.images));
     }
+    const actions = this.buildMessageActions(chat, slot);
+    if (actions) {
+      item.append(actions);
+    }
     return item;
+  }
+
+  /** Builds the action zone of one message: the icon row at the bottom right of the bubble.
+   * A user message offers retry, copy, edit, and fork; an assistant reply offers copy. The retry
+   * shows only on the user message whose turn ended in an error. The host log and a running turn
+   * carry no zone. */
+  private buildMessageActions(chat: Chat, slot: EntrySlot): HTMLElement | null {
+    const { index, entry } = slot;
+    if (chat.isMcpHostLog || this.chatBusy) {
+      return null;
+    }
+    const zone = document.createElement('div');
+    zone.className = 'message-actions';
+    if (entry.role === 'user' && !entry.queued) {
+      if (this.messageTurnFailed(chat, index)) {
+        zone.append(
+          this.buildMessageAction('Retry the failed message', ICON_RETRY, () => {
+            void this.retryChatFrom(chat, index);
+          }),
+        );
+      }
+      zone.append(
+        this.buildMessageAction('Copy the message text', ICON_COPY, () => {
+          this.copyEntryText(entry.content);
+        }),
+        this.buildMessageAction('Edit and resend from here', ICON_EDIT, () => {
+          this.editing = { chatId: chat.id, index, text: entry.content };
+          this.renderMessages();
+        }),
+        this.buildMessageAction('Fork into a new tab from here', ICON_FORK, () => {
+          this.forkChatAt(chat, index);
+        }),
+      );
+      return zone;
+    }
+    if (entry.role === 'assistant') {
+      zone.append(
+        this.buildMessageAction('Copy the message text', ICON_COPY, () => {
+          this.copyEntryText(entry.content);
+        }),
+      );
+      return zone;
+    }
+    return null;
+  }
+
+  /** True when the turn of one user message ended in an error entry: no later sent message owns
+   * the conversation between them. */
+  private messageTurnFailed(chat: Chat, index: number): boolean {
+    for (let cursor = index + 1; cursor < chat.entries.length; cursor += 1) {
+      const entry = chat.entries[cursor];
+      if (!entry) {
+        continue;
+      }
+      if (entry.role === 'user' && !entry.queued) {
+        return false;
+      }
+      if (entry.role === 'error' && !entry.toolName) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Builds one stroke icon svg for the message UI, drawn on a 16 by 16 grid. */
+  private buildIconSvg(iconPath: string): SVGSVGElement {
+    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    icon.setAttribute('viewBox', '0 0 16 16');
+    icon.setAttribute('aria-hidden', 'true');
+    const stroke = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    stroke.setAttribute('d', iconPath);
+    icon.append(stroke);
+    return icon;
+  }
+
+  /** Builds one icon button of the message action zone. */
+  private buildMessageAction(title: string, iconPath: string, onClick: () => void): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'message-action';
+    button.title = title;
+    button.setAttribute('aria-label', title);
+    button.append(this.buildIconSvg(iconPath));
+    button.addEventListener('click', () => {
+      onClick();
+    });
+    return button;
+  }
+
+  /** Builds the open message editor: the pre-filled text area with the send and cancel actions.
+   * An entry index replaces that message; a fork draft appends as a new message. */
+  private buildMessageEditor(editing: { readonly text: string }): HTMLLIElement {
+    const item = document.createElement('li');
+    item.className = 'message-edit';
+    const editor = document.createElement('textarea');
+    editor.className = 'message-editor';
+    editor.value = editing.text;
+    const actions = document.createElement('div');
+    actions.className = 'message-edit-actions';
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'primary';
+    send.textContent = 'Send';
+    send.addEventListener('click', () => {
+      void this.saveEditing();
+    });
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => {
+      this.editing = null;
+      this.renderMessages();
+    });
+    actions.append(send, cancel);
+    item.append(editor, actions);
+    editor.addEventListener('input', () => {
+      this.fitMessageEditor(editor);
+    });
+    // Enter sends; Shift+Enter and Ctrl+Enter break the line, like the chat input.
+    editor.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' || event.ctrlKey || event.shiftKey || event.isComposing) {
+        return;
+      }
+      event.preventDefault();
+      void this.saveEditing();
+    });
+    // The editor still sits detached here, so the fit and the focus wait one frame for the list to mount it.
+    requestAnimationFrame(() => {
+      this.fitMessageEditor(editor);
+      editor.focus();
+    });
+    // The caret starts at the end, so typing appends to the draft.
+    editor.selectionStart = editing.text.length;
+    editor.selectionEnd = editing.text.length;
+    return item;
+  }
+
+  /** Grows the editor text area with its written lines. */
+  private fitMessageEditor(editor: HTMLTextAreaElement): void {
+    editor.style.height = 'auto';
+    editor.style.height = `${editor.scrollHeight}px`;
   }
 
   /** The text body of one tool reply: a pre when the content carries new lines, so its formatting
@@ -2811,7 +3198,7 @@ export class MainApp implements McpSessionSink {
       return;
     }
     this.appendSystemPromptItem(chat, promptOpen);
-    // The streaming entry of a busy chat carries the reasoning disclosure from the start, queued entries or not.
+    // The streaming entry of a busy chat renders as the connecting status until its first piece lands.
     let streamingIndex = -1;
     if (this.chatBusy) {
       for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
@@ -2824,7 +3211,10 @@ export class MainApp implements McpSessionSink {
     }
     for (const group of this.groupChatEntries(chat)) {
       if (group.kind === 'single') {
-        this.chatMessages.append(this.buildMessageItem(group.slot, openReasoning, group.slot.index === streamingIndex));
+        const item = this.buildMessageItem(chat, group.slot, openReasoning, group.slot.index === streamingIndex);
+        if (item) {
+          this.chatMessages.append(item);
+        }
         continue;
       }
       if (group.kind === 'agent') {
@@ -2840,6 +3230,10 @@ export class MainApp implements McpSessionSink {
           group.request.entry.mcpSession,
         ),
       );
+    }
+    // The fork draft carries no entry yet, so its editor renders after the copied history.
+    if (this.editing?.chatId === chat.id && this.editing.index === undefined) {
+      this.chatMessages.append(this.buildMessageEditor(this.editing));
     }
     this.pinChatToBottom();
   }
