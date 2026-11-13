@@ -54,7 +54,7 @@ const bridge = {
     openWorkspace: (handoff) => ipcRenderer.invoke(`${CHANNEL}:windows:openWorkspace`, handoff),
   },
   workspace: {
-    runWindowTool: (name, args) => ipcRenderer.invoke(`${CHANNEL}:tools:call`, { name, args }),
+    runWindowTool: (name, args, source) => ipcRenderer.invoke(`${CHANNEL}:tools:call`, { name, args, source }),
     onPermissionRequest: (handler) => {
       ipcRenderer.on(`${CHANNEL}:workspace:request`, (_event, request) => {
         if (request && request.channel === 'permission.check') {

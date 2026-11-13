@@ -475,23 +475,19 @@ body.framed #app-header {
   vertical-align: middle;
 }
 
-/* A tab with pending permission requests reads as the strongest state: the error tint frames it.
-   The settings gear carries the badge while chat agent requests wait, because they answer in every chat tab. */
+/* A tab with pending permission requests reads as the strongest state: the error tint frames it. */
 .tab-group.permissions,
-.tab-group.permissions .tab,
-#app-settings.permissions {
+.tab-group.permissions .tab {
   border-color: color-mix(in srgb, var(--error) 65%, var(--border));
   color: var(--text);
 }
 
-.tab-group.permissions .tab,
-#app-settings.permissions {
+.tab-group.permissions .tab {
   font-weight: 600;
 }
 
 /* The badge replaces the unread dot while requests wait. */
-.tab-group.permissions .tab::before,
-#app-settings.permissions::before {
+.tab-group.permissions .tab::before {
   content: '!';
   display: inline-block;
   width: 12px;

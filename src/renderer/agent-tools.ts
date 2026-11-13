@@ -84,6 +84,9 @@ export interface AgentToolDeps {
   readonly storageShares: StorageShareRegistry;
   /** Reads the permission rules, so the tool rules decide the ask, allow, and disable states. */
   readonly toolRules: () => readonly PermissionRule[];
+  /** The source the permission checks of this tool set attribute their requests to, scoped to the
+   * chat whose turn runs them, so the approval card lands in that chat's tab. */
+  readonly source: string;
 }
 
 async function readWorkspaceFile(path: string): Promise<string> {
@@ -113,7 +116,7 @@ async function readFileUri(uri: string, deps: AgentToolDeps, preauthorized: bool
     'read',
     { kind: 'file', path: decoded },
     `file ${decoded}`,
-    CHAT_AGENT_SOURCE,
+    deps.source,
     preauthorized,
   );
   return readWorkspaceFile(decoded);
@@ -165,12 +168,16 @@ function createReadTool(deps: AgentToolDeps): AgentTool {
   };
 }
 
-/** Builds one window tool of the chat agent: the shared definition wrapped over the bridge. */
-function createWindowTool(definition: {
-  readonly name: string;
-  readonly description: string;
-  readonly inputSchema: Record<string, unknown>;
-}): AgentTool {
+/** Builds one window tool of the chat agent: the shared definition wrapped over the bridge. The
+ * main process runs it as the agent principal and attributes its permission check to the source. */
+function createWindowTool(
+  definition: {
+    readonly name: string;
+    readonly description: string;
+    readonly inputSchema: Record<string, unknown>;
+  },
+  source: string,
+): AgentTool {
   return {
     name: definition.name,
     description: definition.description,
@@ -180,7 +187,7 @@ function createWindowTool(definition: {
       if (!bridge) {
         throw new Error('The window tools need the nodewavenui bridge of an app window.');
       }
-      const result = (await bridge.workspace.runWindowTool(definition.name, args)) as McpToolResult | null;
+      const result = (await bridge.workspace.runWindowTool(definition.name, args, source)) as McpToolResult | null;
       if (result === null || typeof result !== 'object') {
         throw new Error(`The tool "${definition.name}" returned no result.`);
       }
@@ -224,7 +231,7 @@ export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
   const tools: AgentTool[] = [createReadTool(deps)];
   // The chat agent carries the same window tools the MCP host serves, acting as the agent principal.
   for (const definition of WINDOW_TOOL_DEFINITIONS) {
-    tools.push(createWindowTool(definition));
+    tools.push(createWindowTool(definition, deps.source));
   }
   for (const native of deps.mcpClients.nativeTools()) {
     tools.push({
@@ -239,7 +246,7 @@ export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
             native.name,
             { kind: 'tool', name: native.name },
             `native MCP tool ${native.name}`,
-            CHAT_AGENT_SOURCE,
+            deps.source,
           );
         }
         const result = await deps.mcpClients.runNativeTool(native.name, args);

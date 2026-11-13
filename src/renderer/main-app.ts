@@ -10,6 +10,7 @@ import type { StorageSetup, SystemPromptSetup } from './plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { closeWindow, minimizeWindow, toggleDevToolsWindow, toggleMaximizeWindow } from './window-ops.js';
+import { chatAgentSource, chatIdOfAgentSource, isChatAgentSource } from '../shared/permissions.js';
 import { AppRail } from './rail.js';
 import { installColumnResizers } from './chat-resizer.js';
 import { getWorkarea } from './workarea.js';
@@ -193,18 +194,15 @@ export class MainApp implements McpSessionSink {
   private settingsOpen = false;
   /** The left rail: the approvals feed and the files tree. */
   private rail: AppRail | null = null;
-  /** The chat of the running agent turn, so a waiting approval row opens the tab that holds its card. */
-  private agentTurnChatId: number | null = null;
+  /** The abort controllers of the running agent turns, keyed by chat id, in start order. Chats
+   * run their turns in parallel; one chat queues its own sends while its turn runs. */
+  private readonly runningTurns = new Map<number, AbortController>();
   /** The images that ride along with the next message, from paste or drop. */
   private pendingImages: ChatImage[] = [];
   /** True while the chat view sits at the latest message, so new content keeps it in view. */
   private chatPinned = true;
   /** The pending clear of the collapsed reasoning tail, armed on every reasoning delta. */
   private reasoningTailTimer: number | null = null;
-  /** True while the agent runs one turn. A send while busy queues the message instead. */
-  private chatBusy = false;
-  /** The abort controller of the running agent turn, or null while idle. */
-  private chatAbort: AbortController | null = null;
   /** How many provider rounds one message may spend on tool calls. Null means no limit. */
   private agentTurnLimit: number | null = null;
   /** The default reasoning effort of the chats. Null means the endpoint default. */
@@ -432,7 +430,10 @@ export class MainApp implements McpSessionSink {
       this.fitChatInput();
     });
     this.chatStop.addEventListener('click', () => {
-      this.chatAbort?.abort();
+      const active = this.activeChat();
+      if (active) {
+        this.runningTurns.get(active.id)?.abort();
+      }
     });
     // The chat view scrolls to the latest message only while it sits at the bottom.
     // A scroll away from the end unpins it, and the arrow above the input jumps back.
@@ -1247,8 +1248,9 @@ export class MainApp implements McpSessionSink {
   }
 
   /** Renders the pending permission requests of the active chat tab above the chat input.
-   * The host tab shows every host session's requests, a plain chat tab shows the chat agent's requests.
-   * Requests of the other side stay behind their tabs; the bar names them, so a waiting request is never invisible. */
+   * The host tab shows every host session's requests, a plain chat tab shows the requests its own
+   * chat agent turn made: parallel turns attribute their requests to the chat that sent them.
+   * Requests of the other tabs stay behind them; the bar names them, so a waiting request is never invisible. */
   private renderPermissionRequests(): void {
     this.permissionRequests.replaceChildren();
     const gate = this.permissionGate;
@@ -1259,7 +1261,18 @@ export class MainApp implements McpSessionSink {
     const chat = this.activeChat();
     const hostTabActive = Boolean(chat?.isMcpHostLog);
     const all = gate.pendingRequests();
-    const requests = all.filter((request) => (request.source === CHAT_AGENT_SOURCE) !== hostTabActive);
+    const requests = all.filter((request) => {
+      if (isChatAgentSource(request.source) === hostTabActive) {
+        return false;
+      }
+      if (hostTabActive) {
+        return true;
+      }
+      // A chat tab holds the requests its own turn made. The bare source carries no owner, so it
+      // shows in any chat tab rather than nowhere.
+      const owner = chatIdOfAgentSource(request.source);
+      return owner === null || owner === chat?.id;
+    });
     for (const request of requests) {
       const card = document.createElement('permission-request') as PermissionRequestElement;
       card.request = request;
@@ -1275,7 +1288,7 @@ export class MainApp implements McpSessionSink {
       notice.className = 'permission-request-waiting';
       notice.textContent = hostTabActive ?
         'A permission request waits in a chat tab. Open the tab to answer it.' :
-        'A permission request waits in the MCP Host tab. Open the tab to answer it.';
+        'A permission request waits in another tab. Open the tab to answer it.';
       this.permissionRequests.append(notice);
     }
     this.permissionRequests.hidden = this.permissionRequests.childElementCount === 0;
@@ -1870,8 +1883,8 @@ export class MainApp implements McpSessionSink {
     if (!chat || (text.length === 0 && images.length === 0)) {
       return;
     }
-    if (this.chatBusy) {
-      // The agent runs: the message waits as a dimmed entry and delivers when the run ends.
+    if (this.isTurnRunning(chat.id)) {
+      // The agent of this chat runs: the message waits as a dimmed entry and delivers when the run ends.
       this.chatInput.value = '';
       this.fitChatInput();
       this.pendingImages = [];
@@ -1982,9 +1995,8 @@ export class MainApp implements McpSessionSink {
       this.renderChatStatus();
     }
     const abort = new AbortController();
-    this.chatAbort = abort;
-    this.agentTurnChatId = chat.id;
-    this.setChatBusy(true);
+    this.runningTurns.set(chat.id, abort);
+    this.updateTurnControls(chat.id, true);
     this.renderMessages();
     let stopped = false;
     try {
@@ -2018,10 +2030,12 @@ export class MainApp implements McpSessionSink {
         });
       }
     } finally {
-      this.chatAbort = null;
-      this.agentTurnChatId = null;
-      this.setChatBusy(false);
+      if (this.runningTurns.get(chat.id) === abort) {
+        this.runningTurns.delete(chat.id);
+      }
+      this.updateTurnControls(chat.id, false);
       this.renderMessages();
+      this.renderTabs();
       this.persistChat(chat);
     }
     // A stop leaves the queue in place: the user halted the agent, so nothing follows on its own.
@@ -2034,7 +2048,7 @@ export class MainApp implements McpSessionSink {
   /** Restarts the failed turn of one user message: every entry after the message drops, and the
    * turn runs again, so the failed message sends again from that exact point. */
   private async retryChatFrom(chat: Chat, messageIndex: number): Promise<void> {
-    if (this.chatBusy) {
+    if (this.isTurnRunning(chat.id)) {
       return;
     }
     chat.entries.splice(messageIndex + 1);
@@ -2082,7 +2096,7 @@ export class MainApp implements McpSessionSink {
     const text = editor.value.trim();
     const chat = this.chats.find((candidate) => candidate.id === editing.chatId) ?? null;
     this.editing = null;
-    if (!chat || this.chatBusy) {
+    if (!chat || this.isTurnRunning(chat.id)) {
       this.renderMessages();
       return;
     }
@@ -2199,8 +2213,9 @@ export class MainApp implements McpSessionSink {
     });
   }
 
-  /** The dependencies the agent tools build from. The rule reader feeds the tool rule layer. */
-  private agentToolDeps(): AgentToolDeps {
+  /** The dependencies the agent tools build from. The rule reader feeds the tool rule layer. A
+   * running turn passes its chat, so the permission requests attribute to that chat's tab. */
+  private agentToolDeps(chat?: Chat): AgentToolDeps {
     return {
       gate:
         this.permissionGate ?? {
@@ -2212,12 +2227,14 @@ export class MainApp implements McpSessionSink {
       workspacePath: this.workspacePath,
       storageShares: this.storageShares,
       toolRules: () => this.permissionGate?.listRules() ?? [],
+      source: chat ? chatAgentSource(chat.id) : CHAT_AGENT_SOURCE,
     };
   }
 
-  /** The tools the agent may call this turn, the built-ins plus the native MCP tools, without the disabled ones. */
-  private agentTools(): readonly AgentTool[] {
-    return buildAgentTools(this.agentToolDeps());
+  /** The tools the agent may call this turn, the built-ins plus the native MCP tools, without the
+   * disabled ones. The turn's chat scopes the permission requests. */
+  private agentTools(chat: Chat): readonly AgentTool[] {
+    return buildAgentTools(this.agentToolDeps(chat));
   }
 
   /** Runs the tool-calling loop of one user message, until the model answers in text or hits the round limit. */
@@ -2233,7 +2250,7 @@ export class MainApp implements McpSessionSink {
     let turn = 0;
     while (limit === null || turn < limit) {
       turn += 1;
-      const tools = this.agentTools();
+      const tools = this.agentTools(chat);
       const messages = this.agentMessages(chat, vision);
       const streaming = this.beginStreamingEntry(chat);
       const result = await provider.complete({
@@ -2430,6 +2447,15 @@ export class MainApp implements McpSessionSink {
    * A missing or replaced list item falls back to one full render.
    */
   private patchStreamingEntry(chat: Chat, slot: ChatEntry): void {
+    if (chat.id !== this.activeChatId) {
+      // A background turn streams unseen: the tab badges until the user opens it, and the patch
+      // stays off the list, which renders another chat.
+      if (!chat.unread) {
+        chat.unread = true;
+        this.renderTabs();
+      }
+      return;
+    }
     const index = chat.entries.indexOf(slot);
     const entry = index >= 0 ? chat.entries[index] : undefined;
     const item = this.chatMessages.querySelector(`:scope > li[data-entry-index="${index}"]`);
@@ -2475,10 +2501,20 @@ export class MainApp implements McpSessionSink {
     }
   }
 
-  private setChatBusy(busy: boolean): void {
-    this.chatBusy = busy;
-    this.chatStop.hidden = !busy;
-    if (!busy) {
+  /** True while one chat runs an agent turn. */
+  private isTurnRunning(chatId: number): boolean {
+    return this.runningTurns.has(chatId);
+  }
+
+  /** Updates the composer controls for one turn state of one chat: the Stop button shows while
+   * the active chat runs, and the input takes focus when the active chat goes idle. A background
+   * chat never touches the controls of the tab the user reads. */
+  private updateTurnControls(chatId: number, running: boolean): void {
+    if (chatId !== this.activeChatId) {
+      return;
+    }
+    this.chatStop.hidden = !running;
+    if (!running) {
       this.chatInput.focus();
     }
   }
@@ -2533,6 +2569,8 @@ export class MainApp implements McpSessionSink {
     if (chat) {
       chat.unread = false;
     }
+    // The Stop button serves the active chat's turn, so a tab switch moves it with the view.
+    this.chatStop.hidden = !this.isTurnRunning(id);
     // The MCP host tab logs traffic. The host cannot push a message to the connected clients,
     // so the tab carries no message input and no status bar of a chat that cannot send.
     const sessionLog = Boolean(chat?.isMcpHostLog);
@@ -2565,16 +2603,17 @@ export class MainApp implements McpSessionSink {
   }
 
   /** Activates the tab that holds the approval cards of one request source: the host log for host
-   * sessions, the chat of the running agent turn for the chat agent. */
+   * sessions, the chat the source scopes to for the chat agent, the active chat for the bare source. */
   private openPermissionTab(source: string | null): void {
-    if (source !== CHAT_AGENT_SOURCE) {
+    if (!isChatAgentSource(source)) {
       const host = this.mcpHostTab();
       if (host) {
         this.activateChat(host.id);
       }
       return;
     }
-    const target = this.chats.find((chat) => chat.id === this.agentTurnChatId) ?? this.activeChat();
+    const owner = chatIdOfAgentSource(source);
+    const target = this.chats.find((chat) => chat.id === owner) ?? this.activeChat();
     if (target) {
       this.activateChat(target.id);
     }
@@ -2592,9 +2631,19 @@ export class MainApp implements McpSessionSink {
   private renderTabs(): void {
     // The sources of the queued permission requests, so the tabs that hold one stand out.
     const pendingSources = new Set(this.permissionGate?.pendingRequests().map((request) => request.source) ?? []);
-    // The host tab badges when any host session waits; a plain chat badges when the chat agent waits.
-    const hostWaits = [...pendingSources].some((source) => source !== CHAT_AGENT_SOURCE);
-    const chatWaits = pendingSources.has(CHAT_AGENT_SOURCE);
+    // The host tab badges when any host session waits; the chat agent answers in the tab of the
+    // turn that made the request, so only the chat each source scopes to badges.
+    const hostWaits = [...pendingSources].some((source) => !isChatAgentSource(source));
+    const waitingChatIds = new Set<number>();
+    for (const source of pendingSources) {
+      if (!isChatAgentSource(source)) {
+        continue;
+      }
+      const owner = chatIdOfAgentSource(source) ?? this.activeChatId;
+      if (typeof owner === 'number') {
+        waitingChatIds.add(owner);
+      }
+    }
     this.chatTabs.replaceChildren();
     for (const chat of this.chats) {
       const group = document.createElement('span');
@@ -2605,7 +2654,7 @@ export class MainApp implements McpSessionSink {
       if (chat.unread) {
         classes.push('unread');
       }
-      if (chat.isMcpHostLog ? hostWaits : chatWaits) {
+      if (chat.isMcpHostLog ? hostWaits : waitingChatIds.has(chat.id)) {
         classes.push('permissions');
       }
       group.className = classes.join(' ');
@@ -2627,8 +2676,6 @@ export class MainApp implements McpSessionSink {
       group.append(tab, close);
       this.chatTabs.append(group);
     }
-    // The settings gear carries the badge while chat agent requests wait, because they answer in every chat tab.
-    this.appSettings.classList.toggle('permissions', pendingSources.has(CHAT_AGENT_SOURCE));
     // The active tab scrolls into view, so a full strip keeps it reachable.
     this.chatTabs.querySelector<HTMLElement>('.tab-group.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
@@ -2910,7 +2957,7 @@ export class MainApp implements McpSessionSink {
    * carry no zone. */
   private buildMessageActions(chat: Chat, slot: EntrySlot): HTMLElement | null {
     const { index, entry } = slot;
-    if (chat.isMcpHostLog || this.chatBusy) {
+    if (chat.isMcpHostLog || this.isTurnRunning(chat.id)) {
       return null;
     }
     const zone = document.createElement('div');
@@ -3220,7 +3267,7 @@ export class MainApp implements McpSessionSink {
     this.appendSystemPromptItem(chat, promptOpen);
     // The streaming entry of a busy chat renders as the connecting status until its first piece lands.
     let streamingIndex = -1;
-    if (this.chatBusy) {
+    if (this.runningTurns.has(chat.id)) {
       for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
         const candidate = chat.entries[index];
         if (candidate && candidate.role === 'assistant') {

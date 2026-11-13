@@ -9,6 +9,30 @@ export type PrincipalKind = 'user' | 'plugin' | 'mcp' | 'agent';
 /** The origin the chat agent's permission requests carry, so the chat pane routes them to their tab. */
 export const CHAT_AGENT_SOURCE = 'chat-agent';
 
+/** Reads the chat-agent source of one chat, so parallel turns attribute their requests to their tab. */
+export function chatAgentSource(chatId: number): string {
+  return `${CHAT_AGENT_SOURCE}:${chatId}`;
+}
+
+/** True when one source belongs to the chat agent, bare or scoped to one chat. */
+export function isChatAgentSource(source: string | null): boolean {
+  return source === CHAT_AGENT_SOURCE || (source !== null && source.startsWith(`${CHAT_AGENT_SOURCE}:`));
+}
+
+/**
+ * Reads the chat id one chat-agent source scopes to.
+ *
+ * @param source The request source. It can have any type of value a source field holds.
+ * @returns The chat id, or null for the bare source and for every other origin.
+ */
+export function chatIdOfAgentSource(source: string | null): number | null {
+  if (!source || !source.startsWith(`${CHAT_AGENT_SOURCE}:`)) {
+    return null;
+  }
+  const id = Number(source.slice(CHAT_AGENT_SOURCE.length + 1));
+  return Number.isInteger(id) ? id : null;
+}
+
 /** The access level of each principal. A higher level outranks a lower one. */
 export const PRINCIPAL_LEVELS: Readonly<Record<PrincipalKind, number>> = {
   user: 4,

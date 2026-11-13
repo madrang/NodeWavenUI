@@ -175,7 +175,7 @@ function registerToolService(): void {
     return sessions.closeChild({ principal: 'user' }, id);
   });
   ipcMain.handle('nodewavenui:tools:call', async (_event, call: unknown) => {
-    const candidate = call as { name?: unknown; args?: unknown } | null;
+    const candidate = call as { name?: unknown; args?: unknown; source?: unknown } | null;
     if (typeof candidate?.name !== 'string') {
       throw new Error('The tool call needs a name string.');
     }
@@ -184,7 +184,8 @@ function registerToolService(): void {
       throw new Error(`The tool "${candidate.name}" is unknown.`);
     }
     const args = typeof candidate.args === 'object' && candidate.args !== null ? (candidate.args as Record<string, unknown>) : {};
-    return tool.handler(args, { principal: 'agent', source: CHAT_AGENT_SOURCE });
+    const source = typeof candidate.source === 'string' && candidate.source.length > 0 ? candidate.source : CHAT_AGENT_SOURCE;
+    return tool.handler(args, { principal: 'agent', source });
   });
   ipcMain.handle('nodewavenui:mcp:start', async () => {
     try {

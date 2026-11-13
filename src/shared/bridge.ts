@@ -129,8 +129,9 @@ export interface ChatImageShape {
 
 /** The workspace-only slice: the main services and the session tools of the app. */
 export interface BridgeWorkspaceApi {
-  /** Runs one window tool in the main process as the chat agent principal. */
-  runWindowTool(name: string, args: unknown): Promise<unknown>;
+  /** Runs one window tool in the main process as the chat agent principal. The source names the
+   * chat whose turn sent the call, so the permission card lands in that chat's tab. */
+  runWindowTool(name: string, args: unknown, source?: string): Promise<unknown>;
   /** Applies one MCP endpoint list to the connections of the main process. */
   applyMcpEndpoints(endpoints: unknown): Promise<void>;
   /**

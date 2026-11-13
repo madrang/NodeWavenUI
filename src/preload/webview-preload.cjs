@@ -1,16 +1,23 @@
 /**
  * The preload of every webview frame guest. A sandboxed preload cannot require files, so this
- * file carries the app bridge inline and mirrors `app-preload.cjs`: keep the two in sync. An
- * app-origin guest receives the bridge and the page API, and announces itself to the main
- * process with the frame token of its address, which binds the guest to its frame record. A
- * guest on any other origin stays without a bridge.
+ * file carries the app bridge inline and mirrors `app-preload.cjs`: keep the two in sync. Every
+ * guest announces itself to the main process with the frame token of its address, which binds
+ * the guest to its frame record whatever origin it loads. An app-origin guest also receives the
+ * bridge and the page API; a guest on any other origin stays without them.
  */
 
 const { contextBridge, ipcRenderer } = require('electron');
 
 const CHANNEL = 'nodewavenui';
 
-// The bridge serves app pages only: a remote page embedded as an iframe gets an inert preload.
+// The token announcement runs for every origin: the attach of a remote frame needs the binding
+// too, and the code sits in the preload context, out of reach of the page.
+const guestToken = new URLSearchParams(window.location.search).get('nvframe');
+if (guestToken !== null) {
+  ipcRenderer.send('nodewavenui:frames:guest', { token: Number(guestToken) });
+}
+
+// The bridge serves app pages only: a remote page embedded as a webview gets no bridge.
 if (window.location.protocol === 'app:') {
 
 const bridge = {
@@ -99,9 +106,4 @@ for (const method of pageApiMethods) {
   pageApiProxy[method] = (...args) => ipcRenderer.invoke(`${CHANNEL}:mcp:invoke`, { method, args });
 }
 contextBridge.exposeInMainWorld('nodewavenMcp', pageApiProxy);
-
-const guestToken = new URLSearchParams(window.location.search).get('nvframe');
-if (guestToken !== null) {
-  ipcRenderer.send('nodewavenui:frames:guest', { token: Number(guestToken) });
-}
 }
