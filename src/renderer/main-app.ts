@@ -11,7 +11,8 @@ import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { closeWindow, minimizeWindow } from './window-ops.js';
 import { AppRail } from './rail.js';
-import { installChatResizer } from './chat-resizer.js';
+import { installColumnResizers } from './chat-resizer.js';
+import { getWorkarea } from './workarea.js';
 import type {
   ModelEntry,
   ProviderAccount,
@@ -221,7 +222,6 @@ export class MainApp implements McpSessionSink {
   private readonly chatTabs = requireElement<HTMLElement>('#chat-tab-list');
   private readonly newChatButton = requireElement<HTMLButtonElement>('#new-chat');
   private readonly paneSettings = requireElement<HTMLElement>('#pane-settings');
-  private readonly workareaEmpty = requireElement<HTMLElement>('#workarea-empty');
   private readonly paneChat = requireElement<HTMLElement>('#pane-chat');
   private readonly chatMessages = requireElement<HTMLOListElement>('#chat-messages');
   private readonly chatForm = requireElement<HTMLFormElement>('#chat-form');
@@ -383,7 +383,7 @@ export class MainApp implements McpSessionSink {
     this.appSettings.addEventListener('click', () => {
       this.toggleSettings();
     });
-    installChatResizer();
+    installColumnResizers();
     this.newChatButton.addEventListener('click', () => {
       this.newChat();
     });
@@ -2539,9 +2539,18 @@ export class MainApp implements McpSessionSink {
   /** Opens or closes the settings view of the center workspace. The chat column stays beside it. */
   private toggleSettings(): void {
     this.settingsOpen = !this.settingsOpen;
-    this.paneSettings.hidden = !this.settingsOpen;
-    this.workareaEmpty.hidden = this.settingsOpen;
     this.appSettings.classList.toggle('active', this.settingsOpen);
+    if (this.settingsOpen) {
+      getWorkarea().register('settings', {
+        label: 'Settings',
+        content: this.paneSettings,
+        onClose: () => {
+          this.toggleSettings();
+        },
+      });
+      return;
+    }
+    getWorkarea().unregister('settings');
   }
 
   /** Activates the tab that holds the approval cards of one request source: the host log for host

@@ -36,14 +36,14 @@ export const WINDOW_TOOL_DEFINITIONS: readonly WindowToolDefinition[] = [
   {
     name: 'open_frame',
     description:
-      'Opens one embedded frame beside the chat and settings panes and returns { frameId, kind, side }. kind iframe loads the address inside the workspace page: it never attaches and carries no debug target of its own. kind webview loads it in its own guest process with its own debug target, and attach_session needs the share switch of its title bar on. The permission gate may queue an approval request.',
+      'Opens one embedded frame as a view of the center workspace and returns { frameId, kind, side }. kind iframe loads the address inside the workspace page: it never attaches and carries no debug target of its own. kind webview loads it in its own guest process with its own debug target, and attach_session needs the share switch of its tab on. The permission gate may queue an approval request.',
     inputSchema: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'The address the frame loads. A relative path resolves against the app root.' },
         kind: { type: 'string', enum: ['iframe', 'webview'], description: 'The embed kind of the frame.' },
-        side: { type: 'string', enum: ['left', 'right'], description: 'The column of the frame. Default right.' },
-        title: { type: 'string', description: 'The title the title bar shows. Default: the last path segment of the address.' },
+        side: { type: 'string', enum: ['left', 'right'], description: 'Kept for compatibility. Every frame opens in the center workspace; the side picks no column.' },
+        title: { type: 'string', description: 'The title the tab shows. Default: the last path segment of the address.' },
       },
       required: ['url', 'kind'],
     },

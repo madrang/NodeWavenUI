@@ -1,18 +1,20 @@
 /**
- * The frame tiling manager of the workspace page: embedded panels beside the chat and settings
- * panes. The main process owns the frame records and the permission checks; this module builds
- * and owns the panels it is asked to build, and answers the frame commands the main process
- * pushes. An iframe frame loads app content inside the workspace page. A webview frame loads
- * content in its own guest process, which carries its own debug target behind the share switch
- * of its title bar.
+ * The frame manager of the workspace page: embedded views of the center workspace. The main
+ * process owns the frame records and the permission checks; this module builds the views it is
+ * asked to build — one tab each in the workarea strip — and answers the frame commands the main
+ * process pushes. An iframe frame loads app content inside the workspace page. A webview frame
+ * loads content in its own guest process, which carries its own debug target behind the share
+ * switch of its tab.
  */
 
 import { readBridge } from '../shared/bridge.js';
+import { getWorkarea } from './workarea.js';
 
 /** The kind of one embedded frame. An iframe shares the workspace page, a webview runs its own guest process. */
 export type FrameKind = 'iframe' | 'webview';
 
-/** The column one frame tiles into, beside the panes. */
+/** The column one frame asked for. The frames tile into the center workspace today; the main
+ * process still sends the field, so older callers keep working. */
 export type FrameSide = 'left' | 'right';
 
 /** The open arguments of one frame. */
@@ -20,9 +22,10 @@ export interface OpenFrameOptions {
   /** The address the frame loads. A relative path resolves against the app root. */
   readonly url: string;
   readonly kind: FrameKind;
-  /** The column of the frame. Defaults to right. */
+  /** The column of the frame. The frames tile into the center workspace today; the field stays
+   * accepted so older callers keep working. */
   readonly side?: FrameSide;
-  /** The title the title bar shows. Defaults to the last path segment of the address. */
+  /** The title the tab shows. Defaults to the last path segment of the address. */
   readonly title?: string;
 }
 
@@ -65,15 +68,6 @@ export function isFrameSide(value: unknown): value is FrameSide {
   return value === 'left' || value === 'right';
 }
 
-/** Reads the DOM element behind one id, or throws when the page lacks it. */
-function requireElement<T extends HTMLElement>(id: string): T {
-  const element = document.querySelector(id);
-  if (!element) {
-    throw new Error(`The element ${id} is missing from the page.`);
-  }
-  return element as T;
-}
-
 /** True when a frame address carries a scheme, so it is absolute. */
 function isAbsoluteUrl(url: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url);
@@ -104,38 +98,21 @@ function titleOf(url: string): string {
   return clean.split('/').filter((part) => part.length > 0).at(-1) ?? url;
 }
 
-/** The panels of one frame id, so the frame commands find them. */
-const panels = new Map<number, { readonly panel: HTMLDivElement; readonly setUrl: (url: string) => void }>();
+/** The views of one frame id, so the frame commands find them. */
+const panels = new Map<number, { readonly content: HTMLDivElement; readonly setUrl: (url: string) => void }>();
 
-/** Builds the panel of one frame the main process registered. */
+/** Builds the view of one frame the main process registered: one tab in the workarea strip. */
 function buildFramePanel(request: FrameBuildRequest): void {
   const bridge = readBridge();
   if (!bridge) {
-    throw new Error('The frame panels need the nodewavenui bridge of an app window.');
+    throw new Error('The frame views need the nodewavenui bridge of an app window.');
   }
-  const column = requireElement<HTMLDivElement>(request.side === 'left' ? '#frames-left' : '#frames-right');
-  const panel = document.createElement('div');
-  panel.className = 'frame-panel';
-  panel.dataset.frameId = String(request.id);
-
-  const titlebar = document.createElement('div');
-  titlebar.className = 'frame-titlebar';
-  const badge = document.createElement('span');
-  badge.className = `frame-kind ${request.kind}`;
-  badge.textContent = request.kind;
-  badge.title =
-    request.kind === 'webview' ?
-      'A webview frame runs its own guest process and carries its own debug target.' :
-      'An iframe frame shares the process and the debug target of the workspace window.';
-  const label = document.createElement('span');
-  label.className = 'frame-title';
-  label.textContent = request.title;
-  titlebar.append(badge, label);
-
+  const workarea = getWorkarea();
   const content = document.createElement('div');
-  content.className = 'frame-content';
+  content.className = 'frame-view';
+  const viewId = `frame:${request.id}`;
   const setUrl = (url: string): void => {
-    label.textContent = titleOf(url);
+    workarea.setLabel(viewId, titleOf(url));
     if (embed instanceof HTMLIFrameElement) {
       embed.src = url;
     } else {
@@ -151,7 +128,7 @@ function buildFramePanel(request: FrameBuildRequest): void {
     webview.addEventListener('did-navigate', (event) => {
       const url = (event as Event & { url?: string }).url;
       if (typeof url === 'string' && url.length > 0) {
-        label.textContent = titleOf(url);
+        workarea.setLabel(viewId, titleOf(url));
       }
     });
     embed = webview;
@@ -173,60 +150,49 @@ function buildFramePanel(request: FrameBuildRequest): void {
     embed = iframe;
   }
   content.append(embed);
-
-  if (request.kind === 'webview') {
-    const share = document.createElement('button');
-    share.type = 'button';
-    share.className = 'frame-share';
-    share.textContent = 'Not shared';
-    share.setAttribute('aria-pressed', 'false');
-    share.title = 'Sharing decides whether a debug session may attach. Attach still runs through the permission pipeline first.';
-    share.addEventListener('click', () => {
-      const shared = share.getAttribute('aria-pressed') !== 'true';
-      share.textContent = shared ? 'Shared' : 'Not shared';
-      share.setAttribute('aria-pressed', `${shared}`);
-      void bridge.workspace.notifyFrameShared(request.id, shared);
-    });
-    titlebar.append(share);
-  }
-
-  const hide = document.createElement('button');
-  hide.type = 'button';
-  hide.className = 'frame-hide';
-  hide.textContent = '–';
-  hide.title = 'Hide the frame content. The frame stays and a webview guest keeps running.';
-  hide.addEventListener('click', () => {
-    panel.classList.toggle('collapsed');
+  workarea.register(viewId, {
+    label: request.title,
+    badge: request.kind,
+    title:
+      request.kind === 'webview' ?
+        'A webview frame runs its own guest process and carries its own debug target.' :
+        'An iframe frame shares the process and the debug target of the workspace window.',
+    content,
+    ...(request.kind === 'webview' ?
+      {
+        actions: (group: HTMLElement): void => {
+          const share = document.createElement('button');
+          share.type = 'button';
+          share.className = 'frame-share';
+          share.textContent = 'Not shared';
+          share.setAttribute('aria-pressed', 'false');
+          share.title = 'Sharing decides whether a debug session may attach. Attach still runs through the permission pipeline first.';
+          share.addEventListener('click', () => {
+            const shared = share.getAttribute('aria-pressed') !== 'true';
+            share.textContent = shared ? 'Shared' : 'Not shared';
+            share.setAttribute('aria-pressed', `${shared}`);
+            void bridge.workspace.notifyFrameShared(request.id, shared);
+          });
+          group.append(share);
+        },
+      } :
+      {}),
+    onClose: () => {
+      void bridge.workspace.closeFrameAsUser(request.id);
+    },
   });
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'frame-close';
-  close.textContent = '×';
-  close.title = 'Close the frame.';
-  close.addEventListener('click', () => {
-    void bridge.workspace.closeFrameAsUser(request.id);
-  });
-  titlebar.append(hide, close);
-  panel.append(titlebar, content);
-  column.hidden = false;
-  column.append(panel);
-  panels.set(request.id, { panel, setUrl });
+  panels.set(request.id, { content, setUrl });
 }
 
-/** Removes the panel of one frame and hides its column when it empties. */
+/** Removes the view of one frame from the workarea. */
 function removeFramePanel(id: number): void {
   const entry = panels.get(id);
   if (!entry) {
     return;
   }
   panels.delete(id);
-  entry.panel.remove();
-  for (const selector of ['#frames-left', '#frames-right']) {
-    const column = document.querySelector<HTMLElement>(selector);
-    if (column !== null && column.childElementCount === 0) {
-      column.hidden = true;
-    }
-  }
+  getWorkarea().unregister(`frame:${id}`);
+  entry.content.remove();
 }
 
 /**

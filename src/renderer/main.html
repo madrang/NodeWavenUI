@@ -19,7 +19,6 @@
       <button id="app-close" class="header-button" type="button" title="Close">×</button>
     </header>
     <div id="frames-layout">
-      <div id="frames-left" class="frame-column" hidden></div>
       <div id="rail-left">
         <div class="rail-tabbar">
           <button class="rail-tab active" data-rail-tab="events" type="button">Events</button>
@@ -42,7 +41,9 @@
           <div id="rail-file-tree" class="rail-scroll"></div>
         </div>
       </div>
+      <div id="rail-resizer" class="column-resizer" title="Drag to resize the rail"></div>
       <div id="frames-center">
+        <header id="workarea-tabs" hidden></header>
         <div id="pane-settings" class="pane" hidden>
       <fieldset class="field" id="storage-share-section">
         <legend>Storage</legend>
@@ -181,7 +182,7 @@
           <span class="workarea-note">The settings gear opens the settings here.</span>
         </div>
       </div>
-      <div id="chat-resizer" title="Drag to resize the chat column"></div>
+      <div id="chat-resizer" class="column-resizer" title="Drag to resize the chat column"></div>
       <div id="chat-column">
         <header id="chat-tabs">
           <span id="chat-tab-list"></span>
@@ -202,7 +203,6 @@
       <footer id="chat-status"></footer>
         </div>
       </div>
-      <div id="frames-right" class="frame-column" hidden></div>
     </div>
   </section>
 </body>
