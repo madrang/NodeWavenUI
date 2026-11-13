@@ -14,8 +14,10 @@
     <header id="app-header">
       <span id="workspace-name" class="app-title"></span>
       <span class="header-spacer"></span>
+      <button id="app-devtools" class="header-button" type="button" title="Developer tools">&gt;_</button>
       <button id="app-settings" class="header-button" type="button" title="Settings">⚙</button>
       <button id="app-minimize" class="header-button" type="button" title="Minimize">–</button>
+      <button id="app-maximize" class="header-button" type="button" title="Maximize / Restore">▢</button>
       <button id="app-close" class="header-button" type="button" title="Close">×</button>
     </header>
     <div id="frames-layout">
@@ -170,6 +172,10 @@
         <legend>Plugins</legend>
         <p class="status">Folders under plugins/ of the app. Enable loads the plugin; a content change after that resets it to disabled.</p>
         <div id="plugin-folder-list"></div>
+      </fieldset>
+      <fieldset class="field" id="event-sources-section">
+        <legend>Events sources</legend>
+        <p class="status">Sources feed the Events tab of the left rail. Approvals are built in. No other source kind exists yet.</p>
       </fieldset>
       <fieldset class="field" id="agent-tools-section">
         <legend>Agent tools</legend>

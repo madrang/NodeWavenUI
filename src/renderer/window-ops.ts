@@ -45,6 +45,16 @@ export async function minimizeWindow(): Promise<void> {
   await bridge()?.windows.minimize();
 }
 
+/** Maximizes the window, or restores it when it sits maximized. */
+export async function toggleMaximizeWindow(): Promise<void> {
+  await bridge()?.windows.toggleMaximize();
+}
+
+/** Opens the developer tools of the window, or closes them when they sit open. */
+export async function toggleDevToolsWindow(): Promise<void> {
+  await bridge()?.windows.toggleDevTools();
+}
+
 /**
  * Reads the placement of the window.
  *

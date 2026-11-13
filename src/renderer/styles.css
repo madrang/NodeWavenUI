@@ -356,14 +356,12 @@ legend {
   background: var(--surface);
 }
 
-/* The framed workspace window: the system titlebar replaces the custom controls and the drag region. */
-body.framed #app-minimize,
-body.framed #app-close {
-  display: none;
-}
-
+/* The framed workspace window: the system titlebar and the application menu replace the custom
+   top bar entirely — its settings, minimize, and close options live in the File menu — so the
+   bar hides and the layout fills the window. The borderless mode shows the bar as the only
+   title bar. */
 body.framed #app-header {
-  -webkit-app-region: no-drag;
+  display: none;
 }
 
 /* The tab shape: rounded top corners, a box that joins the pane below when active.

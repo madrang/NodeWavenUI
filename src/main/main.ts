@@ -4,7 +4,7 @@
  * preload bridge.
  */
 
-import { app, BrowserWindow, ipcMain, session } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, session, type MenuItemConstructorOptions } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CHAT_AGENT_SOURCE } from '../shared/permissions.js';
@@ -16,7 +16,7 @@ import { registerServices } from './services.js';
 import { registerMcpClientService } from './mcp-client-service.js';
 import { sessions } from './session-service.js';
 import { registerWindowService } from './window-service.js';
-import { registerWorkspaceLink } from './workspace-link.js';
+import { registerWorkspaceLink, pushWorkspace } from './workspace-link.js';
 
 registerAppProtocolPrivileges();
 
@@ -89,6 +89,7 @@ app.on('window-all-closed', () => {
 void app.whenReady().then(() => {
   registerAppProtocol();
   registerProviderCors(session.defaultSession);
+  installAppMenu();
   registerServices();
   registerMcpClientService();
   registerWindowService();
@@ -97,6 +98,56 @@ void app.whenReady().then(() => {
   createLauncherWindow();
   console.log(`[NodeWavenUI] main ready: electron ${process.versions.electron}, node ${process.versions.node}`);
 });
+
+/**
+ * Installs the application menu. The framed window shows no custom top bar, so the menu carries
+ * the same options the borderless title bar holds: open settings, minimize, and close, beside the
+ * edit roles and the developer tools. The settings entry reaches the workspace page through the
+ * workspace link; with no workspace open it does nothing.
+ */
+function installAppMenu(): void {
+  const template: MenuItemConstructorOptions[] = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' } as MenuItemConstructorOptions] : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Open Settings',
+          accelerator: 'CommandOrControl+,',
+          click: () => {
+            pushWorkspace('workarea.settings', null);
+          },
+        },
+        { type: 'separator' },
+        { role: 'minimize' },
+        {
+          label: 'Maximize / Restore',
+          click: () => {
+            const win = BrowserWindow.getFocusedWindow();
+            if (!win) {
+              return;
+            }
+            if (win.isMaximized()) {
+              win.unmaximize();
+              return;
+            }
+            win.maximize();
+          },
+        },
+        { role: 'close' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [{ role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }],
+    },
+    {
+      label: 'View',
+      submenu: [{ role: 'toggleDevTools' }],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 
 /** Installs the chat agent tool calls and the MCP host control of the workspace page. */
 function registerToolService(): void {

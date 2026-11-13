@@ -9,7 +9,7 @@ import type { ChatImage, ChatMessage, CompletionDelta, ThinkingLevel, ToolCall }
 import type { StorageSetup, SystemPromptSetup } from './plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
-import { closeWindow, minimizeWindow } from './window-ops.js';
+import { closeWindow, minimizeWindow, toggleDevToolsWindow, toggleMaximizeWindow } from './window-ops.js';
 import { AppRail } from './rail.js';
 import { installColumnResizers } from './chat-resizer.js';
 import { getWorkarea } from './workarea.js';
@@ -380,7 +380,18 @@ export class MainApp implements McpSessionSink {
     requireElement<HTMLButtonElement>('#app-minimize').addEventListener('click', () => {
       void minimizeWindow();
     });
+    requireElement<HTMLButtonElement>('#app-maximize').addEventListener('click', () => {
+      void toggleMaximizeWindow();
+    });
+    requireElement<HTMLButtonElement>('#app-devtools').addEventListener('click', () => {
+      void toggleDevToolsWindow();
+    });
     this.appSettings.addEventListener('click', () => {
+      this.toggleSettings();
+    });
+    // The application menu reaches the same toggle, so the framed window without the top bar
+    // holds the same option as the borderless one.
+    readBridge()?.workspace.onWorkspaceEvent('workarea.settings', () => {
       this.toggleSettings();
     });
     installColumnResizers();

@@ -221,7 +221,7 @@ export class AppRail {
       const empty = document.createElement('p');
       empty.className = 'rail-empty';
       empty.textContent =
-        this.filter === 'pending' ? 'No approval waits.' : this.filter === 'completed' ? 'No approval completed yet.' : 'No approval activity.';
+        this.filter === 'pending' ? 'No event waits for review.' : this.filter === 'completed' ? 'No completed events yet.' : 'No events to review.';
       this.eventList.append(empty);
     }
     const pendingCount = this.events.filter((event) => event.state === 'pending').length;

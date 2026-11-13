@@ -86,6 +86,25 @@ export function registerWindowService(): void {
   ipcMain.handle(`${CHANNEL}:windows:minimize`, (event) => {
     windowOf(event.sender)?.minimize();
   });
+  ipcMain.handle(`${CHANNEL}:windows:toggleMaximize`, (event) => {
+    const win = windowOf(event.sender);
+    if (!win) {
+      return;
+    }
+    if (win.isMaximized()) {
+      win.unmaximize();
+      return;
+    }
+    win.maximize();
+  });
+  ipcMain.handle(`${CHANNEL}:windows:toggleDevTools`, (event) => {
+    const contents = event.sender;
+    if (contents.isDevToolsOpened()) {
+      contents.closeDevTools();
+      return;
+    }
+    contents.openDevTools();
+  });
   ipcMain.handle(`${CHANNEL}:windows:close`, (event) => {
     windowOf(event.sender)?.close();
   });
