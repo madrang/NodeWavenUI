@@ -6,7 +6,7 @@
  * closes it, so the next write opens a fresh patch under the same task.
  */
 
-import { applyPatch, createPatch } from './vendor/diff/index.js';
+import { applyPatch, createPatch } from './libs/diff/index.js';
 import { joinPath, listDirectoryNames, makeDirectory, readTextFile, statPath, writeTextFile } from './file-system.js';
 
 /** The states of one patch record. */

@@ -50,6 +50,7 @@ import { PatchStore, type PatchNotice } from './patch-store.js';
 import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
 import { PluginFieldGroup } from './plugin-fields.js';
+import { appendCodeRuns, renderMarkdown } from './text/render.js';
 import { requireElement } from './dom.js';
 import type { WorkspaceSettingsStore } from './settings-store.js';
 import {
@@ -2657,7 +2658,7 @@ export class MainApp implements McpSessionSink {
       this.renderMessages();
       return;
     }
-    text.textContent = entry.content;
+    this.fillEntryText(text, entry);
     const reasoning = entry.reasoning ?? '';
     body.textContent = reasoning;
     const tail = item.querySelector(':scope > details.reasoning > summary > .reasoning-tail');
@@ -3086,7 +3087,7 @@ export class MainApp implements McpSessionSink {
       body.textContent = entry.reasoning;
       const text = document.createElement('span');
       text.className = 'message-text';
-      text.textContent = entry.content;
+      this.fillEntryText(text, entry);
       item.append(disclosure, text);
       const actions = this.buildMessageActions(chat, slot);
       if (actions) {
@@ -3132,7 +3133,7 @@ export class MainApp implements McpSessionSink {
       return item;
     }
     item.className = `message ${entry.role}${entry.queued ? ' queued' : ''}`;
-    item.textContent = entry.content;
+    this.fillEntryText(item, entry);
     if (entry.queued) {
       const marker = document.createElement('span');
       marker.className = 'queued-marker';
@@ -3162,6 +3163,72 @@ export class MainApp implements McpSessionSink {
    * A user message offers retry, copy, edit, and fork; an assistant reply offers copy. The retry
    * shows only on the user message whose turn ended in an error. The host log and a running turn
    * carry no zone. */
+  /** Fills one message text element: an assistant reply renders as markdown with highlighted
+   * code, every other role renders as plain text. */
+  private fillEntryText(target: HTMLElement, entry: ChatEntry): void {
+    if (entry.role === 'assistant') {
+      target.classList.add('md-body');
+      renderMarkdown(target, entry.content);
+      return;
+    }
+    target.textContent = entry.content;
+  }
+
+  /** The tracked page titles, so a tool call head names the page it targets. */
+  private readonly pageTitles = new Map<number, string>();
+  /** True while one page title refresh runs, so renders never stack refreshes. */
+  private pageTitlesLoading = false;
+
+  /** Reads the tracked page titles over the bridge and re-renders when one changed. A failed
+   * read keeps the titles as they were. */
+  private async refreshPageTitles(): Promise<void> {
+    if (this.pageTitlesLoading) {
+      return;
+    }
+    this.pageTitlesLoading = true;
+    try {
+      const bridge = readBridge();
+      if (!bridge) {
+        return;
+      }
+      const result = (await bridge.workspace.runWindowTool('list_pages', {})) as { content?: { type: string; text?: string }[] } | null;
+      const text = result?.content?.find((block) => block.type === 'text')?.text;
+      if (typeof text !== 'string') {
+        return;
+      }
+      const list = JSON.parse(text) as { id?: unknown; title?: unknown }[];
+      let changed = false;
+      for (const page of list) {
+        if (typeof page.id === 'number' && typeof page.title === 'string' && this.pageTitles.get(page.id) !== page.title) {
+          this.pageTitles.set(page.id, page.title);
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.renderMessages();
+      }
+    } catch {
+      // The page list stays as it was.
+    } finally {
+      this.pageTitlesLoading = false;
+    }
+  }
+
+  /** Reads the target label of a tool call that names a page: the tracked title, or the bare id
+   * while the titles load. A miss triggers one refresh. */
+  private pageTargetOf(args: unknown): string | null {
+    const pageId = (args as Record<string, unknown> | null)?.['pageId'];
+    if (typeof pageId !== 'number') {
+      return null;
+    }
+    const known = this.pageTitles.get(pageId);
+    if (known) {
+      return known;
+    }
+    void this.refreshPageTitles();
+    return `page ${pageId}`;
+  }
+
   private buildMessageActions(chat: Chat, slot: EntrySlot): HTMLElement | null {
     const { index, entry } = slot;
     if (chat.isMcpHostLog || this.isTurnRunning(chat.id)) {
@@ -3322,6 +3389,14 @@ export class MainApp implements McpSessionSink {
     nameLabel.className = 'tool-pair-tool';
     nameLabel.textContent = toolName;
     requestTitle.append(requestBadge, nameLabel);
+    // A call that names a page carries its title, so the head reads where the call went.
+    const pageTarget = this.pageTargetOf(args);
+    if (pageTarget) {
+      const targetChip = document.createElement('span');
+      targetChip.className = 'tool-pair-target';
+      targetChip.textContent = pageTarget;
+      requestTitle.append(targetChip);
+    }
     if (session) {
       const sessionChip = document.createElement('span');
       sessionChip.className = 'tool-pair-session';
@@ -3330,9 +3405,7 @@ export class MainApp implements McpSessionSink {
     }
     const requestSection = document.createElement('div');
     requestSection.className = 'tool-pair-section';
-    const viewer = document.createElement('json-viewer') as JsonViewerElement;
-    viewer.value = args;
-    requestSection.append(viewer);
+    requestSection.append(this.buildToolRequestSection(toolName, args));
     const replyTitle = document.createElement('p');
     replyTitle.className = 'tool-pair-title';
     const replyBadge = document.createElement('span');
@@ -3361,6 +3434,27 @@ export class MainApp implements McpSessionSink {
       item.append(pending);
     }
     return item;
+  }
+
+  /** Builds the request section of one tool call: an evaluate call shows its expression as
+   * highlighted JavaScript, every other call shows the JSON viewer of its arguments. */
+  private buildToolRequestSection(toolName: string, args: unknown): HTMLElement {
+    const expression = toolName === 'evaluate' ? (args as Record<string, unknown> | null)?.['expression'] : undefined;
+    if (typeof expression === 'string') {
+      const code = document.createElement('div');
+      code.className = 'md-code';
+      const label = document.createElement('span');
+      label.className = 'md-code-label';
+      label.textContent = 'javascript';
+      const body = document.createElement('code');
+      body.className = 'md-code-body';
+      appendCodeRuns(body, expression, 'javascript');
+      code.append(label, body);
+      return code;
+    }
+    const viewer = document.createElement('json-viewer') as JsonViewerElement;
+    viewer.value = args;
+    return viewer;
   }
 
   /** The reply half of a pair, or a standalone tool reply: the tool name head over the text or viewer. */
@@ -3414,7 +3508,7 @@ export class MainApp implements McpSessionSink {
       if (entry.content.length > 0) {
         const text = document.createElement('span');
         text.className = 'message-text';
-        text.textContent = entry.content;
+        this.fillEntryText(text, entry);
         intro.append(text);
       }
       this.chatMessages.append(intro);

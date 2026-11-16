@@ -7,15 +7,17 @@
  * conflict, so the review shows the reason and the patch stays.
  */
 
-import { parsePatch } from './vendor/diff/index.js';
+import { parsePatch } from './libs/diff/index.js';
+import { appendCodeRuns } from './text/render.js';
+import { languageOfPath } from './text/highlight.js';
 import { getWorkarea, type WorkareaView } from './workarea.js';
 import { patchWaitsForReview, type PatchRecord, type PatchStore } from './patch-store.js';
 
 /** The id of the shared review view. A CTRL open registers a per-patch view beside it. */
 const SHARED_VIEW_ID = 'patch-review';
 
-/** Builds one diff line row. */
-function diffRow(className: string, marker: string, text: string): HTMLDivElement {
+/** Builds one diff line row. A content line carries the token runs of the file grammar. */
+function diffRow(className: string, marker: string, text: string | null, language: string | null): HTMLDivElement {
   const row = document.createElement('div');
   row.className = className;
   const mark = document.createElement('span');
@@ -23,7 +25,11 @@ function diffRow(className: string, marker: string, text: string): HTMLDivElemen
   mark.textContent = marker;
   const line = document.createElement('span');
   line.className = 'review-line';
-  line.textContent = text;
+  if (text === null || language === null) {
+    line.textContent = text ?? '';
+  } else {
+    appendCodeRuns(line, text, language);
+  }
   row.append(mark, line);
   return row;
 }
@@ -32,6 +38,7 @@ function diffRow(className: string, marker: string, text: string): HTMLDivElemen
 function buildDiff(record: PatchRecord): HTMLElement {
   const body = document.createElement('div');
   body.className = 'review-diff';
+  const language = languageOfPath(record.path);
   const files = parsePatch(record.patch);
   for (const file of files) {
     const head = document.createElement('div');
@@ -39,18 +46,18 @@ function buildDiff(record: PatchRecord): HTMLElement {
     head.textContent = file.newFileName ?? file.oldFileName ?? record.path;
     body.append(head);
     for (const hunk of file.hunks) {
-      body.append(diffRow('review-hunk', '@@', ` -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`));
+      body.append(diffRow('review-hunk', '@@', ` -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`, null));
       for (const line of hunk.lines) {
         const marker = line.charAt(0);
         const text = line.slice(1);
         if (marker === '+') {
-          body.append(diffRow('review-add', '+', text));
+          body.append(diffRow('review-add', '+', text, language));
         } else if (marker === '-') {
-          body.append(diffRow('review-remove', '-', text));
+          body.append(diffRow('review-remove', '-', text, language));
         } else if (marker === '\\') {
-          body.append(diffRow('review-note', '\\', text));
+          body.append(diffRow('review-note', '\\', text, null));
         } else {
-          body.append(diffRow('review-context', ' ', text));
+          body.append(diffRow('review-context', ' ', text, language));
         }
       }
     }

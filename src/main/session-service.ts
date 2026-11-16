@@ -368,7 +368,8 @@ class SessionService {
    * @param caller The caller that attaches. The session records its principal as the owner.
    * @param id The child id.
    */
-  async attach(caller: WindowCaller, id: number): Promise<void> {
+  async attach(callerParam: WindowCaller, id: number): Promise<void> {
+    let caller = callerParam;
     const record = this.requireRecord(id);
     if (record.session) {
       throw new Error(`Child window ${id} already has a debug session.`);
@@ -377,9 +378,12 @@ class SessionService {
       throw new Error('An iframe frame shares the debug target of the workspace window. Attach runs on webview frames only.');
     }
     if (record.kind === 'webview' && !record.shared) {
-      throw new Error(
-        `Permission denied: the webview frame "${record.title}" is not shared. Turn on sharing in its title bar.`,
-      );
+      // A frame that is not shared asks the user instead of denying: the approval shares it, and
+      // the same approval covers the attach of this caller, so one request never prompts twice.
+      await requirePermission(caller, 'share', record.url);
+      this.setFrameShared(id, true);
+      pushWorkspace('frames.command', { id, command: 'share', shared: true });
+      caller = { ...caller, preauthorized: true };
     }
     if (!record.contents) {
       throw new Error(`The webview frame "${record.title}" has no guest yet. Wait a moment and attach again.`);

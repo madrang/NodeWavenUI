@@ -185,7 +185,7 @@ export class AppRail {
         kind: 'approval',
         title: eventTitleOf(request),
         meta: eventMetaOf(request),
-        time: new Date(arrived).toLocaleTimeString(),
+        time: new Date(arrived).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
         sortTime: arrived,
         state: 'pending',
         outcome: null,
@@ -212,7 +212,7 @@ export class AppRail {
         kind: 'patch',
         title: `${file} (+${counts.added} -${counts.removed})`,
         meta: `patch · ${task?.title ?? 'no task'}`,
-        time: new Date(record.resolvedAt ?? record.createdAt).toLocaleTimeString(),
+        time: new Date(record.resolvedAt ?? record.createdAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
         sortTime: Date.parse(record.resolvedAt ?? record.createdAt) || Date.parse(record.createdAt) || 0,
         state: (waiting ? 'pending' : 'completed') as RailEvent['state'],
         outcome: (waiting ? null : record.state) as RailEvent['outcome'],
@@ -290,8 +290,6 @@ export class AppRail {
         classes.push('denied');
       }
       row.className = classes.join(' ');
-      const dot = document.createElement('span');
-      dot.className = 'rail-event-dot';
       const body = document.createElement('div');
       body.className = 'rail-event-body';
       const title = document.createElement('div');
@@ -304,7 +302,7 @@ export class AppRail {
       const time = document.createElement('span');
       time.className = 'rail-event-time';
       time.textContent = event.time;
-      row.append(dot, body, time);
+      row.append(body, time);
       if (event.state === 'pending' && event.kind === 'approval') {
         row.title = 'Open the tab that holds the approval card.';
         row.addEventListener('click', () => {

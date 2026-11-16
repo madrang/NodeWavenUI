@@ -35,6 +35,7 @@
     "typescript-eslint": "^8.72.1"
   },
   "dependencies": {
-    "diff": "^9.0.0"
+    "diff": "^9.0.0",
+    "prismjs": "^1.30.0"
   }
 }

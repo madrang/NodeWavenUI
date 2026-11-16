@@ -46,7 +46,10 @@ export interface FrameBuildRequest {
 }
 
 /** The frame command the main process pushes for one tracked frame. */
-export type FrameCommand = { readonly id: number; readonly command: 'close' } | { readonly id: number; readonly command: 'navigate'; readonly url: string };
+export type FrameCommand =
+  | { readonly id: number; readonly command: 'close' } |
+  { readonly id: number; readonly command: 'navigate'; readonly url: string } |
+  { readonly id: number; readonly command: 'share'; readonly shared: boolean };
 
 /**
  * Checks that a value names one frame kind.
@@ -99,7 +102,14 @@ function titleOf(url: string): string {
 }
 
 /** The views of one frame id, so the frame commands find them. */
-const panels = new Map<number, { readonly content: HTMLDivElement; readonly setUrl: (url: string) => void }>();
+const panels = new Map<
+  number,
+  {
+    readonly content: HTMLDivElement;
+    readonly setUrl: (url: string) => void;
+    readonly setShared: (shared: boolean) => void;
+  }
+>();
 
 /** Builds the view of one frame the main process registered: one tab in the workarea strip. */
 function buildFramePanel(request: FrameBuildRequest): void {
@@ -119,6 +129,9 @@ function buildFramePanel(request: FrameBuildRequest): void {
       embed.setAttribute('src', url);
     }
   };
+  // A webview panel fills this with its share switch setter. An iframe shares the workspace
+  // window, so its share state never changes.
+  let setShared = (_shared: boolean): void => {};
   let embed: HTMLIFrameElement | HTMLElement;
   if (request.kind === 'webview') {
     const webview = document.createElement('webview');
@@ -174,6 +187,12 @@ function buildFramePanel(request: FrameBuildRequest): void {
             void bridge.workspace.notifyFrameShared(request.id, shared);
           });
           group.append(share);
+          // The approved share of an attach lands here from the main process, so the switch
+          // reads the state without a second notify round trip.
+          setShared = (shared: boolean): void => {
+            share.textContent = shared ? 'Shared' : 'Not shared';
+            share.setAttribute('aria-pressed', `${shared}`);
+          };
         },
       } :
       {}),
@@ -181,7 +200,7 @@ function buildFramePanel(request: FrameBuildRequest): void {
       void bridge.workspace.closeFrameAsUser(request.id);
     },
   });
-  panels.set(request.id, { content, setUrl });
+  panels.set(request.id, { content, setUrl, setShared });
 }
 
 /** Removes the view of one frame from the workarea. */
@@ -224,6 +243,10 @@ export async function serveFrames(
     }
     if (command.command === 'close') {
       removeFramePanel(command.id);
+      return;
+    }
+    if (command.command === 'share') {
+      panels.get(command.id)?.setShared(command.shared);
       return;
     }
     panels.get(command.id)?.setUrl(command.url);

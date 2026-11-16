@@ -36,7 +36,7 @@ describe('the child window environment', function () {
     const hrefs = Array.prototype.map.call(document.querySelectorAll('link[rel="stylesheet"]'), function (link) {
       return link.getAttribute('href');
     });
-    expect(hrefs).toContain('vendor/jasmine.css');
+    expect(hrefs).toContain('libs/jasmine.css');
     expect(typeof globalThis.jasmine).toBe('object');
   });
 });

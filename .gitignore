@@ -152,5 +152,5 @@ vite.config.ts.timestamp-*
 AGENTS.md
 .zcode/
 
-# The Jasmine browser bundle, vendored into the selftest plugin at build time
-plugins/selftest/vendor/
+# The Jasmine browser bundle, copied into the selftest plugin at build time
+plugins/selftest/libs/

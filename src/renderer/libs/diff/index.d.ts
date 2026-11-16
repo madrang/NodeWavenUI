@@ -1,6 +1,6 @@
 /**
- * The typing shim of the vendored jsdiff build. The build copies `node_modules/diff/libesm`
- * to `dist/renderer/vendor/diff`, and the sandboxed renderer imports it with a relative
+ * The typing shim of the jsdiff dependency copy. The build copies `node_modules/diff/libesm`
+ * to `dist/renderer/libs/diff`, and the sandboxed renderer imports it with a relative
  * specifier, because it cannot resolve bare module names. The signatures cover the functions
  * the app uses.
  */

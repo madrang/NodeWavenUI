@@ -742,8 +742,8 @@ body.resizing-column {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-/* One approvals feed row: the state dot, the request body, and the time it arrived. A pending
-   row is clickable and opens the tab that holds its approval card. */
+/* One approvals feed row: the body and the time it arrived. The state color lives on the title.
+   A pending row is clickable and opens the tab that holds its approval card. */
 .rail-event {
   display: flex;
   gap: 9px;
@@ -762,22 +762,22 @@ body.resizing-column {
   border-color: var(--border);
 }
 
-.rail-event-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-top: 5px;
-  flex: none;
-  background: var(--muted);
+/* The title carries the state color: accent while it waits, red on a conflict, and the chart
+   green once done. A denied patch reads in the error red instead. */
+.rail-event.pending .rail-event-title {
+  color: var(--accent);
 }
 
-.rail-event.pending .rail-event-dot {
-  background: var(--accent);
+.rail-event.conflict .rail-event-title {
+  color: #e05252;
 }
 
-/* A patch row whose apply failed: the strongest quiet tint, so the conflict reads at a glance. */
-.rail-event.conflict .rail-event-dot {
-  background: #e05252;
+.rail-event.completed .rail-event-title {
+  color: var(--chart-2);
+}
+
+.rail-event.completed.denied .rail-event-title {
+  color: var(--error);
 }
 
 /* A resolved patch row still opens its read-only review, so it keeps the pointer and the hover. */
@@ -830,6 +830,167 @@ body.resizing-column {
 #known-path-add input {
   flex: 1;
   min-width: 0;
+}
+
+/* The markdown body of an assistant reply: blocks, inline runs, and highlighted code. */
+.md-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.md-paragraph {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.md-heading {
+  margin: 4px 0 0;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.md-level-1 {
+  font-size: 15px;
+}
+
+.md-level-2 {
+  font-size: 14px;
+}
+
+.md-level-3,
+.md-level-4,
+.md-level-5,
+.md-level-6 {
+  font-size: 13px;
+}
+
+.md-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.md-quote {
+  margin: 0;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.md-inline-code {
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 12px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 4px;
+}
+
+.md-strong {
+  font-weight: 600;
+}
+
+.md-link {
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: help;
+}
+
+/* One fenced code block: the quiet language label and the monospace body. */
+.md-code {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  overflow: hidden;
+}
+
+.md-code-label {
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.md-code-body {
+  display: block;
+  padding: 8px 10px;
+  overflow-x: auto;
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+/* The Prism token colors read the theme palette, so every theme colors code without its own rules. */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: color-mix(in srgb, var(--text) 65%, var(--muted));
+}
+
+.token.keyword,
+.token.tag,
+.token.deleted {
+  color: var(--chart-4);
+}
+
+.token.string,
+.token.char,
+.token.attr-value,
+.token.inserted {
+  color: var(--chart-2);
+}
+
+.token.number,
+.token.boolean {
+  color: var(--chart-3);
+}
+
+.token.function,
+.token.class-name {
+  color: var(--chart-5);
+}
+
+.token.operator,
+.token.entity,
+.token.url {
+  color: var(--chart-6);
+}
+
+.token.attr-name,
+.token.property,
+.token.constant,
+.token.symbol {
+  color: var(--chart-1);
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: var(--chart-3);
+}
+
+.token.bold {
+  font-weight: 600;
+}
+
+.token.italic {
+  font-style: italic;
 }
 
 /* The review view of one patch: the facts, the answers, and the colored diff lines. */
@@ -997,14 +1158,6 @@ body.resizing-column {
   font-style: italic;
 }
 
-.rail-event.completed .rail-event-dot {
-  background: var(--chart-2);
-}
-
-.rail-event.completed.denied .rail-event-dot {
-  background: var(--error);
-}
-
 .rail-event-body {
   min-width: 0;
   flex: 1;
@@ -1027,6 +1180,7 @@ body.resizing-column {
   color: var(--muted);
   flex: none;
   margin-top: 2px;
+  white-space: nowrap;
 }
 
 .rail-empty {
@@ -1601,6 +1755,17 @@ li:focus-within > .message-actions {
   border-radius: 8px;
   color: var(--muted);
   font-size: 11px;
+}
+
+/* The page a tool call targets: the tracked title of its pageId, after the tool name. */
+.tool-pair-target {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tool-pair-target::before {
+  content: '·';
+  margin-right: 6px;
 }
 
 .tool-pair-title {

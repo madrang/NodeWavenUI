@@ -20,7 +20,7 @@ The user pastes or drops images into the chat: they arrive as thumbnails above t
 
 The agent carries the same page tools the MCP host serves: `list_pages`, `open_uri`, `close_page`, `attach_session`, `detach_session`, `screenshot`, `console_entries`, `clear_console`, and `navigate`. The arguments match `harness:///nodewavenui/mcp-host-tools.md`. They act as the `agent` principal, so the mutating ones show the same approval cards in the chat. `screenshot` returns the image to a vision model as an image part; a text-only model reads the note in the result text. Evaluated code opens the DevTools of its own page with `nodewavenui.windows.openDevTools()` when the page holds the bridge: a repeated call changes nothing, and `toggleDevTools()` flips them both ways.
 
-`open_uri` embeds a frame of the center workspace when its `kind` is `iframe` or `webview`. An `iframe` page loads app content but never attaches. A `webview` page runs its own guest process with its own debug target, and `attach_session` on it still fails while the user keeps the share switch of its title bar off.
+`open_uri` embeds a frame of the center workspace when its `kind` is `iframe` or `webview`. An `iframe` page loads app content but never attaches. A `webview` page runs its own guest process with its own debug target. An attach on a `webview` page that is not shared asks the user to share it: the approval turns the share switch on and covers the attach of that call, and a denial fails the attach.
 
 # Approval cards
 
