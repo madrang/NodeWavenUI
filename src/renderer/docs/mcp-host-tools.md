@@ -4,18 +4,16 @@ Every request is one JSON-RPC POST to the endpoint with the bearer token. The se
 
 | Tool | Arguments | What it does |
 |---|---|---|
-| `list_windows` | none | Lists the tracked windows and frames: id, url, title, attached state, kind (`window`, `iframe`, `webview`), and for webview frames the `shared` state. |
-| `open_window` | `url`, `width?`, `height?`, `frame?` | Opens a child window (default 900 x 700) and returns its id. `frame` is `system` or `borderless`; omitted, it inherits the frame of the workspace window. |
-| `open_frame` | `url`, `kind`, `side?`, `title?` | Opens one embedded frame beside the chat and settings panes and returns `{ frameId, kind, side }`. `kind` `iframe` loads the address inside the workspace page: it never attaches and carries no debug target of its own. `kind` `webview` loads it in its own guest process, with Node on for app-origin pages (`allownw`) and off for every other address. A relative path resolves against the app root for both kinds, and an absolute address loads as given. A webview frame attaches only while the share switch of its title bar is on, and the attach still runs through the permission pipeline first. The frame id joins the child id space of `list_windows`, `close_window`, and every session tool. |
-| `close_window` | `childId` | Closes one child window. With `--expose-main-window`, the main window is a tracked child too, and closing it drains every child first. |
-| `attach_session` | `childId` | Attaches a debug session and starts the console capture. Needed for evaluate and screenshot. |
-| `detach_session` | `childId` | Detaches the debug session. |
-| `evaluate` | `childId`, `expression` | Runs JavaScript in the child window. A promise result is awaited; objects come back as parsed JSON values. No top-level `await`: use an async IIFE. |
-| `screenshot` | `childId`, `format?` | Captures the window as base64 image data, png or jpeg. |
-| `console_entries` | `childId` | Reads the captured console lines since attach or the last clear. |
-| `clear_console` | `childId` | Clears the captured console. |
-| `navigate` | `childId`, `url` | Loads an address in the child window. `data:` URLs are refused. |
-| `open_devtools` | `childId` | Opens the DevTools window. The DevTools outrank every session and detach it. |
+| `list_pages` | none | Lists the tracked pages: id, url, title, attached state, kind (`window`, `iframe`, `webview`), and for webview pages the `shared` state. |
+| `open_uri` | `url`, `kind?`, `title?`, `width?`, `height?`, `frame?` | Opens one address as a page of the app. `kind` `iframe` loads the address inside the workspace page: it never attaches and carries no debug target of its own. `kind` `webview` (the default) loads it in its own guest process, with Node on for app-origin pages (`allownw`) and off for every other address. `kind` `window` opens a separate OS window, 900 x 700 unless `width` and `height` say otherwise; `frame` is `system` or `borderless`, and an omitted `frame` inherits the frame of the workspace window. `title` names the frame tab. A relative path resolves against the app root, and an absolute address loads as given. A webview page attaches only while the share switch of its title bar is on, and the attach still runs through the permission pipeline first. The page id joins the id space of `list_pages`, `close_page`, and every session tool. |
+| `close_page` | `pageId` | Closes one page. With `--expose-main-window`, the main window is a tracked page too, and closing it drains every child first. |
+| `attach_session` | `pageId` | Attaches a debug session and starts the console capture. Needed for evaluate and screenshot. |
+| `detach_session` | `pageId` | Detaches the debug session. |
+| `evaluate` | `pageId`, `expression` | Runs JavaScript in the page. A promise result is awaited; objects come back as parsed JSON values. No top-level `await`: use an async IIFE. Evaluated code opens the DevTools of its own page with `nodewavenui.windows.openDevTools()` when the page holds the bridge: a repeated call changes nothing, and `toggleDevTools()` flips them both ways. |
+| `screenshot` | `pageId`, `format?` | Captures the page as base64 image data, png or jpeg. |
+| `console_entries` | `pageId` | Reads the captured console lines since attach or the last clear. |
+| `clear_console` | `pageId` | Clears the captured console. |
+| `navigate` | `pageId`, `url` | Loads an address in the page. `data:` URLs are refused. |
 
 # Resources
 
@@ -33,5 +31,6 @@ Every MCP session (the `Mcp-Session-Id` you present, or a fresh one from `initia
 
 - The main window is trackable only when the app was launched with `--expose-main-window`.
 - An attached session on the main window shows the Chromium debug banner on top of it, and while the banner shows the title-bar drag of the app breaks: the drag regions shift out of place. Detach the session when you are done; the drag comes back at once.
-- One debugger holds one target: DevTools open on a child block a session attach.
-- Two child windows that show the same URL cannot be told apart by attach; the first unattached match wins.
+- One debugger holds one target: DevTools open on a page block a session attach.
+- A page without the bridge — a remote webview guest or an external child window — opens its DevTools through the app menu, not from evaluated code.
+- Two pages that show the same URL cannot be told apart by attach; the first unattached match wins.

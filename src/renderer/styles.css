@@ -451,11 +451,12 @@ body.framed #app-header {
 }
 
 .tab-group .close {
-  padding: 2px 5px 2px 2px;
+  padding: 4px 9px 4px 4px;
   color: var(--muted);
   border: none;
   background: none;
-  font-size: 11px;
+  font-size: 13px;
+  line-height: 1;
   flex: none;
 }
 
@@ -618,48 +619,84 @@ body.resizing-column {
   user-select: none;
 }
 
-/* The left rail: one tabbed column with the approvals feed and the workspace file tree. */
+/* The left rail: a strip of section icons beside the open panel. */
 #rail-left {
   flex: none;
   width: 300px;
   min-width: 0;
   min-height: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   border-right: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 40%, var(--bg));
 }
 
+/* The icon strip: one small square per section, the name in its tooltip. */
 .rail-tabbar {
   display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 4px;
-  padding: 6px 8px 0;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 5px;
+  border-right: 1px solid var(--border);
   flex: none;
 }
 
-/* The rail tabs share the chat tab language: rounded tops that join the panel below. */
+/* One section icon: quiet by default, accent-tinted while its panel shows. */
 .rail-tab {
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 8px 8px 0 0;
+  border: none;
+  border-radius: 8px;
   background: none;
   color: var(--muted);
-  padding: 5px 12px;
-  font-size: 12px;
-  white-space: nowrap;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.rail-tab svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .rail-tab:hover {
   color: var(--text);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
 }
 
 .rail-tab.active {
-  background: var(--surface);
-  border-color: var(--border);
-  color: var(--text);
-  font-weight: 600;
-  margin-bottom: -1px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+/* The panel column beside the strip. Hidden while the rail sits minimized,
+   where the strip stays alone and the drag handle leaves with the panels. */
+.rail-body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#rail-left.minimized {
+  width: 38px;
+}
+
+#rail-left.minimized .rail-body {
+  display: none;
+}
+
+#rail-left.minimized + #rail-resizer {
+  display: none;
 }
 
 .rail-panel {
@@ -736,6 +773,228 @@ body.resizing-column {
 
 .rail-event.pending .rail-event-dot {
   background: var(--accent);
+}
+
+/* A patch row whose apply failed: the strongest quiet tint, so the conflict reads at a glance. */
+.rail-event.conflict .rail-event-dot {
+  background: #e05252;
+}
+
+/* A resolved patch row still opens its read-only review, so it keeps the pointer and the hover. */
+.rail-event.patch {
+  cursor: pointer;
+}
+
+.rail-event.patch:not(.pending):hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+/* One known path row of the settings: the path, its mode, and the remove action. */
+.known-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+
+.known-path-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.known-path select,
+#known-path-add select,
+#known-path-add input {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 8px;
+}
+
+#known-path-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#known-path-add input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The review view of one patch: the facts, the answers, and the colored diff lines. */
+.review-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.review-header {
+  flex: none;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.review-path {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.review-facts {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.review-conflict {
+  flex: none;
+  margin: 10px 14px 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, #e05252 55%, transparent);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: color-mix(in srgb, #e05252 14%, transparent);
+}
+
+.review-controls {
+  flex: none;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.review-comment {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 9px;
+  resize: vertical;
+}
+
+.review-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.review-actions button {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 12px;
+}
+
+.review-actions button:hover {
+  border-color: var(--accent);
+}
+
+.review-approve {
+  background: color-mix(in srgb, var(--accent) 24%, var(--surface));
+  font-weight: 600;
+}
+
+.review-dismiss {
+  color: var(--muted);
+}
+
+.review-choice {
+  font-size: 12px;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.review-diff {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0 14px;
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.review-file {
+  padding: 6px 14px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.review-hunk {
+  padding: 3px 14px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+
+.review-mark {
+  display: inline-block;
+  width: 18px;
+  flex: none;
+  color: var(--muted);
+  user-select: none;
+}
+
+.review-add,
+.review-remove,
+.review-context,
+.review-note {
+  display: flex;
+  padding: 0 14px;
+  white-space: pre;
+}
+
+.review-add {
+  background: color-mix(in srgb, #3fb26a 16%, transparent);
+  color: var(--text);
+}
+
+.review-add .review-mark {
+  color: #3fb26a;
+}
+
+.review-remove {
+  background: color-mix(in srgb, #e05252 16%, transparent);
+  color: var(--text);
+}
+
+.review-remove .review-mark {
+  color: #e05252;
+}
+
+.review-context {
+  color: var(--muted);
+}
+
+.review-note {
+  color: var(--muted);
+  font-style: italic;
 }
 
 .rail-event.completed .rail-event-dot {
@@ -1889,6 +2148,22 @@ permission-request {
   margin-left: 6px;
   color: var(--muted);
   font-size: 11px;
+}
+
+/* The send-now control of a queued message: quiet until hovered, like the message actions. */
+.queued-send-now {
+  margin-left: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px 7px;
+}
+
+.queued-send-now:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 /* The pending image attachments between the permission cards and the composer. */

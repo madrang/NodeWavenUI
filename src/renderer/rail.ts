@@ -1,14 +1,18 @@
 /**
- * The left rail of the workspace window: the approvals feed and the workspace file tree.
- * The feed lists the permission requests of the gate. A request waits as a pending row until the
- * approval card of its tab resolves it, then the row reads completed with its outcome. A pending
- * row click activates the tab that holds the card. The files panel lists the workspace directory
- * as a read-only tree with lazy folder expansion.
+ * The left rail of the workspace window: a strip of section icons beside the open panel.
+ * The events panel lists two sources in one feed: the permission requests of the gate and the
+ * patch proposals of the write tool. A request waits as a pending row until the approval card of
+ * its tab resolves it, and a patch waits until the user reviews it. A pending approval row click
+ * activates the tab that holds the card, and a pending patch row click opens its review in the
+ * center workspace. The files panel lists the workspace directory as a read-only tree with lazy
+ * folder expansion. An icon click on the open section minimizes the rail to the strip, and any
+ * icon click opens its section again.
  */
 
 import type { PermissionGate, PermissionRequestInfo } from './permission-gate.js';
 import { requireElement } from './dom.js';
 import { joinPath, listDirectoryNames, statPath } from './file-system.js';
+import { patchCounts, patchWaitsForReview, type PatchStore } from './patch-store.js';
 
 /** The dependencies the rail works with. */
 export interface RailDeps {
@@ -18,16 +22,25 @@ export interface RailDeps {
   readonly workspacePath: string;
   /** Activates the tab that owns one pending request source. */
   readonly openTab: (source: string | null) => void;
+  /** The patch store whose records feed the events tab as the second source. Null before it loads. */
+  readonly patchStore: PatchStore | null;
+  /** Opens the review of one patch in the center workspace. The flag opens it in its own tab. */
+  readonly openPatch: (id: number, separateTab: boolean) => void;
 }
 
-/** One row of the approvals feed. */
+/** One row of the events feed: one approval request or one patch proposal. */
 interface RailEvent {
   readonly id: number;
+  readonly kind: 'approval' | 'patch';
   readonly title: string;
   readonly meta: string;
   readonly time: string;
+  /** The epoch time the row last changed, so both sources sort together. */
+  readonly sortTime: number;
   state: 'pending' | 'completed';
-  outcome: 'approved' | 'denied' | 'resolved' | null;
+  outcome: 'approved' | 'denied' | 'resolved' | 'applied' | 'dismissed' | null;
+  /** True on a patch whose apply failed, so the conflict still waits. */
+  conflicted: boolean;
 }
 
 /** One lazy folder of the files tree. */
@@ -61,9 +74,13 @@ export class AppRail {
   private readonly deps: RailDeps;
   private readonly tabButtons = new Map<string, HTMLButtonElement>();
   private readonly panels = new Map<string, HTMLElement>();
+  private readonly column: HTMLElement;
   private readonly eventList: HTMLElement;
   private readonly eventCount: HTMLElement;
   private readonly fileTree: HTMLElement;
+  private activeTab: string | null = null;
+  private minimized = false;
+  private openWidth = '';
   private filter: 'all' | 'pending' | 'completed' = 'all';
   private readonly events: RailEvent[] = [];
   private readonly folders = new Map<HTMLElement, TreeFolder>();
@@ -85,6 +102,12 @@ export class AppRail {
         this.panels.set(name, panel);
       }
     }
+    for (const [name, button] of this.tabButtons) {
+      if (button.classList.contains('active')) {
+        this.activeTab = name;
+      }
+    }
+    this.column = requireElement<HTMLElement>('#rail-left');
     this.eventList = requireElement<HTMLElement>('#rail-event-list');
     this.eventCount = requireElement<HTMLElement>('#rail-event-count');
     this.fileTree = requireElement<HTMLElement>('#rail-file-tree');
@@ -97,7 +120,7 @@ export class AppRail {
   start(): void {
     for (const [name, button] of this.tabButtons) {
       button.addEventListener('click', () => {
-        this.showTab(name);
+        this.activate(name);
       });
     }
     for (const chip of document.querySelectorAll<HTMLButtonElement>('.rail-chip')) {
@@ -122,6 +145,9 @@ export class AppRail {
     });
     this.deps.gate?.subscribe(() => {
       this.syncPending();
+    });
+    this.deps.patchStore?.subscribe(() => {
+      this.renderEvents();
     });
     this.syncPending();
     void this.mountFolder(this.fileTree, this.deps.workspacePath, 0);
@@ -150,23 +176,79 @@ export class AppRail {
       }
     }
     for (const request of pending) {
-      if (this.events.some((event) => event.id === request.id)) {
+      if (this.events.some((event) => event.id === request.id && event.kind === 'approval')) {
         continue;
       }
+      const arrived = Date.now();
       this.events.unshift({
         id: request.id,
+        kind: 'approval',
         title: eventTitleOf(request),
         meta: eventMetaOf(request),
-        time: new Date().toLocaleTimeString(),
+        time: new Date(arrived).toLocaleTimeString(),
+        sortTime: arrived,
         state: 'pending',
         outcome: null,
+        conflicted: false,
       });
     }
     this.renderEvents();
   }
 
-  /** Shows one rail tab and hides the other. */
+  /** Reads the patch records of the store as feed rows, the second source of the events tab. */
+  private patchRows(): RailEvent[] {
+    const store = this.deps.patchStore;
+    if (!store) {
+      return [];
+    }
+    const tasks = new Map(store.listTasks().map((task) => [task.id, task]));
+    return store.listPatches().map((record) => {
+      const waiting = patchWaitsForReview(record.state);
+      const counts = patchCounts(record.patch);
+      const file = record.path.split('/').at(-1) ?? record.path;
+      const task = record.taskId ? tasks.get(record.taskId) : undefined;
+      return {
+        id: record.id,
+        kind: 'patch',
+        title: `${file} (+${counts.added} -${counts.removed})`,
+        meta: `patch · ${task?.title ?? 'no task'}`,
+        time: new Date(record.resolvedAt ?? record.createdAt).toLocaleTimeString(),
+        sortTime: Date.parse(record.resolvedAt ?? record.createdAt) || Date.parse(record.createdAt) || 0,
+        state: (waiting ? 'pending' : 'completed') as RailEvent['state'],
+        outcome: (waiting ? null : record.state) as RailEvent['outcome'],
+        conflicted: record.state === 'conflicted',
+      };
+    });
+  }
+
+  /** Handles one icon click: switches the section, or minimizes the rail when the section is open. */
+  private activate(name: string): void {
+    if (!this.minimized && this.activeTab === name) {
+      this.minimize();
+      return;
+    }
+    this.showTab(name);
+  }
+
+  /** Shrinks the rail to the icon strip and hides the panels. No icon reads active while none shows. */
+  private minimize(): void {
+    this.minimized = true;
+    this.openWidth = this.column.style.width;
+    this.column.style.width = '';
+    this.column.classList.add('minimized');
+    for (const button of this.tabButtons.values()) {
+      button.classList.remove('active');
+    }
+  }
+
+  /** Shows one rail section, and restores the rail width after a minimize. */
   private showTab(name: string): void {
+    this.activeTab = name;
+    if (this.minimized) {
+      this.minimized = false;
+      this.column.classList.remove('minimized');
+      this.column.style.width = this.openWidth;
+    }
     for (const [tab, button] of this.tabButtons) {
       button.classList.toggle('active', tab === name);
     }
@@ -182,15 +264,32 @@ export class AppRail {
     }
   }
 
-  /** Re-renders the approvals feed and the pending count. */
+  /** Re-renders the events feed and the pending count. The waiting events pin to the top, oldest
+   * first, so nothing that needs an answer sinks under the history. The completed events follow,
+   * newest first. */
   private renderEvents(): void {
     this.eventList.replaceChildren();
-    const visible = this.events.filter((event) =>
+    const merged = [...this.events, ...this.patchRows()].sort((left, right) => {
+      const leftWaiting = left.state === 'pending';
+      const rightWaiting = right.state === 'pending';
+      if (leftWaiting !== rightWaiting) {
+        return leftWaiting ? -1 : 1;
+      }
+      return leftWaiting ? left.sortTime - right.sortTime : right.sortTime - left.sortTime;
+    });
+    const visible = merged.filter((event) =>
       this.filter === 'all' ? true : this.filter === 'pending' ? event.state === 'pending' : event.state === 'completed',
     );
     for (const event of visible) {
       const row = document.createElement('div');
-      row.className = `rail-event ${event.state}${event.state === 'completed' && event.outcome === 'denied' ? ' denied' : ''}`;
+      const classes = ['rail-event', event.state, 'patch'];
+      if (event.conflicted) {
+        classes.push('conflicted');
+      }
+      if (event.state === 'completed' && event.outcome === 'denied') {
+        classes.push('denied');
+      }
+      row.className = classes.join(' ');
       const dot = document.createElement('span');
       dot.className = 'rail-event-dot';
       const body = document.createElement('div');
@@ -206,13 +305,25 @@ export class AppRail {
       time.className = 'rail-event-time';
       time.textContent = event.time;
       row.append(dot, body, time);
-      if (event.state === 'pending') {
+      if (event.state === 'pending' && event.kind === 'approval') {
         row.title = 'Open the tab that holds the approval card.';
         row.addEventListener('click', () => {
           const request = this.deps.gate?.pendingRequests().find((candidate) => candidate.id === event.id);
           if (request) {
             this.deps.openTab(request.source);
           }
+        });
+      }
+      if (event.kind === 'patch') {
+        let hint = 'Open the read-only review of the resolved patch.';
+        if (event.state === 'pending') {
+          hint = event.conflicted ?
+            'Open the review of the conflicting patch. Hold CTRL to open it in its own tab.' :
+            'Open the review of the patch. Hold CTRL to open it in its own tab.';
+        }
+        row.title = hint;
+        row.addEventListener('click', (click) => {
+          this.deps.openPatch(event.id, click.ctrlKey);
         });
       }
       this.eventList.append(row);
@@ -224,7 +335,7 @@ export class AppRail {
         this.filter === 'pending' ? 'No event waits for review.' : this.filter === 'completed' ? 'No completed events yet.' : 'No events to review.';
       this.eventList.append(empty);
     }
-    const pendingCount = this.events.filter((event) => event.state === 'pending').length;
+    const pendingCount = merged.filter((event) => event.state === 'pending').length;
     this.eventCount.textContent = pendingCount === 1 ? '1 pending' : `${pendingCount} pending`;
   }
 

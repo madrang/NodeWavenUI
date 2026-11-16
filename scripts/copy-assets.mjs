@@ -20,3 +20,11 @@ for (const file of ['jasmine.js', 'jasmine.css']) {
 }
 
 console.log('jasmine bundle vendored to plugins/selftest/vendor');
+
+// The sandboxed renderer cannot import from node_modules, so the jsdiff ESM build rides the
+// app protocol as a vendored folder under dist/renderer/vendor/diff.
+const diffSource = fileURLToPath(new URL('../node_modules/diff/libesm/', import.meta.url));
+const diffTarget = fileURLToPath(new URL('../dist/renderer/vendor/diff/', import.meta.url));
+cpSync(diffSource, diffTarget, { recursive: true });
+
+console.log('jsdiff vendored to dist/renderer/vendor/diff');

@@ -6,13 +6,13 @@ One document lives in one window. Open several windows when you need several doc
 
 # Open it
 
-The page lives beside the workspace window page: `dist/renderer/editor.html`. With the MCP host tools, build the URL from the tracked workspace window URL (`list_windows`) by replacing `main.html` with `editor.html`, or pass the relative path `dist/renderer/editor.html`:
+The page lives beside the workspace window page: `dist/renderer/editor.html`. With the MCP host tools, build the URL from the tracked workspace window URL (`list_pages`) by replacing `main.html` with `editor.html`, or pass the relative path `dist/renderer/editor.html`:
 
-1. `open_window` with the `editor.html` URL.
-2. `attach_session` on the returned child id.
+1. `open_uri` with the `editor.html` URL and `kind` `window`.
+2. `attach_session` on the returned page id.
 3. `evaluate` calls that run `nodewavenEditor` methods.
 
-The chat agent carries the same window tools, so it opens the Editor window, attaches a session, and edits through its `evaluate` on its own.
+The chat agent carries the same page tools, so it opens the Editor window, attaches a session, and edits through its `evaluate` on its own.
 
 The user can type into the editor at any time. Read the text back with `getText` to see what the user changed.
 

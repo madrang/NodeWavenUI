@@ -10,7 +10,14 @@ import type { StorageSetup, SystemPromptSetup } from './plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { closeWindow, minimizeWindow, toggleDevToolsWindow, toggleMaximizeWindow } from './window-ops.js';
-import { chatAgentSource, chatIdOfAgentSource, isChatAgentSource } from '../shared/permissions.js';
+import {
+  chatAgentSource,
+  chatIdOfAgentSource,
+  isChatAgentSource,
+  PATH_RULE_MODES,
+  type PathRule,
+  type PathRuleMode,
+} from '../shared/permissions.js';
 import { AppRail } from './rail.js';
 import { installColumnResizers } from './chat-resizer.js';
 import { getWorkarea } from './workarea.js';
@@ -39,6 +46,8 @@ import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from '../shared/window-tools.js';
 import type { NotificationHub } from './notification-hub.js';
 import type { PermissionGate } from './permission-gate.js';
+import { PatchStore, type PatchNotice } from './patch-store.js';
+import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
 import { PluginFieldGroup } from './plugin-fields.js';
 import { requireElement } from './dom.js';
@@ -170,6 +179,14 @@ type MessageGroup =
   { readonly kind: 'agent'; readonly request: EntrySlot; readonly replies: readonly EntrySlot[] };
 
 /** Drives the main app screen. */
+/** The settings label of each path rule mode. */
+const PATH_RULE_LABELS: Readonly<Record<PathRuleMode, string>> = {
+  allow: 'Free read and write',
+  'ask-write': 'Ask on write',
+  ask: 'Ask on read and write',
+  deny: 'Deny',
+};
+
 export class MainApp implements McpSessionSink {
   private readonly settings: WorkspaceSettings;
   private readonly store: WorkspaceSettingsStore;
@@ -194,6 +211,8 @@ export class MainApp implements McpSessionSink {
   private settingsOpen = false;
   /** The left rail: the approvals feed and the files tree. */
   private rail: AppRail | null = null;
+  private patchStore: PatchStore | null = null;
+  private pathRules: readonly PathRule[] = [];
   /** The abort controllers of the running agent turns, keyed by chat id, in start order. Chats
    * run their turns in parallel; one chat queues its own sends while its turn runs. */
   private readonly runningTurns = new Map<number, AbortController>();
@@ -344,6 +363,12 @@ export class MainApp implements McpSessionSink {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[NodeWavenUI] could not read the storage sharing: ${message}`);
     }
+    try {
+      this.pathRules = await this.store.loadPathRules();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] could not read the path rules: ${message}`);
+    }
     void this.mcpClients.applyEndpoints(this.mcpEndpoints);
     this.mcpClients.subscribe(() => {
       this.renderMcpEndpoints();
@@ -355,15 +380,27 @@ export class MainApp implements McpSessionSink {
     await this.initializeAgentTurnControls();
     this.initializeMcpHostSection();
     this.initializeMcpEndpointsSection();
+    this.initializeKnownPathsSection();
     this.initializeStorageShareSection();
     // The gate loads its rules lazily on the first check. The rule-reading UI renders before any
     // check runs, so it must await the load or it reads an empty list and shows every tool on ask.
     await this.permissionGate?.ready();
+    this.patchStore = new PatchStore(this.workspacePath);
+    await this.patchStore.load();
+    // Denials and returns leave for the agent of their chat at once. A running turn reads the
+    // entry at its next loop step, and an idle chat starts a turn to process it.
+    this.patchStore.onNotice((notice) => {
+      void this.deliverPatchNotice(notice);
+    });
     this.rail = new AppRail({
       gate: this.permissionGate,
       workspacePath: this.workspacePath,
       openTab: (source) => {
         this.openPermissionTab(source);
+      },
+      patchStore: this.patchStore,
+      openPatch: (id, separateTab) => {
+        void openPatchReviewView(this.patchStore!, id, separateTab);
       },
     });
     this.rail.start();
@@ -547,6 +584,90 @@ export class MainApp implements McpSessionSink {
   }
 
   /** Wires the MCP endpoints section: the endpoint cards, the add form, and the live connection states. */
+  /** Renders and wires the known paths section: one row per path rule, the add form below. */
+  private initializeKnownPathsSection(): void {
+    const list = requireElement<HTMLDivElement>('#known-path-list');
+    const form = requireElement<HTMLFormElement>('#known-path-add');
+    const input = requireElement<HTMLInputElement>('#known-path-input');
+    const modeSelect = requireElement<HTMLSelectElement>('#known-path-mode');
+    const render = (): void => {
+      list.replaceChildren();
+      if (this.pathRules.length === 0) {
+        const empty = document.createElement('p');
+        empty.className = 'status';
+        empty.textContent = 'No path is known. Reads ask, and every write proposes a patch for review.';
+        list.append(empty);
+        return;
+      }
+      for (const rule of this.pathRules) {
+        list.append(this.buildKnownPathRow(rule, render));
+      }
+    };
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const path = input.value.trim().replace(/^\/+|\/+$/g, '');
+      if (path.length === 0 || path === '.') {
+        return;
+      }
+      const mode = PATH_RULE_MODES.includes(modeSelect.value as PathRuleMode) ? (modeSelect.value as PathRuleMode) : 'ask';
+      // A second add of the same path changes its mode instead of stacking a duplicate.
+      if (this.pathRules.some((rule) => rule.path === path)) {
+        this.pathRules = this.pathRules.map((rule) => (rule.path === path ? { path, mode } : rule));
+      } else {
+        this.pathRules = [...this.pathRules, { path, mode }];
+      }
+      input.value = '';
+      void this.savePathRules();
+      render();
+    });
+    render();
+  }
+
+  /** One known path row: the path, its mode select, and the remove action. */
+  private buildKnownPathRow(rule: PathRule, render: () => void): HTMLElement {
+    const row = document.createElement('div');
+    row.className = 'known-path';
+    const label = document.createElement('span');
+    label.className = 'known-path-label';
+    label.textContent = rule.path;
+    const modeSelect = document.createElement('select');
+    modeSelect.title = 'The access of the path';
+    for (const mode of PATH_RULE_MODES) {
+      const option = document.createElement('option');
+      option.value = mode;
+      option.textContent = PATH_RULE_LABELS[mode];
+      modeSelect.append(option);
+    }
+    modeSelect.value = rule.mode;
+    modeSelect.addEventListener('change', () => {
+      const next = modeSelect.value as PathRuleMode;
+      this.pathRules = this.pathRules.map((candidate) =>
+        candidate === rule ? { path: candidate.path, mode: next } : candidate,
+      );
+      void this.savePathRules();
+    });
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', () => {
+      this.pathRules = this.pathRules.filter((candidate) => candidate !== rule);
+      void this.savePathRules();
+      render();
+    });
+    row.append(label, modeSelect, remove);
+    return row;
+  }
+
+  /** Persists the known paths. A failure keeps the working list and logs. */
+  private async savePathRules(): Promise<void> {
+    try {
+      await this.store.savePathRules(this.pathRules);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] could not save the path rules: ${message}`);
+    }
+  }
+
   private initializeMcpEndpointsSection(): void {
     this.mcpAddKind.addEventListener('change', () => {
       this.updateMcpAddFormShape();
@@ -970,10 +1091,13 @@ export class MainApp implements McpSessionSink {
     }
   }
 
-  /** The group head of one tool: the built-ins, the window tools, or the endpoint label of a native tool. */
+  /** The group head of one tool: the built-ins, the file tools, the page tools, or the endpoint label of a native tool. */
   private toolOriginLabel(name: string): string {
     if (name === 'read' || name === 'evaluate') {
       return 'Built-in tools';
+    }
+    if (name === 'files' || name === 'write' || name === 'task') {
+      return 'File tools';
     }
     const separator = name.indexOf('.');
     if (separator > 0) {
@@ -983,7 +1107,7 @@ export class MainApp implements McpSessionSink {
       );
       return endpoint?.label ?? 'MCP tools';
     }
-    return 'Window tools';
+    return 'Page tools';
   }
 
   /** Writes the state of one agent tool as its rule: ask removes the rule, allow and deny replace it. */
@@ -1883,6 +2007,12 @@ export class MainApp implements McpSessionSink {
     if (!chat || (text.length === 0 && images.length === 0)) {
       return;
     }
+    if (chat.isMcpHostLog) {
+      // The host tab logs sessions. It holds no provider and no transcript, so it answers no send.
+      chat.entries.push({ role: 'notice', content: 'The MCP Host tab only logs host sessions. Send from a chat tab.' });
+      this.renderMessages();
+      return;
+    }
     if (this.isTurnRunning(chat.id)) {
       // The agent of this chat runs: the message waits as a dimmed entry and delivers when the run ends.
       this.chatInput.value = '';
@@ -2127,16 +2257,56 @@ export class MainApp implements McpSessionSink {
     });
   }
 
-  /** Delivers the first queued message of a chat after a finished run. The entry moves to the end as it delivers. */
+  /** Delivers the first waiting message of a chat after a finished run: one still queued, or a
+   * send-now entry the finished turn never answered. The entry moves to the end as it delivers. */
   private async drainQueued(chat: Chat): Promise<void> {
     const index = chat.entries.findIndex((entry) => entry.role === 'user' && entry.queued);
     const queued = index >= 0 ? chat.entries[index] : undefined;
-    if (!queued) {
+    if (queued) {
+      chat.entries.splice(index, 1);
+      this.renderMessages();
+      await this.deliver(chat, queued.content, queued.images ?? []);
+      return;
+    }
+    // A send-now entry un-queued into the running turn still needs its answer when that turn
+    // ended its final text without another loop step. It carries queued false, not absent.
+    for (let position = chat.entries.length - 1; position >= 0; position -= 1) {
+      const entry = chat.entries[position];
+      if (entry?.role === 'assistant') {
+        return;
+      }
+      if (entry?.role === 'user' && entry.queued === false) {
+        chat.entries.splice(position, 1);
+        this.renderMessages();
+        await this.deliver(chat, entry.content, entry.images ?? []);
+        return;
+      }
+    }
+  }
+
+  /** Sends one queued message at once. While a turn runs, the entry un-queues into the next
+   * request of that turn, so it goes out without waiting for the turn to end. Without a running
+   * turn it delivers immediately. */
+  private async sendQueuedNow(chat: Chat, index: number): Promise<void> {
+    const entry = chat.entries[index];
+    if (!entry || entry.role !== 'user' || !entry.queued) {
       return;
     }
     chat.entries.splice(index, 1);
+    if (this.isTurnRunning(chat.id)) {
+      chat.entries.push({
+        role: 'user',
+        content: entry.content,
+        ...(entry.images && entry.images.length > 0 ? { images: entry.images } : {}),
+        // False, not absent: the drain after the run answers it when the turn ends without it.
+        queued: false,
+      });
+      this.renderMessages();
+      this.persistChat(chat);
+      return;
+    }
     this.renderMessages();
-    await this.deliver(chat, queued.content, queued.images ?? []);
+    await this.deliver(chat, entry.content, entry.images ?? []);
   }
 
   /** Adds image files from paste or drop to the pending attachments, downscaled and capped. */
@@ -2228,7 +2398,25 @@ export class MainApp implements McpSessionSink {
       storageShares: this.storageShares,
       toolRules: () => this.permissionGate?.listRules() ?? [],
       source: chat ? chatAgentSource(chat.id) : CHAT_AGENT_SOURCE,
+      chatId: chat?.id ?? this.activeChatId ?? 0,
+      patchStore: this.patchStore ?? new PatchStore(this.workspacePath),
+      pathRules: () => this.pathRules,
     };
+  }
+
+  /** Delivers one patch notice into its chat: the entry lands for the next loop step, and an idle
+   * chat starts a turn to process it. The host log tab holds no agent, so its notices drop. */
+  private async deliverPatchNotice(notice: PatchNotice): Promise<void> {
+    const chat = this.chats.find((candidate) => candidate.id === notice.chatId);
+    if (!chat || chat.isMcpHostLog) {
+      return;
+    }
+    chat.entries.push({ role: 'user', content: notice.text });
+    this.renderMessages();
+    this.persistChat(chat);
+    if (!this.isTurnRunning(chat.id)) {
+      await this.runChatTurn(chat);
+    }
   }
 
   /** The tools the agent may call this turn, the built-ins plus the native MCP tools, without the
@@ -2661,7 +2849,8 @@ export class MainApp implements McpSessionSink {
       const tab = document.createElement('button');
       tab.type = 'button';
       tab.className = 'tab';
-      tab.textContent = chat.title;
+      // The open task of the chat renames its tab, so the work reads by name.
+      tab.textContent = (chat.isMcpHostLog ? null : this.patchStore?.openTaskTitle(chat.id)) ?? chat.title;
       tab.addEventListener('click', () => {
         this.activateChat(chat.id);
       });
@@ -2793,6 +2982,8 @@ export class MainApp implements McpSessionSink {
    * A request still in flight, or brushed aside by an unrelated entry, renders with the wait hint. */
   private groupChatEntries(chat: Chat): readonly MessageGroup[] {
     const groups: MessageGroup[] = [];
+    // A message queued while a turn runs stays pinned at the bottom, under the running output.
+    const queuedSlots: EntrySlot[] = [];
     let open: EntrySlot | null = null;
     const flush = (): void => {
       if (open) {
@@ -2806,6 +2997,10 @@ export class MainApp implements McpSessionSink {
         continue;
       }
       const slot: EntrySlot = { index, entry };
+      if (entry.queued) {
+        queuedSlots.push(slot);
+        continue;
+      }
       if (entry.role === 'user' && entry.json && entry.toolName) {
         // A second request while one waits in flight closes the waiting one as unanswered.
         flush();
@@ -2838,6 +3033,9 @@ export class MainApp implements McpSessionSink {
       }
     }
     flush();
+    for (const slot of queuedSlots) {
+      groups.push({ kind: 'single', slot });
+    }
     return groups;
   }
 
@@ -2939,6 +3137,15 @@ export class MainApp implements McpSessionSink {
       const marker = document.createElement('span');
       marker.className = 'queued-marker';
       marker.textContent = '(queued)';
+      const sendNow = document.createElement('button');
+      sendNow.type = 'button';
+      sendNow.className = 'queued-send-now';
+      sendNow.textContent = 'Send now';
+      sendNow.title = 'Sends at the next step of the running turn, without waiting for it to end.';
+      sendNow.addEventListener('click', () => {
+        void this.sendQueuedNow(chat, index);
+      });
+      marker.append(' ', sendNow);
       item.append(marker);
     }
     if (entry.images && entry.images.length > 0) {

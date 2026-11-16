@@ -4,13 +4,13 @@ A child window that draws simple SVG graphs. It opens empty and carries the `nod
 
 # Open it
 
-The page lives beside the workspace window page: `dist/renderer/graphs.html`. With the MCP host tools, build the URL from the tracked workspace window URL (`list_windows`) by replacing `main.html` with `graphs.html`, or pass the relative path `dist/renderer/graphs.html`:
+The page lives beside the workspace window page: `dist/renderer/graphs.html`. With the MCP host tools, build the URL from the tracked workspace window URL (`list_pages`) by replacing `main.html` with `graphs.html`, or pass the relative path `dist/renderer/graphs.html`:
 
-1. `open_window` with the `graphs.html` URL.
-2. `attach_session` on the returned child id.
+1. `open_uri` with the `graphs.html` URL and `kind` `window`.
+2. `attach_session` on the returned page id.
 3. `evaluate` calls that run `nodewavenGraphs` methods.
 
-The chat agent carries the same window tools, so it opens the Graphs window, attaches a session, and draws through its `evaluate` on its own.
+The chat agent carries the same page tools, so it opens the Graphs window, attaches a session, and draws through its `evaluate` on its own.
 
 # API
 

@@ -8,7 +8,7 @@ import type { StorageBackend } from '../storage/storage.js';
 import type { ThinkingLevel } from '../providers/provider.js';
 import type { StoredPluginFolders } from './plugin-folders.js';
 import { isMcpEndpoints, type McpEndpoints } from '../shared/mcp-endpoints.js';
-import { isPermissionRule, type PermissionRule } from '../shared/permissions.js';
+import { isPermissionRule, readPathRules, type PathRule, type PermissionRule } from '../shared/permissions.js';
 import { EMPTY_SHARED_STORAGES, isSharedStoragesRecord, type SharedStoragesRecord } from './storage-shares.js';
 import {
   emptyProviderRegistry,
@@ -25,6 +25,7 @@ const PERMISSION_RULES_KEY = 'permission-rules';
 const MCP_HOST_TOKEN_KEY = 'mcp-host-token';
 const MCP_ENDPOINTS_KEY = 'mcp-endpoints';
 const SHARED_STORAGES_KEY = 'shared-storages';
+const PATH_RULES_KEY = 'path-rules';
 const THEME_KEY = 'theme';
 const FRAME_MODE_KEY = 'window-frame';
 const AGENT_TURN_LIMIT_KEY = 'agent-turn-limit';
@@ -223,6 +224,38 @@ export class WorkspaceSettingsStore {
    */
   async saveMcpEndpoints(endpoints: McpEndpoints): Promise<void> {
     await this.backend.set(MCP_ENDPOINTS_KEY, JSON.stringify(endpoints));
+  }
+
+  /**
+   * Reads the known paths of the workspace. A damaged record reads as empty, and no path is known.
+   *
+   * @returns The path rules in stored order.
+   * @throws StorageError when the store fails.
+   */
+  async loadPathRules(): Promise<readonly PathRule[]> {
+    const raw = await this.backend.get(PATH_RULES_KEY);
+    if (!raw) {
+      return [];
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the stored path rules are damaged and ignored: ${message}`);
+      return [];
+    }
+    return readPathRules(parsed);
+  }
+
+  /**
+   * Writes the known paths of the workspace.
+   *
+   * @param rules The path rules to persist, in stored order.
+   * @throws StorageError when the store fails.
+   */
+  async savePathRules(rules: readonly PathRule[]): Promise<void> {
+    await this.backend.set(PATH_RULES_KEY, JSON.stringify(rules));
   }
 
   /**

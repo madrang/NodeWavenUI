@@ -41,6 +41,84 @@ export const PRINCIPAL_LEVELS: Readonly<Record<PrincipalKind, number>> = {
   agent: 1,
 };
 
+/** The modes of one known path: what the agent may do there without a request. */
+export type PathRuleMode = 'allow' | 'ask-write' | 'ask' | 'deny';
+
+/** The modes one stored path rule may carry. */
+export const PATH_RULE_MODES: readonly PathRuleMode[] = ['allow', 'ask-write', 'ask', 'deny'];
+
+/** One known path of the workspace and the agent access it grants or refuses. */
+export interface PathRule {
+  /** The workspace-relative folder or file path, normalized without leading or trailing slashes. */
+  readonly path: string;
+  /** The access mode of the path. */
+  readonly mode: PathRuleMode;
+}
+
+/** True when one value is one path rule mode. */
+function isPathRuleMode(value: unknown): value is PathRuleMode {
+  return value === 'allow' || value === 'ask-write' || value === 'ask' || value === 'deny';
+}
+
+/** Normalizes one rule path or workspace path to comparable segments. The root reads as none. */
+function pathSegments(path: string): readonly string[] {
+  return path.split('/').filter((segment) => segment.length > 0 && segment !== '.');
+}
+
+/**
+ * Reads the rule of the longest matching path. A folder rule covers everything below it, and the
+ * root rule covers the whole workspace. Later entries win an equal-length tie.
+ *
+ * @param rules The stored path rules.
+ * @param absolutePath The absolute path the agent reaches for.
+ * @param workspaceRoot The absolute path of the workspace directory.
+ * @returns The matching rule, or null when no rule covers the path.
+ */
+export function matchPathRule(
+  rules: readonly PathRule[],
+  absolutePath: string,
+  workspaceRoot: string,
+): PathRule | null {
+  const root = workspaceRoot.replace(/[\\/]+$/, '');
+  if (absolutePath !== root && !absolutePath.startsWith(`${root}/`)) {
+    return null;
+  }
+  const segments = pathSegments(absolutePath === root ? '' : absolutePath.slice(root.length + 1));
+  let match: PathRule | null = null;
+  let matchLength = -1;
+  for (const rule of rules) {
+    const ruleSegments = pathSegments(rule.path);
+    if (ruleSegments.length > segments.length) {
+      continue;
+    }
+    const covered = ruleSegments.every((segment, index) => segment === segments[index]);
+    if (covered && ruleSegments.length >= matchLength) {
+      match = rule;
+      matchLength = ruleSegments.length;
+    }
+  }
+  return match;
+}
+
+/** Reads one stored path rule list. A damaged list reads as empty. */
+export function readPathRules(value: unknown): readonly PathRule[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const rules: PathRule[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'object' || entry === null) {
+      continue;
+    }
+    const candidate = entry as Record<string, unknown>;
+    if (typeof candidate['path'] !== 'string' || !isPathRuleMode(candidate['mode'])) {
+      continue;
+    }
+    rules.push({ path: candidate['path'], mode: candidate['mode'] });
+  }
+  return rules;
+}
+
 const PRINCIPAL_NAMES: ReadonlySet<string> = new Set(['user', 'plugin', 'mcp', 'agent']);
 
 /**
@@ -195,7 +273,8 @@ function ruleMatchesTarget(
 /**
  * Runs the decision pipeline for one guarded call.
  * The rules decide first, then the defaults apply: `user` and `plugin` allow, `agent` and `mcp` allow window reads
- * and window detach, ask for other window actions, ask for file reads, ask for tool calls, and deny storage.
+ * and window detach, ask for other window actions, ask for file reads and file patch proposals, ask for tool calls,
+ * and deny storage.
  * A preauthorized call turns the ask defaults into allow, so one call never prompts twice. Rules and deny
  * defaults still decide, so a deny rule below a higher-level allow keeps its block.
  * Storage sharing for the chat agent runs through the storage sharing settings, not through this pipeline.
@@ -235,7 +314,7 @@ export function decidePermission(
     }
     return preauthorized ? 'allow' : 'ask';
   }
-  if (target.kind === 'file' && action === 'read') {
+  if (target.kind === 'file' && (action === 'read' || action === 'propose')) {
     return preauthorized ? 'allow' : 'ask';
   }
   if (target.kind === 'tool') {

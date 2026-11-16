@@ -9,7 +9,7 @@ src/
     permissions.ts   the principal kinds and permission targets
     mcp-endpoints.ts the stored MCP endpoint list contract
     bridge.ts        the nodewavenui bridge contract: fs, app facts, window calls, workspace services
-    window-tools.ts  the window tool definitions the MCP host and the chat agent share
+    window-tools.ts  the page tool definitions the MCP host and the chat agent share
     node-access.ts   the page-context require wrapper (plugin and crypto loaders)
     records.ts       record guards for untyped boundary values (isRecord, asRecord)
   renderer/        UI code (DOM context)
@@ -28,7 +28,7 @@ src/
     graphs.ts              the Graphs window page and the nodewavenGraphs page global
     edit-context.ts        EditContext API type declarations (the DOM library predates the API)
     editor.ts              the Editor window page and the nodewavenEditor page global
-    agent-tools.ts         the chat agent tool registry (built-ins, window tools over the bridge, native)
+    agent-tools.ts         the chat agent tool registry (built-ins, page tools over the bridge, native)
     mcp-client-adapter.ts  the MCP client surface over the bridge (states cached, calls forwarded)
     main-app.ts            tabs, settings panes, chat, permission cards
     permission-gate.ts     the permission pipeline and pending requests

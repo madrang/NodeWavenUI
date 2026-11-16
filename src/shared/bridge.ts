@@ -70,6 +70,8 @@ export interface BridgeWindows {  /** Sizes the window to one content size and l
   minimize(): Promise<void>;
   /** Maximizes the window, or restores it when it sits maximized. */
   toggleMaximize(): Promise<void>;
+  /** Opens the developer tools of the window. A repeated call changes nothing. */
+  openDevTools(): Promise<void>;
   /** Opens the developer tools of the window, or closes them when they sit open. */
   toggleDevTools(): Promise<void>;
   /** Closes the window through its close event, so a drain can still run. */

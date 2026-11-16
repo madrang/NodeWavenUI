@@ -59,11 +59,11 @@ function requireString(args: Record<string, unknown>, name: string): string {
   return value;
 }
 
-/** Reads a child id argument of one tool call. */
-function requireChildId(args: Record<string, unknown>): number {
-  const value = args['childId'];
+/** Reads a page id argument of one tool call. */
+function requirePageId(args: Record<string, unknown>): number {
+  const value = args['pageId'];
   if (typeof value !== 'number' || !Number.isInteger(value)) {
-    throw new Error('The argument "childId" needs an integer.');
+    throw new Error('The argument "pageId" needs an integer.');
   }
   return value;
 }
@@ -82,72 +82,65 @@ function textResult(text: string): McpToolResult {
 /** Builds the window tools both surfaces serve: this host and the chat agent registry. */
 export function createTools(): McpToolDescriptor[] {
   const handlers: Record<string, (args: Record<string, unknown>, caller: WindowCaller) => Promise<McpToolResult>> = {
-    list_windows: async () => textResult(JSON.stringify(sessions.listChildren(), null, 2)),
-    open_window: async (args, caller) => {
+    list_pages: async () => textResult(JSON.stringify(sessions.listChildren(), null, 2)),
+    open_uri: async (args, caller) => {
       const url = requireString(args, 'url');
-      const frame = optionalString(args, 'frame');
-      const id = await sessions.openChild(caller, url, {
-        ...(typeof args['width'] === 'number' ? { width: args['width'] } : {}),
-        ...(typeof args['height'] === 'number' ? { height: args['height'] } : {}),
-        ...(frame ? { frame: frame === 'system' } : {}),
-      });
-      return textResult(`Child window ${id} opened for ${url}.`);
-    },
-    open_frame: async (args, caller) => {
-      const url = requireString(args, 'url');
-      const kind = args['kind'] === 'webview' ? 'webview' : args['kind'] === 'iframe' ? 'iframe' : null;
-      if (!kind) {
-        throw new Error('The argument "kind" must be "iframe" or "webview".');
+      const kind = args['kind'];
+      if (kind !== undefined && kind !== 'iframe' && kind !== 'webview' && kind !== 'window') {
+        throw new Error('The argument "kind" must be "iframe", "webview", or "window".');
       }
-      const sideArgument = args['side'];
-      const side = sideArgument === 'left' ? 'left' : sideArgument === 'right' ? 'right' : 'right';
+      if (kind === 'window') {
+        const frame = optionalString(args, 'frame');
+        const id = await sessions.openChild(caller, url, {
+          ...(typeof args['width'] === 'number' ? { width: args['width'] } : {}),
+          ...(typeof args['height'] === 'number' ? { height: args['height'] } : {}),
+          ...(frame ? { frame: frame === 'system' } : {}),
+        });
+        return textResult(`Page ${id} opened for ${url}.`);
+      }
+      const embedKind = kind === 'iframe' ? 'iframe' : 'webview';
       const title = typeof args['title'] === 'string' && args['title'].length > 0 ? args['title'] : null;
-      const frame = await sessions.openFrame(caller, url, kind, side, title);
+      const frame = await sessions.openFrame(caller, url, embedKind, 'right', title);
       return textResult(JSON.stringify(frame));
     },
-    close_window: async (args, caller) => {
-      const id = requireChildId(args);
+    close_page: async (args, caller) => {
+      const id = requirePageId(args);
       await sessions.closeChild(caller, id);
-      return textResult(`Child window ${id} closed.`);
+      return textResult(`Page ${id} closed.`);
     },
     attach_session: async (args, caller) => {
-      const id = requireChildId(args);
+      const id = requirePageId(args);
       await sessions.attach(caller, id);
-      return textResult(`Debug session attached to child window ${id}.`);
+      return textResult(`Debug session attached to page ${id}.`);
     },
     detach_session: async (args, caller) => {
-      const id = requireChildId(args);
+      const id = requirePageId(args);
       await sessions.detach(caller, id);
-      return textResult(`Debug session detached from child window ${id}.`);
+      return textResult(`Debug session detached from page ${id}.`);
     },
     evaluate: async (args, caller) => {
-      const result = await sessions.evaluate(caller, requireChildId(args), requireString(args, 'expression'));
+      const result = await sessions.evaluate(caller, requirePageId(args), requireString(args, 'expression'));
       return textResult(JSON.stringify(result));
     },
     screenshot: async (args, caller) => {
       const format = args['format'] === 'jpeg' ? 'jpeg' : 'png';
-      const data = await sessions.captureScreenshot(caller, requireChildId(args), format);
+      const data = await sessions.captureScreenshot(caller, requirePageId(args), format);
       return { content: [{ type: 'image', data, mimeType: `image/${format}` }] };
     },
     console_entries: async (args, caller) => {
-      const entries = await sessions.consoleEntries(caller, requireChildId(args));
+      const entries = await sessions.consoleEntries(caller, requirePageId(args));
       return textResult(JSON.stringify(entries, null, 2));
     },
     clear_console: async (args, caller) => {
-      const id = requireChildId(args);
+      const id = requirePageId(args);
       await sessions.clearConsole(caller, id);
-      return textResult(`Console of child window ${id} cleared.`);
+      return textResult(`Console of page ${id} cleared.`);
     },
     navigate: async (args, caller) => {
-      const id = requireChildId(args);
+      const id = requirePageId(args);
       const url = requireString(args, 'url');
       await sessions.navigate(caller, id, url);
-      return textResult(`Child window ${id} navigated to ${url}.`);
-    },
-    open_devtools: async (args, caller) => {
-      const id = requireChildId(args);
-      await sessions.openDevTools(caller, id);
-      return textResult(`DevTools of child window ${id} opened.`);
+      return textResult(`Page ${id} navigated to ${url}.`);
     },
   };
   return WINDOW_TOOL_DEFINITIONS.flatMap((definition) => {

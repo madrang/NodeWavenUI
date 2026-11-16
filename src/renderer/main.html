@@ -23,24 +23,26 @@
     <div id="frames-layout">
       <div id="rail-left">
         <div class="rail-tabbar">
-          <button class="rail-tab active" data-rail-tab="events" type="button">Events</button>
-          <button class="rail-tab" data-rail-tab="files" type="button">Files</button>
+          <button class="rail-tab active" data-rail-tab="events" type="button" title="Events" aria-label="Events"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+          <button class="rail-tab" data-rail-tab="files" type="button" title="Files" aria-label="Files"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg></button>
         </div>
-        <div class="rail-panel" data-rail-panel="events">
-          <div class="rail-filters">
-            <button class="rail-chip active" data-rail-filter="all" type="button">All</button>
-            <button class="rail-chip" data-rail-filter="pending" type="button">Pending</button>
-            <button class="rail-chip" data-rail-filter="completed" type="button">Completed</button>
+        <div class="rail-body">
+          <div class="rail-panel" data-rail-panel="events">
+            <div class="rail-filters">
+              <button class="rail-chip active" data-rail-filter="all" type="button">All</button>
+              <button class="rail-chip" data-rail-filter="pending" type="button">Pending</button>
+              <button class="rail-chip" data-rail-filter="completed" type="button">Completed</button>
+            </div>
+            <div id="rail-event-list" class="rail-scroll"></div>
+            <footer class="rail-foot">
+              <span id="rail-event-count" class="rail-foot-note"></span>
+              <span class="rail-spacer"></span>
+              <button id="rail-event-clear" class="rail-link" type="button" title="Clear the completed list">Clear</button>
+            </footer>
           </div>
-          <div id="rail-event-list" class="rail-scroll"></div>
-          <footer class="rail-foot">
-            <span id="rail-event-count" class="rail-foot-note"></span>
-            <span class="rail-spacer"></span>
-            <button id="rail-event-clear" class="rail-link" type="button" title="Clear the completed list">Clear</button>
-          </footer>
-        </div>
-        <div class="rail-panel" data-rail-panel="files" hidden>
-          <div id="rail-file-tree" class="rail-scroll"></div>
+          <div class="rail-panel" data-rail-panel="files" hidden>
+            <div id="rail-file-tree" class="rail-scroll"></div>
+          </div>
         </div>
       </div>
       <div id="rail-resizer" class="column-resizer" title="Drag to resize the rail"></div>
@@ -176,6 +178,21 @@
       <fieldset class="field" id="event-sources-section">
         <legend>Events sources</legend>
         <p class="status">Sources feed the Events tab of the left rail. Approvals are built in. No other source kind exists yet.</p>
+      </fieldset>
+      <fieldset class="field" id="known-paths-section">
+        <legend>Known paths</legend>
+        <p class="status">Folder and file paths of the workspace with a set agent access. A folder covers everything below it. Free reads and writes needs no request, Ask on write shows one card before a patch proposes, Ask covers reads too, and Deny refuses the path.</p>
+        <div id="known-path-list"></div>
+        <form id="known-path-add">
+          <input id="known-path-input" type="text" placeholder="src/renderer" autocomplete="off" spellcheck="false" />
+          <select id="known-path-mode" title="The access of the path">
+            <option value="allow">Free read and write</option>
+            <option value="ask-write">Ask on write</option>
+            <option value="ask">Ask on read and write</option>
+            <option value="deny">Deny</option>
+          </select>
+          <button type="submit">Add path</button>
+        </form>
       </fieldset>
       <fieldset class="field" id="agent-tools-section">
         <legend>Agent tools</legend>

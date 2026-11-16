@@ -14,130 +14,106 @@ export interface WindowToolDefinition {
 /** Every window tool of the app. */
 export const WINDOW_TOOL_DEFINITIONS: readonly WindowToolDefinition[] = [
   {
-    name: 'list_windows',
-    description: 'Lists the tracked child windows with their ids, URLs, titles, and session states.',
+    name: 'list_pages',
+    description: 'Lists the tracked pages with their ids, URLs, titles, and session states.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
-    name: 'open_window',
-    description:
-      'Opens one child window (default 900 x 700) and returns its id. A relative path resolves against the app root. The permission gate may queue an approval request.',
+    name: 'open_uri',
+    description: 'Opens one address as a page of the app: a frame of the center workspace or an OS window.',
     inputSchema: {
       type: 'object',
       properties: {
-        url: { type: 'string', description: 'The address the window loads. A relative path resolves against the app root.' },
-        width: { type: 'integer', description: 'The window width. Default 900.' },
-        height: { type: 'integer', description: 'The window height. Default 700.' },
-        frame: { type: 'string', enum: ['system', 'borderless'], description: 'The window frame. Omitted, it inherits the frame of the workspace window.' },
+        url: { type: 'string', description: 'The address to open. A relative path resolves against the app root.' },
+        kind: { type: 'string', enum: ['iframe', 'webview', 'window'], default: 'webview', description: 'How the address opens. iframe loads it inside the workspace page: it never attaches and carries no debug target of its own. webview loads it in its own guest process with its own debug target, and attach_session needs the share switch of its tab on. window opens a separate OS window.' },
+        title: { type: 'string', description: 'The title the frame tab shows. Frame kinds only.' },
+        width: { type: 'integer', default: 900, description: 'The window width. Kind window only.' },
+        height: { type: 'integer', default: 700, description: 'The window height. Kind window only.' },
+        frame: { type: 'string', enum: ['system', 'borderless'], description: 'The window frame. Kind window only. Omitted, it inherits the frame of the workspace window.' },
       },
       required: ['url'],
     },
   },
   {
-    name: 'open_frame',
-    description:
-      'Opens one embedded frame as a view of the center workspace and returns { frameId, kind, side }. kind iframe loads the address inside the workspace page: it never attaches and carries no debug target of its own. kind webview loads it in its own guest process with its own debug target, and attach_session needs the share switch of its tab on. The permission gate may queue an approval request.',
+    name: 'close_page',
+    description: 'Closes one page and stops tracking it.',
     inputSchema: {
       type: 'object',
-      properties: {
-        url: { type: 'string', description: 'The address the frame loads. A relative path resolves against the app root.' },
-        kind: { type: 'string', enum: ['iframe', 'webview'], description: 'The embed kind of the frame.' },
-        side: { type: 'string', enum: ['left', 'right'], description: 'Kept for compatibility. Every frame opens in the center workspace; the side picks no column.' },
-        title: { type: 'string', description: 'The title the tab shows. Default: the last path segment of the address.' },
-      },
-      required: ['url', 'kind'],
-    },
-  },
-  {
-    name: 'close_window',
-    description: 'Closes one child window and stops tracking it. The permission gate may queue an approval request.',
-    inputSchema: {
-      type: 'object',
-      properties: { childId: { type: 'integer', description: 'The id of the child window.' } },
-      required: ['childId'],
+      properties: { pageId: { type: 'integer', description: 'The id of the page.' } },
+      required: ['pageId'],
     },
   },
   {
     name: 'attach_session',
-    description:
-      'Attaches a debug session to one child window and starts the console capture. Needed for evaluate and screenshot. The permission gate may queue an approval request.',
+    description: 'Attaches a debug session to one page and starts the console capture. Needed for evaluate and screenshot.',
     inputSchema: {
       type: 'object',
-      properties: { childId: { type: 'integer', description: 'The id of the child window.' } },
-      required: ['childId'],
+      properties: { pageId: { type: 'integer', description: 'The id of the page.' } },
+      required: ['pageId'],
     },
   },
   {
     name: 'detach_session',
-    description: 'Detaches the debug session of one child window.',
+    description: 'Detaches the debug session of one page.',
     inputSchema: {
       type: 'object',
-      properties: { childId: { type: 'integer', description: 'The id of the child window.' } },
-      required: ['childId'],
+      properties: { pageId: { type: 'integer', description: 'The id of the page.' } },
+      required: ['pageId'],
     },
   },
   {
     name: 'evaluate',
     description:
-      'Runs one JavaScript expression in one child window. Requires an attached debug session. A promise result is awaited; objects come back as parsed JSON values. No top-level await: use an async IIFE. The permission gate may queue an approval request.',
+      'Runs one JavaScript expression in one page. Requires an attached debug session. A promise result is awaited; objects come back as parsed JSON values. No top-level await: use an async IIFE.',
     inputSchema: {
       type: 'object',
       properties: {
-        childId: { type: 'integer', description: 'The id of the child window.' },
+        pageId: { type: 'integer', description: 'The id of the page.' },
         expression: { type: 'string', description: 'The JavaScript source to run. A promise result is awaited.' },
       },
-      required: ['childId', 'expression'],
+      required: ['pageId', 'expression'],
     },
   },
   {
     name: 'screenshot',
-    description: 'Captures one screenshot of one child window as base64 image data. Requires an attached session.',
+    description: 'Captures one screenshot of one page as base64 image data. Requires an attached session.',
     inputSchema: {
       type: 'object',
       properties: {
-        childId: { type: 'integer', description: 'The id of the child window.' },
-        format: { type: 'string', enum: ['png', 'jpeg'], description: 'The image format. Default png.' },
+        pageId: { type: 'integer', description: 'The id of the page.' },
+        format: { type: 'string', enum: ['png', 'jpeg'], default: 'png', description: 'The image format.' },
       },
-      required: ['childId'],
+      required: ['pageId'],
     },
   },
   {
     name: 'console_entries',
-    description: 'Reads the captured console lines of one child window since the attach or the last clear.',
+    description: 'Reads the captured console lines of one page since the attach or the last clear.',
     inputSchema: {
       type: 'object',
-      properties: { childId: { type: 'integer', description: 'The id of the child window.' } },
-      required: ['childId'],
+      properties: { pageId: { type: 'integer', description: 'The id of the page.' } },
+      required: ['pageId'],
     },
   },
   {
     name: 'clear_console',
-    description: 'Clears the captured console of one child window.',
+    description: 'Clears the captured console of one page.',
     inputSchema: {
       type: 'object',
-      properties: { childId: { type: 'integer', description: 'The id of the child window.' } },
-      required: ['childId'],
+      properties: { pageId: { type: 'integer', description: 'The id of the page.' } },
+      required: ['pageId'],
     },
   },
   {
     name: 'navigate',
-    description: 'Loads one address in one child window. The permission gate may queue an approval request.',
+    description: 'Loads one address in one page.',
     inputSchema: {
       type: 'object',
       properties: {
-        childId: { type: 'integer', description: 'The id of the child window.' },
+        pageId: { type: 'integer', description: 'The id of the page.' },
         url: { type: 'string', description: 'The address to load.' },
       },
-      required: ['childId', 'url'],
-    },
-  },
-  {
-    name: 'open_devtools',
-    description: 'Opens the DevTools window of one child window.',
-    inputSchema: {
-      type: 'object',
-      properties: { childId: { type: 'integer', description: 'The id of the child window.' } },
-      required: ['childId'],
+      required: ['pageId', 'url'],
     },
   },
 ];

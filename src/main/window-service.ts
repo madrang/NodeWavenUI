@@ -97,6 +97,12 @@ export function registerWindowService(): void {
     }
     win.maximize();
   });
+  ipcMain.handle(`${CHANNEL}:windows:openDevTools`, (event) => {
+    const contents = event.sender;
+    if (!contents.isDevToolsOpened()) {
+      contents.openDevTools();
+    }
+  });
   ipcMain.handle(`${CHANNEL}:windows:toggleDevTools`, (event) => {
     const contents = event.sender;
     if (contents.isDevToolsOpened()) {

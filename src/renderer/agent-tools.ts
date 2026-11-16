@@ -10,9 +10,12 @@ import type { ChatImage, ToolDefinition } from '../providers/provider.js';
 import type { PermissionRule, PrincipalKind, PermissionTarget } from '../shared/permissions.js';
 import { CHAT_AGENT_SOURCE } from '../shared/permissions.js';
 import { readBridge } from '../shared/bridge.js';
+import type { PathRule } from '../shared/permissions.js';
 import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
 import { readHarnessDoc } from './doc-resources.js';
 import { readTextFile } from './file-system.js';
+import { createFileTools, type FileToolDeps } from './file-tools.js';
+import type { PatchStore } from './patch-store.js';
 import type { McpToolResult } from '../shared/window-tools.js';
 import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { StorageShareRegistry } from './storage-shares.js';
@@ -87,6 +90,12 @@ export interface AgentToolDeps {
   /** The source the permission checks of this tool set attribute their requests to, scoped to the
    * chat whose turn runs them, so the approval card lands in that chat's tab. */
   readonly source: string;
+  /** The numeric id of the chat whose turn builds the tools, for the file tools. */
+  readonly chatId: number;
+  /** The patch store that holds every write proposal of the agent. */
+  readonly patchStore: PatchStore;
+  /** Reads the known paths of the workspace, which grant or refuse agent access per path. */
+  readonly pathRules: () => readonly PathRule[];
 }
 
 async function readWorkspaceFile(path: string): Promise<string> {
@@ -229,6 +238,17 @@ export function buildAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
 /** The full tool list of the chat agent, disabled tools included, for the settings matrix. */
 export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
   const tools: AgentTool[] = [createReadTool(deps)];
+  // The file tool set runs in the workspace page: reads over the bridge fs after the permission
+  // pipeline, writes as patch proposals the user reviews, tasks as the naming surface.
+  const fileDeps: FileToolDeps = {
+    check: deps.gate,
+    workspacePath: deps.workspacePath,
+    chatId: deps.chatId,
+    source: deps.source,
+    store: deps.patchStore,
+    pathRules: deps.pathRules,
+  };
+  tools.push(...createFileTools(fileDeps));
   // The chat agent carries the same window tools the MCP host serves, acting as the agent principal.
   for (const definition of WINDOW_TOOL_DEFINITIONS) {
     tools.push(createWindowTool(definition, deps.source));

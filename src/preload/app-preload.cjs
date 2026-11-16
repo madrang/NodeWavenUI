@@ -41,6 +41,7 @@ const bridge = {
     move: (x, y) => ipcRenderer.invoke(`${CHANNEL}:windows:move`, x, y),
     minimize: () => ipcRenderer.invoke(`${CHANNEL}:windows:minimize`),
     toggleMaximize: () => ipcRenderer.invoke(`${CHANNEL}:windows:toggleMaximize`),
+    openDevTools: () => ipcRenderer.invoke(`${CHANNEL}:windows:openDevTools`),
     toggleDevTools: () => ipcRenderer.invoke(`${CHANNEL}:windows:toggleDevTools`),
     close: () => ipcRenderer.invoke(`${CHANNEL}:windows:close`),
     forceClose: () => ipcRenderer.invoke(`${CHANNEL}:windows:forceClose`),
