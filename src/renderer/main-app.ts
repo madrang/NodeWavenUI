@@ -17,6 +17,7 @@ import { presetOfAccount } from '../shared/provider-presets/index.js';
 import { readBridge } from '../shared/bridge.js';
 import {
   agentToolDefinition,
+  agentToolRule,
   availableAgentTools,
   buildAgentTools,
   CHAT_AGENT_SOURCE,
@@ -31,6 +32,10 @@ import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from '../shared
 import type { NotificationHub } from './notification-hub.js';
 import type { PermissionGate } from './permission-gate.js';
 import { PatchStore, type PatchNotice } from './patch-store.js';
+import { TaskStore } from './task-store.js';
+import type { TaskToolDeps } from './task-tools.js';
+import { openTaskBoardView } from './task-board.js';
+import type { TaskRecord } from '../shared/tasks.js';
 import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
 import { requireElement } from './dom.js';
@@ -104,6 +109,12 @@ export class MainApp implements McpSessionSink {
   /** The left rail: the approvals feed and the files tree. */
   private rail: AppRail | null = null;
   private patchStore: PatchStore | null = null;
+  /** The dispatchable task records of the workspace. */
+  private taskStore: TaskStore | null = null;
+  /** The task ids a dispatch holds in flight, so the store listener and the tool call never double-run one. */
+  private readonly taskDispatching = new Set<string>();
+  /** The nudge counts per task id: one nudge per running stretch, so a silent agent hears once. */
+  private readonly taskNudges = new Map<string, number>();
   /** The abort controllers of the running agent turns, keyed by chat id, in start order. Chats
    * run their turns in parallel; one chat queues its own sends while its turn runs. */
   private readonly runningTurns = new Map<number, AbortController>();
@@ -233,6 +244,18 @@ export class MainApp implements McpSessionSink {
     this.patchStore.onNotice((notice) => {
       void this.deliverPatchNotice(notice);
     });
+    this.taskStore = new TaskStore(this.workspacePath);
+    await this.taskStore.load();
+    // Every record change pumps the queue: a ready queued task opens its session or enters an
+    // idle bound one, and the tabs redraw with their task badges.
+    this.taskStore.subscribe(() => {
+      this.renderTabs();
+      void this.pumpQueuedTasks();
+    });
+    // A settle tells the origin chat when it did not cause it: the background-notification parity.
+    this.taskStore.onSettle((task) => {
+      void this.deliverTaskSettle(task);
+    });
     this.rail = new AppRail({
       gate: this.permissionGate,
       workspacePath: this.workspacePath,
@@ -242,6 +265,10 @@ export class MainApp implements McpSessionSink {
       patchStore: this.patchStore,
       openPatch: (id, separateTab) => {
         void openPatchReviewView(this.patchStore!, id, separateTab);
+      },
+      taskStore: this.taskStore,
+      openTaskBoard: () => {
+        this.openTaskBoard();
       },
     });
     this.rail.start();
@@ -330,6 +357,31 @@ export class MainApp implements McpSessionSink {
     });
     await this.chatSessions.init();
     await this.restoreChats();
+    await this.relinkTaskSessions();
+  }
+
+  /** Re-links the runtime chat ids of the bound task records after a restore: the persisted
+   * session files keep their binding, the numeric chat ids start fresh. A live record whose
+   * session tab never came back keeps its stale id and shows on the board for a re-dispatch. */
+  private async relinkTaskSessions(): Promise<void> {
+    const store = this.taskStore;
+    if (!store) {
+      return;
+    }
+    for (const task of store.list()) {
+      if (!task.sessionFileId) {
+        continue;
+      }
+      const chat = this.chatByFileId(task.sessionFileId);
+      if (chat) {
+        await store.relink(task.id, chat.id);
+      }
+    }
+  }
+
+  /** Finds the chat one session file id owns. */
+  private chatByFileId(fileId: string): Chat | null {
+    return this.chats.find((chat) => chat.fileId === fileId) ?? null;
   }
 
   /** Restores the stored sessions as chat tabs in creation order and activates the newest.
@@ -740,6 +792,7 @@ export class MainApp implements McpSessionSink {
       return;
     }
     await this.drainQueued(chat);
+    await this.afterTaskTurn(chat);
   }
 
   /** Restarts the failed turn of one user message: every entry after the message drops, and the
@@ -953,13 +1006,14 @@ export class MainApp implements McpSessionSink {
   /** The dependencies the agent tools build from. The rule reader feeds the tool rule layer. A
    * running turn passes its chat, so the permission requests attribute to that chat's tab. */
   private agentToolDeps(chat?: Chat): AgentToolDeps {
-    return {
-      gate:
-        this.permissionGate ?? {
-          check: async () => {
-            throw new Error('No permission gate is wired.');
-          },
+    const gate: AgentToolDeps['gate'] =
+      this.permissionGate ?? {
+        check: async () => {
+          throw new Error('No permission gate is wired.');
         },
+      };
+    return {
+      gate,
       mcpClients: this.mcpClients,
       workspacePath: this.workspacePath,
       storageShares: this.storageShares,
@@ -968,6 +1022,36 @@ export class MainApp implements McpSessionSink {
       chatId: chat?.id ?? this.activeChatId ?? 0,
       patchStore: this.patchStore ?? new PatchStore(this.workspacePath),
       pathRules: () => this.settingsView.pathRules,
+      ...(this.taskStore ? { tasks: this.taskToolDeps(gate, chat) } : {}),
+    };
+  }
+
+  /** The deps of the tasks tool: the store, the session and naming callbacks of this app, and the
+   * permission surface the dispatch action asks through. */
+  private taskToolDeps(gate: AgentToolDeps['gate'], chat?: Chat): TaskToolDeps {
+    const chatId = chat?.id ?? this.activeChatId ?? 0;
+    return {
+      store: this.taskStore!,
+      dispatch: (id, mode, sessionFileId) => this.dispatchTask(id, mode, sessionFileId),
+      send: (id, message) => this.sendTask(id, message),
+      setTaskName: async (title, description, amend) => {
+        const store = this.patchStore;
+        if (!store) {
+          throw new Error('No patch store is wired.');
+        }
+        if (!amend && !title) {
+          throw new Error('A new task needs a title. Pass amend true to change the open task.');
+        }
+        if (amend && !store.openTask(chatId)) {
+          throw new Error('No open task to amend. Start one without amend.');
+        }
+        const task = await store.setTask(chatId, title, description, amend);
+        return amend ? `The task now reads "${task.title}".` : `The task "${task.title}" started.`;
+      },
+      chatId,
+      check: gate,
+      dispatchAllowed: () => agentToolRule('tasks', this.permissionGate?.listRules() ?? [])?.effect === 'allow',
+      source: chat ? chatAgentSource(chat.id) : CHAT_AGENT_SOURCE,
     };
   }
 
@@ -984,6 +1068,242 @@ export class MainApp implements McpSessionSink {
     if (!this.isTurnRunning(chat.id)) {
       await this.runChatTurn(chat);
     }
+  }
+
+  /** Delivers one task message into a chat: the entry lands for the next loop step, and an idle
+   * chat starts a turn to process it. Task briefs, nudges, settles, and sends all ride this. */
+  private async deliverTaskNotice(chat: Chat, text: string): Promise<void> {
+    if (chat.isMcpHostLog) {
+      return;
+    }
+    chat.entries.push({ role: 'user', content: text });
+    this.messages.render();
+    this.persistChat(chat);
+    if (!this.isTurnRunning(chat.id)) {
+      await this.runChatTurn(chat);
+    }
+  }
+
+  /** Builds the brief entry one session reads when it takes a task. */
+  private taskBrief(task: TaskRecord): string {
+    const rows = [`[task ${task.id}] ${task.title}`];
+    if (task.description) {
+      rows.push(task.description);
+    }
+    if (task.goal) {
+      rows.push(`Goal: ${task.goal}`);
+    }
+    rows.push('Work only this task. Verify the goal before you finish, then call the tasks tool with action complete (id, result, evidence), or action fail (id, reason) when it does not hold.');
+    return rows.join('\n');
+  }
+
+  /**
+   * Dispatches one queued task onto its session. A new-session dispatch opens the chat tab; a
+   * session dispatch hands the task to its bound chat when that chat sits idle. A busy chat and a
+   * blocked task keep the record queued, and the pump takes them when their turn comes.
+   *
+   * @param id The record id.
+   * @param mode How the dispatch binds the session.
+   * @param sessionFileId The chat session file, on session mode.
+   * @returns The outcome text the agent reads.
+   */
+  private async dispatchTask(id: string, mode: 'new-session' | 'session', sessionFileId: string | null): Promise<string> {
+    const store = this.taskStore;
+    if (!store || this.taskDispatching.has(id)) {
+      return 'The dispatch is already in flight.';
+    }
+    const task = store.get(id);
+    if (!task) {
+      return 'The task does not exist.';
+    }
+    if (task.status !== 'queued') {
+      return `The task holds state ${task.status}.`;
+    }
+    if (!store.ready(task)) {
+      return `The task waits for its blockedBy tasks: ${task.blockedBy.join(', ')}.`;
+    }
+    this.taskDispatching.add(id);
+    try {
+      if (mode === 'session') {
+        const chat = sessionFileId ? this.chatByFileId(sessionFileId) : null;
+        if (!chat) {
+          return `The chat session ${sessionFileId ?? '(none)'} holds no open tab. The task stays queued.`;
+        }
+        if (this.isTurnRunning(chat.id)) {
+          return 'The session runs a turn. The task stays queued and enters when it idles.';
+        }
+        await this.takeTaskOnChat(chat, task);
+        return `The task entered the session "${chat.title}".`;
+      }
+      const chat: Chat = {
+        id: this.nextChatId,
+        fileId: crypto.randomUUID(),
+        title: task.title,
+        createdAt: new Date().toISOString(),
+        entries: [],
+        taskId: task.id,
+      };
+      this.nextChatId += 1;
+      this.chats.push(chat);
+      await this.takeTaskOnChat(chat, task);
+      return 'A new chat session opened for the task.';
+    } finally {
+      this.taskDispatching.delete(id);
+    }
+  }
+
+  /** Binds one chat to a task, pushes the brief, and runs the turn on an idle chat. */
+  private async takeTaskOnChat(chat: Chat, task: TaskRecord): Promise<void> {
+    const store = this.taskStore;
+    if (!store) {
+      return;
+    }
+    chat.taskId = task.id;
+    await store.bindSession(task.id, chat.id, chat.fileId);
+    // The session names its work after the record, so the patches of the run group under the task
+    // title and the tab reads it.
+    await this.patchStore?.setTask(chat.id, task.title, task.description, false);
+    chat.entries.push({ role: 'user', content: this.taskBrief(task) });
+    this.messages.render();
+    this.persistChat(chat);
+    this.renderTabs();
+    if (!this.isTurnRunning(chat.id)) {
+      await this.runChatTurn(chat);
+    }
+  }
+
+  /** Opens sessions and hands idle chats their next ready queued task. Runs on every record change. */
+  private async pumpQueuedTasks(): Promise<void> {
+    const store = this.taskStore;
+    if (!store) {
+      return;
+    }
+    for (const task of store.list()) {
+      if (task.status !== 'queued' || this.taskDispatching.has(task.id) || !store.ready(task)) {
+        continue;
+      }
+      if (task.dispatchMode === 'new-session' && !task.sessionFileId) {
+        await this.dispatchTask(task.id, 'new-session', null);
+        continue;
+      }
+      if (task.dispatchMode === 'session' && task.sessionFileId) {
+        const chat = this.chatByFileId(task.sessionFileId);
+        if (chat && !this.isTurnRunning(chat.id)) {
+          await this.dispatchTask(task.id, 'session', task.sessionFileId);
+        }
+      }
+    }
+  }
+
+  /** Handles the task of one chat after its turn: one nudge on a silent running task, and the
+   * queue pump when the task settled so the next one enters. */
+  private async afterTaskTurn(chat: Chat): Promise<void> {
+    const store = this.taskStore;
+    if (!store || !chat.taskId) {
+      return;
+    }
+    const task = store.get(chat.taskId);
+    if (!task) {
+      return;
+    }
+    if (task.status === 'running') {
+      const nudged = this.taskNudges.get(task.id) ?? 0;
+      if (nudged < 1) {
+        this.taskNudges.set(task.id, nudged + 1);
+        await this.deliverTaskNotice(
+          chat,
+          `[task ${task.id}] The turn ended without a completion. Call the tasks tool: action complete (id, result, evidence), or action fail (id, reason).`,
+        );
+      }
+      return;
+    }
+    this.taskNudges.delete(task.id);
+    await this.pumpQueuedTasks();
+  }
+
+  /** Tells the origin chat of one settle it did not cause, so a waiting parent learns the outcome. */
+  private async deliverTaskSettle(task: TaskRecord): Promise<void> {
+    this.taskNudges.delete(task.id);
+    const origin = task.originChatId ? this.chats.find((chat) => chat.id === task.originChatId) ?? null : null;
+    if (!origin || origin.isMcpHostLog || origin.id === task.sessionChatId) {
+      return;
+    }
+    let head = `Task ${task.id} was cancelled${task.note ? `: ${task.note}` : '.'}`;
+    if (task.status === 'review') {
+      head = `The session completed task ${task.id}. The review waits.`;
+    } else if (task.status === 'done') {
+      head = `The user accepted task ${task.id}.`;
+    } else if (task.status === 'failed') {
+      head = `The session failed task ${task.id}${task.note ? `: ${task.note}` : '.'}`;
+    }
+    await this.deliverTaskNotice(origin, `[task settle] ${head}${task.result ? `\nResult: ${task.result}` : ''}`);
+  }
+
+  /** Finds the chat one task record is bound to in this app run. */
+  private chatOfTask(task: TaskRecord): Chat | null {
+    return task.sessionChatId ? this.chats.find((chat) => chat.id === task.sessionChatId) ?? null : null;
+  }
+
+  /** Opens the task board in the center workspace. */
+  private openTaskBoard(): void {
+    const store = this.taskStore;
+    if (!store) {
+      return;
+    }
+    openTaskBoardView({
+      store,
+      dispatch: (id, mode, sessionFileId) => this.dispatchTask(id, mode, sessionFileId),
+      openSession: (chatId) => {
+        this.activateChat(chatId);
+      },
+      sessions: () =>
+        this.chats
+          .filter((chat) => !chat.isMcpHostLog)
+          .map((chat) => ({ fileId: chat.fileId, title: chat.title })),
+      returnTask: (id, comment) => {
+        void this.returnTask(id, comment);
+      },
+    });
+  }
+
+  /** Returns one review to its session: the record moves back to running and the comment of the
+   * user rides to the session agent as a re-brief. */
+  private async returnTask(id: string, comment: string | null): Promise<void> {
+    const store = this.taskStore;
+    const task = store?.get(id) ?? null;
+    if (!store || !task) {
+      return;
+    }
+    const chat = this.chatOfTask(task);
+    const returned = await store.returnToSession(id);
+    if (!returned || !chat) {
+      return;
+    }
+    await this.deliverTaskNotice(
+      chat,
+      `[task ${id}] The user returned the task with a comment:${comment ? `\n${comment}` : ''}\nAddress the comment, then call the tasks tool with action complete again.`,
+    );
+  }
+
+  /** Sends one message into the session of a task. A busy session queues the entry for its drain. */
+  private async sendTask(id: string, message: string): Promise<string> {
+    const store = this.taskStore;
+    const task = store?.get(id) ?? null;
+    if (!store || !task) {
+      return 'The task does not exist.';
+    }
+    const chat = this.chatOfTask(task);
+    if (!chat) {
+      return 'The task holds no open session tab.';
+    }
+    if (this.isTurnRunning(chat.id)) {
+      chat.entries.push({ role: 'user', content: `[task ${id}] ${message}`, queued: true });
+      this.messages.render();
+      this.persistChat(chat);
+      return 'The session runs a turn. The message queued and delivers when it ends.';
+    }
+    await this.deliverTaskNotice(chat, `[task ${id}] ${message}`);
+    return 'The message entered the session.';
   }
 
   /** The tools the agent may call this turn, the built-ins plus the native MCP tools, without the
@@ -1302,6 +1622,13 @@ export class MainApp implements McpSessionSink {
     // The closed tab drops its session file, so a restart does not resurrect it.
     if (chat && !chat.isMcpHostLog) {
       this.chatSessions.deleteSession(chat.fileId);
+    }
+    // A live task bound to the closed chat settles cancelled, so the record never holds a dead session.
+    if (chat?.taskId) {
+      const task = this.taskStore?.get(chat.taskId);
+      if (task && (task.status === 'running' || task.status === 'queued') && task.sessionFileId === chat.fileId) {
+        void this.taskStore?.cancel(task.id, 'The session tab closed.');
+      }
     }
     if (this.activeChatId === id) {
       // The chat column keeps a chat: a neighbor takes over, or a fresh chat opens when none stays.

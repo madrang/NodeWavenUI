@@ -780,13 +780,17 @@ export class SettingsView {
     }
   }
 
-  /** The group head of one tool: the built-ins, the file tools, the page tools, or the endpoint label of a native tool. */
+  /** The group head of one tool: the built-ins, the file tools, the task tools, the command tools,
+   * the page tools, or the endpoint label of a native tool. */
   private toolOriginLabel(name: string): string {
     if (name === 'read' || name === 'evaluate') {
       return 'Built-in tools';
     }
-    if (name === 'files' || name === 'write' || name === 'task') {
+    if (name === 'files' || name === 'write') {
       return 'File tools';
+    }
+    if (name === 'tasks') {
+      return 'Task tools';
     }
     if (name === 'run' || name === 'process_output' || name === 'process_stop') {
       return 'Command tools';

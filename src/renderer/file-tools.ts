@@ -1,10 +1,11 @@
 /**
- * The file tool set of the chat agent: `files` reads and discovers, `write` proposes patches, and
- * `task` names the work. Reads answer from the live file after the permission pipeline allows the
- * path. Writes never touch the bridge fs: every action builds one patch proposal in the patch
- * store, and the user review owns the write. The read-first gate refuses a write on an existing
- * file the agent never read in the same chat: it stops agent mistakes, and it never reaches the
- * user. Reads and writes stay in separate tools, so no tool mixes the two.
+ * The file tool set of the chat agent: `files` reads and discovers, and `write` proposes patches.
+ * Reads answer from the live file after the permission pipeline allows the path. Writes never
+ * touch the bridge fs: every action builds one patch proposal in the patch store, and the user
+ * review owns the write. The read-first gate refuses a write on an existing file the agent never
+ * read in the same chat: it stops agent mistakes, and it never reaches the user. Reads and writes
+ * stay in separate tools, so no tool mixes the two. The naming surface of the work lives in the
+ * `name` action of the `tasks` tool.
  */
 
 import type { AgentTool, AgentToolOutput } from './agent-tools.js';
@@ -340,40 +341,7 @@ function proposeInsert(base: string, args: Record<string, unknown>): string {
   return lines.join('\n');
 }
 
-/** Builds the `task` tool: the naming surface. The title renames the chat tab and groups the patch events. */
-function createTaskTool(deps: FileToolDeps): AgentTool {
-  return {
-    name: 'task',
-    description:
-      'Names the work of the chat. The title renames the chat tab and groups the patch events of the task in the Events feed, and the title with the description later feeds the git plugin as the commit title and description. An amend call changes the open task, and a new call closes the open task and starts one.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        title: { type: 'string', description: 'The task title. A new task needs one, an amend call keeps the old one without it.' },
-        description: { type: 'string', description: 'The task description, the later commit description.' },
-        amend: { type: 'boolean', default: false, description: 'True to change the open task, false to start a new one.' },
-      },
-      required: [],
-      additionalProperties: false,
-    },
-    run: async (args): Promise<AgentToolOutput> => {
-      const amend = args['amend'] === true;
-      const title = typeof args['title'] === 'string' && args['title'].length > 0 ? args['title'] : null;
-      const description = typeof args['description'] === 'string' && args['description'].length > 0 ? args['description'] : null;
-      if (!amend && title === null) {
-        throw new Error('A new task needs a title. Pass amend true to change the open task.');
-      }
-      const open = deps.store.openTask(deps.chatId);
-      if (amend && !open) {
-        throw new Error('No open task to amend. Start one without amend.');
-      }
-      const task = await deps.store.setTask(deps.chatId, title, description, amend);
-      return { text: amend ? `The task now reads "${task.title}".` : `The task "${task.title}" started.` };
-    },
-  };
-}
-
-/** Builds the file tool set: the read surface, the mutation surface, and the naming surface. */
+/** Builds the file tool set: the read surface and the mutation surface. */
 export function createFileTools(deps: FileToolDeps): readonly AgentTool[] {
-  return [createFilesTool(deps), createWriteTool(deps), createTaskTool(deps)];
+  return [createFilesTool(deps), createWriteTool(deps)];
 }

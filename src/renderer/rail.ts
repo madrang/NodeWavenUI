@@ -14,6 +14,8 @@ import { showContextMenu } from './context-menu.js';
 import { requireElement } from './dom.js';
 import { joinPath, listDirectoryNames, statPath } from './file-system.js';
 import { patchCounts, patchWaitsForReview, type PatchStore } from './patch-store.js';
+import type { TaskStatus } from '../shared/tasks.js';
+import type { TaskStore } from './task-store.js';
 
 /** The dependencies the rail works with. */
 export interface RailDeps {
@@ -27,19 +29,23 @@ export interface RailDeps {
   readonly patchStore: PatchStore | null;
   /** Opens the review of one patch in the center workspace. The flag opens it in its own tab. */
   readonly openPatch: (id: number, separateTab: boolean) => void;
+  /** The task store whose records feed the events tab as the third source. Null before it loads. */
+  readonly taskStore: TaskStore | null;
+  /** Opens the task board in the center workspace. */
+  readonly openTaskBoard: () => void;
 }
 
-/** One row of the events feed: one approval request or one patch proposal. */
+/** One row of the events feed: one approval request, one patch proposal, or one task record. */
 interface RailEvent {
-  readonly id: number;
-  readonly kind: 'approval' | 'patch';
+  readonly id: number | string;
+  readonly kind: 'approval' | 'patch' | 'task';
   readonly title: string;
   readonly meta: string;
   readonly time: string;
-  /** The epoch time the row last changed, so both sources sort together. */
+  /** The epoch time the row last changed, so every source sorts together. */
   readonly sortTime: number;
-  state: 'pending' | 'completed';
-  outcome: 'approved' | 'denied' | 'resolved' | 'applied' | 'dismissed' | null;
+  state: 'pending' | 'live' | 'completed';
+  outcome: 'approved' | 'denied' | 'resolved' | 'applied' | 'dismissed' | TaskStatus | null;
   /** True on a patch whose apply failed, so the conflict still waits. */
   conflicted: boolean;
 }
@@ -153,6 +159,9 @@ export class AppRail {
     this.deps.patchStore?.subscribe(() => {
       this.renderEvents();
     });
+    this.deps.taskStore?.subscribe(() => {
+      this.renderEvents();
+    });
     this.syncPending();
     void this.mountFolder(this.fileTree, this.deps.workspacePath, 0);
   }
@@ -173,7 +182,7 @@ export class AppRail {
     const pending = this.deps.gate?.pendingRequests() ?? [];
     const live = new Set(pending.map((request) => request.id));
     for (const event of this.events) {
-      if (event.state === 'pending' && !live.has(event.id)) {
+      if (event.state === 'pending' && typeof event.id === 'number' && !live.has(event.id)) {
         // The request left the queue outside the rail, for example through a rule change.
         event.state = 'completed';
         event.outcome = 'resolved';
@@ -225,6 +234,32 @@ export class AppRail {
     });
   }
 
+  /** Reads the task records of the store as feed rows, the third source of the events tab. A
+   * review row waits for the user; the live states show the work in flight; a settle completes. */
+  private taskRows(): RailEvent[] {
+    const store = this.deps.taskStore;
+    if (!store) {
+      return [];
+    }
+    return store.list().map((task) => {
+      const live = task.status === 'draft' || task.status === 'queued' || task.status === 'running';
+      const waiting = task.status === 'review';
+      const stamp = Date.parse(task.settledAt ?? task.dispatchedAt ?? task.createdAt) || 0;
+      const origin = task.origin === 'user' ? 'user' : `agent · ${task.parentTaskId ? 'child of ' + task.parentTaskId.slice(0, 8) : 'top'}`;
+      return {
+        id: task.id,
+        kind: 'task',
+        title: task.title,
+        meta: `task · ${task.status} · ${origin}`,
+        time: new Date(stamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
+        sortTime: stamp,
+        state: (waiting ? 'pending' : live ? 'live' : 'completed') as RailEvent['state'],
+        outcome: (waiting || live ? null : task.status) as RailEvent['outcome'],
+        conflicted: false,
+      };
+    });
+  }
+
   /** Handles one icon click: switches the section, or minimizes the rail when the section is open. */
   private activate(name: string): void {
     if (!this.minimized && this.activeTab === name) {
@@ -269,24 +304,24 @@ export class AppRail {
   }
 
   /** Re-renders the events feed and the pending count. The waiting events pin to the top, oldest
-   * first, so nothing that needs an answer sinks under the history. The completed events follow,
-   * newest first. */
+   * first, so nothing that needs an answer sinks under the history. The live task rows follow,
+   * then the completed events, newest first. */
   private renderEvents(): void {
     this.eventList.replaceChildren();
-    const merged = [...this.events, ...this.patchRows()].sort((left, right) => {
-      const leftWaiting = left.state === 'pending';
-      const rightWaiting = right.state === 'pending';
-      if (leftWaiting !== rightWaiting) {
-        return leftWaiting ? -1 : 1;
+    const rank = (event: RailEvent): number => (event.state === 'pending' ? 0 : event.state === 'live' ? 1 : 2);
+    const merged = [...this.events, ...this.patchRows(), ...this.taskRows()].sort((left, right) => {
+      const order = rank(left) - rank(right);
+      if (order !== 0) {
+        return order;
       }
-      return leftWaiting ? left.sortTime - right.sortTime : right.sortTime - left.sortTime;
+      return rank(left) === 2 ? right.sortTime - left.sortTime : left.sortTime - right.sortTime;
     });
     const visible = merged.filter((event) =>
       this.filter === 'all' ? true : this.filter === 'pending' ? event.state === 'pending' : event.state === 'completed',
     );
     for (const event of visible) {
       const row = document.createElement('div');
-      const classes = ['rail-event', event.state, 'patch'];
+      const classes = ['rail-event', event.state, event.kind];
       if (event.conflicted) {
         classes.push('conflicted');
       }
@@ -316,6 +351,13 @@ export class AppRail {
           }
         });
       }
+      // Every task row opens the board, which carries the dispatch and the review actions.
+      if (event.kind === 'task') {
+        row.title = 'Open the task board.';
+        row.addEventListener('click', () => {
+          this.deps.openTaskBoard();
+        });
+      }
       // The right click of one event row offers its single deletion: one patch record, or one
       // completed approval row. A waiting approval card answers no deletion, so it opens none.
       row.addEventListener('contextmenu', (menu) => {
@@ -327,7 +369,9 @@ export class AppRail {
               danger: true,
               title: 'Deletes the record and its file. A waiting patch leaves without a notice.',
               run: () => {
-                void this.deps.patchStore?.deletePatch(event.id);
+                if (typeof event.id === 'number') {
+                  void this.deps.patchStore?.deletePatch(event.id);
+                }
               },
             },
           ]);
@@ -358,7 +402,9 @@ export class AppRail {
         }
         row.title = hint;
         row.addEventListener('click', (click) => {
-          this.deps.openPatch(event.id, click.ctrlKey);
+          if (typeof event.id === 'number') {
+            this.deps.openPatch(event.id, click.ctrlKey);
+          }
         });
       }
       this.eventList.append(row);

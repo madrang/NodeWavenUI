@@ -62,6 +62,8 @@ export interface Chat {
   outputTokens?: number;
   /** The reasoning effort of this chat. Unset follows the workspace default. */
   thinkingLevel?: ThinkingLevel;
+  /** The dispatchable task this chat runs, set when a dispatch bound it. */
+  taskId?: string;
 }
 
 /** The one open message editor: the chat it belongs to, the entry index it replaces, and its draft.

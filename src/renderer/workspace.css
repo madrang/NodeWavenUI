@@ -1932,3 +1932,168 @@ permission-request {
 [hidden] {
   display: none !important;
 }
+
+/* A task row keeps the patch row interaction: every row opens the board. */
+.rail-event.task {
+  cursor: pointer;
+}
+
+.rail-event.task:not(.pending):hover {
+  background: var(--surface);
+  border-color: var(--border);
+}
+
+/* The live task rows read muted: they inform, they wait for no answer. */
+.rail-event.live .rail-event-title {
+  color: var(--muted);
+}
+
+/* The task board: the workarea view over the dispatchable task records. */
+.task-board {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.task-board-create {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.task-board-create input,
+.task-board-create textarea {
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.task-board-create textarea {
+  min-height: 44px;
+  resize: vertical;
+}
+
+.task-board-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-board-group h2 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.task-board-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-board-card.review {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.task-board-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.task-board-card-head h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.task-board-status {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.task-board-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.task-board-goal {
+  color: var(--text);
+}
+
+.task-board-result {
+  color: var(--text);
+}
+
+.task-board-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.task-board-row input,
+.task-board-row select {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  max-width: 220px;
+}
+
+.task-board-button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.task-board-button:hover {
+  background: var(--surface);
+}
+
+.task-board-button.primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.task-board-button.danger {
+  color: var(--error);
+}
+
+.task-board-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}

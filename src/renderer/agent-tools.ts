@@ -16,6 +16,7 @@ import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
 import { readHarnessDoc } from './doc-resources.js';
 import { readTextFile } from './file-system.js';
 import { createFileTools, type FileToolDeps } from './file-tools.js';
+import { createTasksTool, type TaskToolDeps } from './task-tools.js';
 import type { PatchStore } from './patch-store.js';
 import type { McpToolResult } from '../shared/window-tools.js';
 import type { McpClientSurface } from './mcp-client-adapter.js';
@@ -97,6 +98,8 @@ export interface AgentToolDeps {
   readonly patchStore: PatchStore;
   /** Reads the known paths of the workspace, which grant or refuse agent access per path. */
   readonly pathRules: () => readonly PathRule[];
+  /** The deps of the tasks tool, when the workspace wires the task store. Without it the tool stays out. */
+  readonly tasks?: TaskToolDeps;
 }
 
 async function readWorkspaceFile(path: string): Promise<string> {
@@ -250,6 +253,10 @@ export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
     pathRules: deps.pathRules,
   };
   tools.push(...createFileTools(fileDeps));
+  // The task records join the list only when main-app wired the store and the session callbacks.
+  if (deps.tasks) {
+    tools.push(createTasksTool(deps.tasks));
+  }
   // The chat agent carries the same window and command tools the MCP host serves, acting as the agent principal.
   for (const definition of [...WINDOW_TOOL_DEFINITIONS, ...COMMAND_TOOL_DEFINITIONS]) {
     tools.push(createWindowTool(definition, deps.source));
