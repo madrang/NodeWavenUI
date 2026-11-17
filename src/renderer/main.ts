@@ -28,7 +28,7 @@ import { StorageShareRegistry } from './storage-shares.js';
 import { WorkspaceSettingsStore } from './settings-store.js';
 import { initializeTheme } from './theme.js';
 import { rememberMainWindowGeometry, restoreMainWindowGeometry } from './window-geometry.js';
-import { forceCloseWindow, resizeWindowResizable } from './window-ops.js';
+import { forceCloseWindow, onWindowEvent, resizeWindowResizable } from './window-ops.js';
 
 /** The size the workspace window takes when no stored geometry restores. */
 const MAIN_WINDOW_SIZE = { width: 760, height: 680 } as const;
@@ -53,6 +53,24 @@ function storageLabelFor(settings: WorkspaceSettings): string {
 async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   const { directory, settings, password } = payload;
   document.body.classList.toggle('framed', payload.frameMode === 'system');
+  // A maximized screen squares its corners, so no rounded gap sits at the screen edges. The
+  // maximize states arrive as events, and the resize check covers the states the boot missed.
+  const setMaximizedCorners = (maximized: boolean): void => {
+    document.body.classList.toggle('maximized', maximized);
+  };
+  const measureMaximized = (): void => {
+    setMaximizedCorners(
+      window.outerWidth >= window.screen.width - 2 && window.outerHeight >= window.screen.availHeight - 2,
+    );
+  };
+  onWindowEvent('maximize', () => {
+    setMaximizedCorners(true);
+  });
+  onWindowEvent('unmaximize', () => {
+    setMaximizedCorners(false);
+  });
+  onWindowEvent('resized', measureMaximized);
+  measureMaximized();
   document.title = `${settings.name} — NodeWavenUI`;
   requireElement<HTMLElement>('#screen-main').hidden = false;
   // The workspace window reopens where the user left it, and falls back to the default size.

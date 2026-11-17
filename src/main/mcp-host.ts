@@ -8,6 +8,7 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { asRecord } from '../shared/records.js';
 import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
+import { createCommandTools } from './command-service.js';
 import { sessions, type WindowCaller } from './session-service.js';
 import { callWorkspace, pushWorkspace } from './workspace-link.js';
 
@@ -143,12 +144,14 @@ export function createTools(): McpToolDescriptor[] {
       return textResult(`Page ${id} navigated to ${url}.`);
     },
   };
-  return WINDOW_TOOL_DEFINITIONS.flatMap((definition) => {
+  const tools = WINDOW_TOOL_DEFINITIONS.flatMap((definition) => {
     const handler = handlers[definition.name];
     return handler ?
       [{ name: definition.name, description: definition.description, inputSchema: definition.inputSchema, handler }] :
       [];
   });
+  // The command tools join the same list, so the host and the chat agent serve one surface set.
+  return [...tools, ...createCommandTools()];
 }
 
 /** Renders one tool result into one summary line for the session tab. */

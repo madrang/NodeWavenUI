@@ -8,6 +8,7 @@
  */
 
 import type { PermissionRequestInfo } from './permission-gate.js';
+import { parseShellCommand } from '../shared/shell-command.js';
 
 /** The resolve detail of the permission-request element. */
 export interface PermissionResolveDetail {
@@ -45,6 +46,46 @@ export class PermissionRequestElement extends HTMLElement {
     );
   }
 
+  /** Builds the parsed display of one command target: the stages stacked, the program of each
+   * stage emphasized, and the raw command one muted line below. The shell stays the authority:
+   * the parse shows what will run, it never rewrites it. */
+  private buildCommandBlock(command: string): HTMLElement {
+    const block = document.createElement('div');
+    block.className = 'permission-request-command';
+    for (const stage of parseShellCommand(command)) {
+      const row = document.createElement('div');
+      row.className = 'permission-command-stage';
+      const program = document.createElement('span');
+      program.className = 'permission-command-program';
+      program.textContent = stage.program.text;
+      row.append(program);
+      for (const arg of stage.args) {
+        const word = document.createElement('span');
+        word.className = arg.expansion ? 'permission-command-arg expansion' : 'permission-command-arg';
+        word.textContent = arg.text;
+        row.append(word);
+      }
+      for (const redirect of stage.redirects) {
+        const chip = document.createElement('span');
+        chip.className = 'permission-command-redirect';
+        chip.textContent = `${redirect.kind} ${redirect.target}`;
+        row.append(chip);
+      }
+      block.append(row);
+      if (stage.operator) {
+        const operator = document.createElement('div');
+        operator.className = 'permission-command-operator';
+        operator.textContent = stage.operator;
+        block.append(operator);
+      }
+    }
+    const raw = document.createElement('div');
+    raw.className = 'permission-command-raw';
+    raw.textContent = command;
+    block.append(raw);
+    return block;
+  }
+
   private render(): void {
     const info = this.info;
     this.replaceChildren();
@@ -78,6 +119,7 @@ export class PermissionRequestElement extends HTMLElement {
     const actions = document.createElement('div');
     actions.className = 'permission-request-actions';
     actions.append(remember, approve, deny);
-    this.append(line, detail, actions);
+    const commandBlock = info.command ? this.buildCommandBlock(info.command) : null;
+    this.append(line, ...(commandBlock ? [commandBlock] : []), detail, actions);
   }
 }

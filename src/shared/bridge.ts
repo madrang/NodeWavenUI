@@ -78,8 +78,9 @@ export interface BridgeWindows {  /** Sizes the window to one content size and l
   close(): Promise<void>;
   /** Closes the window at once, past every close event. */
   forceClose(): Promise<void>;
-  /** Subscribes to one window event: `close`, `moved`, or `resized`. The reply stops the subscription. */
-  on(event: 'close' | 'moved' | 'resized', listener: () => void): () => void;
+  /** Subscribes to one window event: `close`, `moved`, `resized`, `maximize`, or `unmaximize`.
+   * The reply stops the subscription. */
+  on(event: 'close' | 'moved' | 'resized' | 'maximize' | 'unmaximize', listener: () => void): () => void;
   /**
    * Takes the handoff payload of this workspace window. The main process holds it from the open
    * until this call, so the page asks once its boot is ready to receive it.

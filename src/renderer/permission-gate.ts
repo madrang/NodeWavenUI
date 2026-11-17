@@ -19,6 +19,8 @@ export interface PermissionRequestInfo {
   readonly action: string;
   /** The target in human readable form, for example "window https://example.com". */
   readonly target: string;
+  /** The command text of a run request, parsed for display. Null for every other target. */
+  readonly command: string | null;
   /** The detail the caller attached, for example "child window 3 (https://example.com)". */
   readonly detail: string;
   readonly createdAt: number;
@@ -41,6 +43,9 @@ function describeTarget(target: PermissionTarget): string {
   if (target.kind === 'file') {
     return `file ${target.path}`;
   }
+  if (target.kind === 'command') {
+    return `command ${target.command}`;
+  }
   if (target.kind === 'tool') {
     return `tool ${target.name}`;
   }
@@ -53,6 +58,9 @@ function resourceOfTarget(target: PermissionTarget): string {
   }
   if (target.kind === 'file') {
     return 'file';
+  }
+  if (target.kind === 'command') {
+    return 'command';
   }
   if (target.kind === 'tool') {
     return 'tool';
@@ -112,6 +120,7 @@ export class PermissionGate {
         principal,
         action,
         target: targetText,
+        command: target.kind === 'command' ? target.command : null,
         detail,
         createdAt: Date.now(),
         source,

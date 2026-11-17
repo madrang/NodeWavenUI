@@ -10,6 +10,7 @@
  */
 
 import type { PermissionGate, PermissionRequestInfo } from './permission-gate.js';
+import { showContextMenu } from './context-menu.js';
 import { requireElement } from './dom.js';
 import { joinPath, listDirectoryNames, statPath } from './file-system.js';
 import { patchCounts, patchWaitsForReview, type PatchStore } from './patch-store.js';
@@ -141,6 +142,9 @@ export class AppRail {
           this.events.splice(index, 1);
         }
       }
+      // One clear serves both sources: the completed approvals drop from the feed, and the
+      // resolved patch records delete from the workspace folder.
+      void this.deps.patchStore?.clearResolved();
       this.renderEvents();
     });
     this.deps.gate?.subscribe(() => {
@@ -312,6 +316,39 @@ export class AppRail {
           }
         });
       }
+      // The right click of one event row offers its single deletion: one patch record, or one
+      // completed approval row. A waiting approval card answers no deletion, so it opens none.
+      row.addEventListener('contextmenu', (menu) => {
+        menu.preventDefault();
+        if (event.kind === 'patch') {
+          showContextMenu(menu.clientX, menu.clientY, [
+            {
+              label: 'Delete patch record',
+              danger: true,
+              title: 'Deletes the record and its file. A waiting patch leaves without a notice.',
+              run: () => {
+                void this.deps.patchStore?.deletePatch(event.id);
+              },
+            },
+          ]);
+          return;
+        }
+        if (event.state === 'completed') {
+          showContextMenu(menu.clientX, menu.clientY, [
+            {
+              label: 'Delete event',
+              danger: true,
+              run: () => {
+                const index = this.events.findIndex((candidate) => candidate.id === event.id && candidate.kind === 'approval');
+                if (index >= 0) {
+                  this.events.splice(index, 1);
+                  this.renderEvents();
+                }
+              },
+            },
+          ]);
+        }
+      });
       if (event.kind === 'patch') {
         let hint = 'Open the read-only review of the resolved patch.';
         if (event.state === 'pending') {

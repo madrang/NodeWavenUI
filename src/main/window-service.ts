@@ -124,7 +124,10 @@ export function registerWindowService(): void {
 
   ipcMain.on(`${CHANNEL}:windows:subscribe`, (event, name: unknown) => {
     const win = windowOf(event.sender);
-    if (!win || (name !== 'close' && name !== 'moved' && name !== 'resized')) {
+    if (
+      !win ||
+      (name !== 'close' && name !== 'moved' && name !== 'resized' && name !== 'maximize' && name !== 'unmaximize')
+    ) {
       return;
     }
     const push = (): void => {
@@ -153,6 +156,22 @@ export function registerWindowService(): void {
       });
       event.sender.once('destroyed', () => {
         win.removeAllListeners('moved');
+      });
+      return;
+    }
+    if (name === 'maximize' || name === 'unmaximize') {
+      // A restore fires no resize on every platform, so the two states push on their own events.
+      const pushState = (): void => {
+        push();
+      };
+      if (name === 'maximize') {
+        win.on('maximize', pushState);
+      } else {
+        win.on('unmaximize', pushState);
+      }
+      event.sender.once('destroyed', () => {
+        win.removeAllListeners('maximize');
+        win.removeAllListeners('unmaximize');
       });
       return;
     }
@@ -185,6 +204,9 @@ export function registerWindowService(): void {
       frame,
       title: 'NodeWavenUI',
       icon: join(APP_ROOT, 'icons', 'icon-256.png'),
+      // The borderless workspace owns its corners: the window stays transparent and square, the
+      // page rounds its screen, and a maximized screen squares so no gap sits at the edges.
+      ...(!frame ? { transparent: true, roundedCorners: false } : {}),
       webPreferences: {
         preload: join(APP_ROOT, 'src', 'preload', 'app-preload.cjs'),
         contextIsolation: true,

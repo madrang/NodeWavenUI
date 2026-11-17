@@ -311,6 +311,17 @@ legend {
   color: var(--text);
 }
 
+/* The borderless workspace rounds its own screen over the transparent window. The framed mode
+   and the maximized state square it: the frame or the screen edge meets the corner. */
+body:not(.framed) #screen-main {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+body.maximized #screen-main {
+  border-radius: 0;
+}
+
 #app-header {
   display: flex;
   align-items: center;
@@ -991,6 +1002,43 @@ body.resizing-column {
 
 .token.italic {
   font-style: italic;
+}
+
+/* The reusable context menu: one floating action list at the pointer, above every surface. */
+.context-menu {
+  position: fixed;
+  z-index: 90;
+  min-width: 160px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  box-shadow: 0 8px 24px color-mix(in srgb, #000000 35%, transparent);
+}
+
+.context-menu-item {
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+}
+
+.context-menu-item:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.context-menu-item.danger {
+  color: var(--error);
+}
+
+.context-menu-item.danger:hover {
+  background: color-mix(in srgb, var(--error) 16%, transparent);
 }
 
 /* The review view of one patch: the facts, the answers, and the colored diff lines. */
@@ -2051,6 +2099,61 @@ permission-request {
   margin: 0 0 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+/* The parsed command of a run card: one row per stage, the operator between stages, and the raw
+   command one muted line below. The shell stays the authority: the parse only shows. */
+.permission-request-command {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.permission-command-stage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.permission-command-program {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.permission-command-arg {
+  color: var(--muted);
+}
+
+.permission-command-arg.expansion {
+  color: var(--chart-3);
+}
+
+.permission-command-redirect {
+  color: var(--chart-6);
+}
+
+.permission-command-operator {
+  color: var(--accent);
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding-left: 8px;
+}
+
+.permission-command-raw {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  color: var(--muted);
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 11px;
+  word-break: break-all;
 }
 
 .permission-request-actions {

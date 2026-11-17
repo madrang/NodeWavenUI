@@ -1100,6 +1100,9 @@ export class MainApp implements McpSessionSink {
     if (name === 'files' || name === 'write' || name === 'task') {
       return 'File tools';
     }
+    if (name === 'run' || name === 'process_output' || name === 'process_stop') {
+      return 'Command tools';
+    }
     const separator = name.indexOf('.');
     if (separator > 0) {
       const prefix = name.slice(0, separator);

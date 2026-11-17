@@ -89,11 +89,14 @@ export async function moveWindow(x: number, y: number): Promise<void> {
 /**
  * Subscribes to one window event.
  *
- * @param event The event: `close`, `moved`, or `resized`.
+ * @param event The event: `close`, `moved`, `resized`, `maximize`, or `unmaximize`.
  * @param listener The listener the event calls.
  * @returns The unsubscribe function, or a no-op outside an app window.
  */
-export function onWindowEvent(event: 'close' | 'moved' | 'resized', listener: () => void): () => void {
+export function onWindowEvent(
+  event: 'close' | 'moved' | 'resized' | 'maximize' | 'unmaximize',
+  listener: () => void,
+): () => void {
   const windows = bridge()?.windows;
   if (!windows) {
     return () => {};

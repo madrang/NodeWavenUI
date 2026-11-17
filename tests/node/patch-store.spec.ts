@@ -29,8 +29,8 @@ function installBridge(): void {
       makeDirectory: async (path: string) => {
         mkdirSync(path, { recursive: true });
       },
-      remove: async () => {
-        throw new Error('not used');
+      remove: async (path: string) => {
+        rmSync(path, { recursive: true, force: true });
       },
       rename: async () => {
         throw new Error('not used');
@@ -177,5 +177,38 @@ describe('the patch store', () => {
     const reopened = new PatchStore(root);
     await reopened.load();
     expect(reopened.openTaskTitle(7)).to.equal('Persisted task');
+  });
+
+  it('deletes one record alone, whatever its state', async () => {
+    const waiting = await store.propose(7, join(root, 'waiting.md'), '', 'waits\n');
+    const applied = await store.propose(7, join(root, 'applied.md'), '', 'content\n');
+    await store.apply(applied.id);
+    await store.deletePatch(waiting.id);
+    expect(store.listPatches().map((record) => record.path.split('/').at(-1))).to.deep.equal(['applied.md']);
+    expect(existsSync(join(root, 'patches', `patch-${waiting.id}.json`))).to.equal(false);
+    expect(existsSync(join(root, 'patches', `patch-${applied.id}.json`))).to.equal(true);
+    // A waiting record leaves without any notice to the agent.
+    expect(notices).to.have.lengthOf(0);
+  });
+
+  it('clears the resolved records and keeps the waiting ones', async () => {
+    await store.setTask(7, 'Old task', null, false);
+    const applied = await store.propose(7, join(root, 'applied.md'), '', 'content\n');
+    await store.apply(applied.id);
+    const denied = await store.propose(7, join(root, 'denied.md'), '', 'no\n');
+    await store.deny(denied.id);
+    await store.setTask(7, 'Open task', null, false);
+    const waiting = await store.propose(7, join(root, 'waiting.md'), '', 'waits\n');
+    await store.propose(7, join(root, 'open-task.md'), '', 'rides\n');
+    await store.clearResolved();
+    const states = store.listPatches().map((record) => [record.path.split('/').at(-1), record.state]);
+    expect(states).to.deep.equal([
+      ['open-task.md', 'pending'],
+      ['waiting.md', 'pending'],
+    ]);
+    expect(existsSync(join(root, 'patches', `patch-${applied.id}.json`))).to.equal(false);
+    expect(existsSync(join(root, 'patches', `patch-${waiting.id}.json`))).to.equal(true);
+    // The closed task of the cleared records drops, the open task stays for the tab name.
+    expect(store.listTasks().map((task) => task.title)).to.deep.equal(['Open task']);
   });
 });

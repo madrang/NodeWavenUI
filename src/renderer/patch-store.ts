@@ -7,7 +7,7 @@
  */
 
 import { applyPatch, createPatch } from './libs/diff/index.js';
-import { joinPath, listDirectoryNames, makeDirectory, readTextFile, statPath, writeTextFile } from './file-system.js';
+import { joinPath, listDirectoryNames, makeDirectory, readTextFile, removePath, statPath, writeTextFile } from './file-system.js';
 
 /** The states of one patch record. */
 export type PatchState = 'pending' | 'applied' | 'denied' | 'dismissed' | 'conflicted';
@@ -410,6 +410,49 @@ export class PatchStore {
     record.state = 'dismissed';
     record.resolvedAt = new Date().toISOString();
     await this.writePatch(record);
+    this.emit();
+  }
+
+  /**
+   * Deletes every resolved patch record, from memory and from the workspace folder, and drops
+   * the closed tasks no remaining record names. Records that wait for review stay.
+   */
+  async clearResolved(): Promise<void> {
+    const removed: number[] = [];
+    for (const record of this.patches.values()) {
+      if (!patchWaitsForReview(record.state)) {
+        removed.push(record.id);
+      }
+    }
+    for (const id of removed) {
+      this.patches.delete(id);
+      await removePath(joinPath(this.root, `patch-${id}.json`));
+    }
+    const stillReferenced = new Set(
+      [...this.patches.values()].map((record) => record.taskId).filter((taskId): taskId is number => taskId !== null),
+    );
+    for (const task of this.tasks.values()) {
+      if (task.closedAt !== null && !stillReferenced.has(task.id)) {
+        this.tasks.delete(task.id);
+        await removePath(joinPath(this.root, `task-${task.id}.json`));
+      }
+    }
+    this.emit();
+  }
+
+  /**
+   * Deletes one patch record, whatever its state, from memory and from the workspace folder. A
+   * waiting record leaves without a notice: the review drops, the file never changes.
+   *
+   * @param id The patch record id.
+   */
+  async deletePatch(id: number): Promise<void> {
+    const record = this.patches.get(id);
+    if (!record) {
+      return;
+    }
+    this.patches.delete(id);
+    await removePath(joinPath(this.root, `patch-${id}.json`));
     this.emit();
   }
 

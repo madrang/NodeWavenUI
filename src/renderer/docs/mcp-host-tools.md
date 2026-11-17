@@ -14,6 +14,9 @@ Every request is one JSON-RPC POST to the endpoint with the bearer token. The se
 | `console_entries` | `pageId` | Reads the captured console lines since attach or the last clear. |
 | `clear_console` | `pageId` | Clears the captured console. |
 | `navigate` | `pageId`, `url` | Loads an address in the page. `data:` URLs are refused. |
+| `run` | `command`, `cwd?`, `timeoutMs?`, `background?` | Runs one command through the system shell (`bash`, or `sh` without it) and answers stdout, stderr, and the exit code, capped at 64 KB. The default `cwd` is the app root and a relative `cwd` joins it. The shell runs the command as given: the permission card parses the stages for display, it never rewrites them. A foreground run stops at `timeoutMs` (default 120000) and answers the partial output. With `background` true the call answers its process id at once and keeps running. |
+| `process_output` | `processId`, `waitMs?` | Reads the output of one background process since its last read. `waitMs` blocks until more output arrives or the wait ends. An exited process answers its exit code with the remaining output. |
+| `process_stop` | `processId` | Stops one background process. Its captured output stays readable until drained. |
 
 # Resources
 

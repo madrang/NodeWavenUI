@@ -174,6 +174,7 @@ export type PermissionTarget =
   | { readonly kind: 'window'; readonly url: string } |
   { readonly kind: 'storage'; readonly storageId: string; readonly key: string } |
   { readonly kind: 'file'; readonly path: string } |
+  { readonly kind: 'command'; readonly command: string } |
   { readonly kind: 'tool'; readonly name: string };
 
 /** The window actions that only read. */
@@ -222,6 +223,10 @@ function isWriteAction(target: PermissionTarget, action: string): boolean {
   if (target.kind === 'file') {
     return action !== 'read';
   }
+  if (target.kind === 'command') {
+    // A command run may change anything, so every run counts as a write: a readOnly allow rule denies it.
+    return true;
+  }
   if (target.kind === 'tool') {
     // A tool call may change anything, so every call counts as a write: a readOnly allow rule denies it.
     return true;
@@ -257,6 +262,12 @@ function ruleMatchesTarget(
     }
     return rule.pathPrefix === undefined || target.path.startsWith(rule.pathPrefix);
   }
+  if (target.kind === 'command') {
+    if (rule.resource !== 'command') {
+      return false;
+    }
+    return rule.pathPrefix === undefined || target.command.startsWith(rule.pathPrefix);
+  }
   if (target.kind === 'tool') {
     if (rule.resource !== 'tool') {
       return false;
@@ -273,8 +284,8 @@ function ruleMatchesTarget(
 /**
  * Runs the decision pipeline for one guarded call.
  * The rules decide first, then the defaults apply: `user` and `plugin` allow, `agent` and `mcp` allow window reads
- * and window detach, ask for other window actions, ask for file reads and file patch proposals, ask for tool calls,
- * and deny storage.
+ * and window detach, ask for other window actions, ask for file reads, file patch proposals, and command runs, ask
+ * for tool calls, and deny storage.
  * A preauthorized call turns the ask defaults into allow, so one call never prompts twice. Rules and deny
  * defaults still decide, so a deny rule below a higher-level allow keeps its block.
  * Storage sharing for the chat agent runs through the storage sharing settings, not through this pipeline.
@@ -315,6 +326,9 @@ export function decidePermission(
     return preauthorized ? 'allow' : 'ask';
   }
   if (target.kind === 'file' && (action === 'read' || action === 'propose')) {
+    return preauthorized ? 'allow' : 'ask';
+  }
+  if (target.kind === 'command') {
     return preauthorized ? 'allow' : 'ask';
   }
   if (target.kind === 'tool') {

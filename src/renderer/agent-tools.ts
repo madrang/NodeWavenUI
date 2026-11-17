@@ -11,6 +11,7 @@ import type { PermissionRule, PrincipalKind, PermissionTarget } from '../shared/
 import { CHAT_AGENT_SOURCE } from '../shared/permissions.js';
 import { readBridge } from '../shared/bridge.js';
 import type { PathRule } from '../shared/permissions.js';
+import { COMMAND_TOOL_DEFINITIONS } from '../shared/command-tool.js';
 import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
 import { readHarnessDoc } from './doc-resources.js';
 import { readTextFile } from './file-system.js';
@@ -249,8 +250,8 @@ export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
     pathRules: deps.pathRules,
   };
   tools.push(...createFileTools(fileDeps));
-  // The chat agent carries the same window tools the MCP host serves, acting as the agent principal.
-  for (const definition of WINDOW_TOOL_DEFINITIONS) {
+  // The chat agent carries the same window and command tools the MCP host serves, acting as the agent principal.
+  for (const definition of [...WINDOW_TOOL_DEFINITIONS, ...COMMAND_TOOL_DEFINITIONS]) {
     tools.push(createWindowTool(definition, deps.source));
   }
   for (const native of deps.mcpClients.nativeTools()) {
