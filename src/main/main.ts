@@ -59,7 +59,7 @@ function runSmokeProbe(win: BrowserWindow): void {
   }
   const expressions: Record<string, string> = {
     launcher: '(() => ({ screen: !!document.querySelector(\'#screen-launcher\'), button: document.querySelector(\'#select-directory\')?.textContent ?? null, theme: document.documentElement.dataset.theme ?? null }))()',
-    assets: '(async () => ({ index: await fetch(\'index.js\').then((r) => r.status + \' \' + (r.headers.get(\'content-type\') ?? \'no-type\')).catch((e) => \'fetch-error \' + String(e)), css: await fetch(\'styles.css\').then((r) => r.status + \' \' + (r.headers.get(\'content-type\') ?? \'no-type\')).catch((e) => \'fetch-error \' + String(e)) }))()',
+    assets: '(async () => ({ index: await fetch(\'index.js\').then((r) => r.status + \' \' + (r.headers.get(\'content-type\') ?? \'no-type\')).catch((e) => \'fetch-error \' + String(e)), css: await fetch(\'base.css\').then((r) => r.status + \' \' + (r.headers.get(\'content-type\') ?? \'no-type\')).catch((e) => \'fetch-error \' + String(e)) }))()',
     bridge: '(() => { console.info(\'[probe] relay-test\'); const bridge = globalThis.nodewavenui; if (!bridge) { return Promise.resolve(\'bridge missing\'); } return Promise.all([bridge.app.version(), bridge.app.appRoot(), bridge.fs.list(\'.\').catch((e) => \'list:\' + String(e))]).then((values) => ({ version: values[0], root: values[1], list: values[2] })); })()',
   };
   const expression = expressions[probe];

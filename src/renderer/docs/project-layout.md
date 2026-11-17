@@ -17,7 +17,11 @@ src/
     main.html              the workspace window (settings and chat panes)
     graphs.html            the Graphs window, an SVG drawing surface
     editor.html            the Editor window, a plain-text editor on the EditContext API
-    styles.css             the app styles; themes/ holds one palette file per theme
+    base.css               shared primitives of every screen: resets, metrics, controls, status text
+    launcher.css           the launcher and wizard chrome (fixed palette, no theme)
+    workspace.css          the workspace screen: top bar, panes, rail, chat column, frame views
+    settings.css           the settings pane: known paths, endpoints, plugin folders, provider cards
+                           themes/ holds one palette file per theme
     docs/                  harness documents served to agents as MCP resources
     index.ts               launcher window: folder selection, unlock, wizard
     main-window.ts         opens the workspace window with the stored frame mode
@@ -30,7 +34,9 @@ src/
     editor.ts              the Editor window page and the nodewavenEditor page global
     agent-tools.ts         the chat agent tool registry (built-ins, page tools over the bridge, native)
     mcp-client-adapter.ts  the MCP client surface over the bridge (states cached, calls forwarded)
-    main-app.ts            tabs, settings panes, chat, permission cards
+    main-app.ts            tabs, chat turns, streaming, permission cards; holds the Chat model consumers
+    settings.ts            the settings pane of the workspace: providers, endpoints, shares, paths, preferences
+    chat-render.ts         the chat model and the message list: bubbles, tool cards, agent turn rails
     permission-gate.ts     the permission pipeline and pending requests
     settings-store.ts      the per-workspace settings store
     chat-sessions.ts       chat session persistence: one file per chat, sealed with a storage-held chat key on password workspaces

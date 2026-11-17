@@ -1,0 +1,184 @@
+/* The launcher and the wizard screens. They show before the workspace loads, so they carry a fixed
+   sober dark-gray palette instead of the theme palette. */
+
+/* The launcher and the wizard show before the workspace loads, so they carry a fixed sober dark-gray palette. */
+#screen-launcher,
+#screen-wizard {
+  --bg: #26282d;
+  --text: #d6d9de;
+  --muted: #8b919a;
+  --surface: #2e3137;
+  --field: #1b1e22;
+  --border: #3a3f46;
+  --accent: #4f8cff;
+  --on-accent: #ffffff;
+  --accent-strong: #386ede;
+  --error: #ff7a7a;
+}
+
+h1 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0.3px;
+}
+
+.subtitle {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The screen is flush with the window edges. The transparent window rounds the corners, and the screen clips its children to that radius. */
+.screen-launcher {
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* The drag strip: a full-width surface band, flush with the top edge. */
+.launcher-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 5px 6px 5px 12px;
+  -webkit-app-region: drag;
+}
+
+.launcher-header h1 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.icon-button {
+  -webkit-app-region: no-drag;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  color: var(--text);
+}
+
+.launcher-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 8px 12px 6px;
+}
+
+.launcher-tagline {
+  margin: 0;
+}
+
+/* The two actions fill the bottom edge, flush left, right, and below. */
+.launcher-actions {
+  display: flex;
+}
+
+/* The close action carries a dark red tint. Each button rounds only its outer bottom corner. */
+.corner-button {
+  height: 42px;
+  border: none;
+  border-radius: 0 0 0 12px;
+  background: #3b2427;
+  color: #d69a9a;
+  font-size: 13px;
+  padding: 0 16px;
+  cursor: pointer;
+}
+
+.corner-button:hover {
+  background: #4c2e31;
+  color: #e8b4b4;
+}
+
+.corner-button.primary {
+  border-radius: 0 0 12px 0;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+/* Only the launcher stretches its primary corner button across the bar. */
+.launcher-actions .corner-button.primary {
+  flex: 1;
+}
+
+.corner-button.primary:hover {
+  background: var(--accent-strong);
+  filter: brightness(1.1);
+}
+
+.unlock {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.unlock input {
+  flex: 1;
+}
+
+/* Wizard screen: the header and the footer stay fixed, the form scrolls between them. */
+#screen-wizard {
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.wizard-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 6px 8px 10px;
+  -webkit-app-region: drag;
+}
+
+.wizard-header h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.wizard-header .status {
+  margin-top: 2px;
+}
+
+#wizard-form {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+}
+
+/* The wizard bottom bar: corner buttons with a gap between them. */
+.wizard-footer {
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+}
+
+.choice {
+  display: block;
+  margin: 4px 0;
+}
+
+.choice input {
+  width: auto;
+  margin-right: 6px;
+}

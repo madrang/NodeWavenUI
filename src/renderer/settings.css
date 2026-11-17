@@ -1,0 +1,317 @@
+/* The settings pane of the workspace: known paths, MCP endpoints, plugin folders, and provider
+   cards. The palette lives in themes/*.css. */
+
+/* The MCP host token row of the settings pane: one readonly token field with its controls. */
+.token-row {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+}
+
+.token-row input {
+  flex: 1;
+}
+
+/* One known path row of the settings: the path, its mode, and the remove action. */
+.known-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+
+.known-path-label {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.known-path select,
+#known-path-add select,
+#known-path-add input {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 8px;
+}
+
+#known-path-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#known-path-add input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The group head of one tool origin in the agent tools list. */
+.agent-tool-group {
+  margin: 10px 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* The MCP endpoint cards of the settings pane. */
+.mcp-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 8px 10px;
+  margin: 0 0 8px;
+}
+
+.mcp-endpoint-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mcp-endpoint-transport {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-endpoint-state {
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.mcp-endpoint-state.connected {
+  color: var(--accent);
+}
+
+.mcp-endpoint-state.error {
+  color: var(--error);
+}
+
+.mcp-endpoint-mode {
+  width: auto;
+}
+
+/* The plugin folder rows wrap, so the digest lines sit under the label line. */
+#plugin-folder-list .mcp-endpoint {
+  flex-wrap: wrap;
+}
+
+/* One SHA-256 line under a plugin folder row. A reset row carries the old and the new digest. */
+.plugin-folder-digest {
+  flex-basis: 100%;
+  font: 11px/1.4 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* The provider cards of the settings pane: one collapsible disclosure per account.
+   The summary row is the closed state; the body holds the fields and opens on click. */
+.provider-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+  margin: 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-card > summary,
+.provider-add > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.provider-card > summary::-webkit-details-marker,
+.provider-add > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The disclosure chevron turns from the closed to the open direction. */
+.provider-card > summary::before,
+.provider-add > summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 11px;
+  flex: none;
+}
+
+.provider-card[open] > summary::before,
+.provider-add[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* The title of the card is the name editor: it reads as a title and reveals its field on hover or focus. */
+.provider-title-input {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--text);
+  background: none;
+  border-color: transparent;
+  padding: 1px 4px;
+  text-overflow: ellipsis;
+}
+
+.provider-title-input:hover {
+  border-color: var(--border);
+}
+
+.provider-title-input:focus {
+  border-color: var(--accent);
+  background: var(--field);
+  outline: none;
+}
+
+/* The dirty dot marks a card with edits that the disabled Save has not stored yet. */
+.provider-card.dirty .provider-card-meta::before {
+  content: '• ';
+  color: var(--accent);
+}
+
+/* One labeled input of the card body. */
+.provider-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.provider-card-meta {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.provider-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* The add form: the same disclosure shape as a provider card, around the static form. */
+.provider-add {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 10px 12px;
+  margin: 14px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-add > summary {
+  font-weight: 600;
+}
+
+/* Two-color toggle pills: latched fills with the accent, free stays a quiet outline. */
+.model-vision-toggle,
+.model-use,
+.provider-default-toggle {
+  padding: 2px 10px;
+  font-size: 11px;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.model-vision-toggle[aria-pressed='false']:hover,
+.model-use[aria-pressed='false']:hover,
+.provider-default-toggle[aria-pressed='false']:hover {
+  color: var(--text);
+}
+
+.model-vision-toggle[aria-pressed='true'],
+.model-use[aria-pressed='true'],
+.provider-default-toggle[aria-pressed='true'] {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+/* Fixed pill widths keep the Vision and Use columns aligned across the model rows. */
+.model-vision-toggle,
+.model-use {
+  min-width: 64px;
+}
+
+/* The provider default pill sits at the end of the collapsed head row and is the default indicator. */
+.provider-default-toggle {
+  margin-left: auto;
+}
+
+/* Remove actions carry a red tint: quiet at rest, red on hover. */
+.provider-remove {
+  color: color-mix(in srgb, var(--error) 55%, var(--muted));
+  border-color: color-mix(in srgb, var(--error) 30%, var(--border));
+}
+
+.provider-remove:hover {
+  background: color-mix(in srgb, var(--error) 16%, var(--surface));
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 60%, var(--border));
+}
+
+.provider-model .provider-remove {
+  padding: 2px 9px;
+}
+
+.provider-models {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.provider-model {
+  display: grid;
+  /* The columns fix the pill lanes, so the Vision and Use columns stay aligned across rows. */
+  grid-template-columns: minmax(0, 1fr) 64px 64px 26px;
+  gap: 8px;
+  align-items: center;
+}
+
+.provider-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-add-model {
+  display: grid;
+  /* The same lanes as the model rows, with the last column spanning Use and ×, so the Vision pill lands in the Vision lane. */
+  grid-template-columns: minmax(0, 1fr) 64px 98px;
+  gap: 8px;
+  align-items: center;
+}

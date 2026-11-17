@@ -1,38 +1,22 @@
 /**
  * The main app screen: a tab bar with a fixed settings tab first, then the chat tabs.
- * The settings pane shows the workspace facts and edits the provider settings.
+ * The settings pane lives in `settings.ts` and mounts on the gear of this screen.
  * A chat pane sends its conversation through the configured provider and shows the reply.
  */
 
 import { OpenAiInferenceProvider } from '../providers/openai.js';
-import type { ChatImage, ChatMessage, CompletionDelta, ThinkingLevel, ToolCall } from '../providers/provider.js';
+import type { ChatImage, ChatMessage, CompletionDelta, ToolCall } from '../providers/provider.js';
 import type { StorageSetup, SystemPromptSetup } from './plugins.js';
-import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
-import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { closeWindow, minimizeWindow, toggleDevToolsWindow, toggleMaximizeWindow } from './window-ops.js';
-import {
-  chatAgentSource,
-  chatIdOfAgentSource,
-  isChatAgentSource,
-  PATH_RULE_MODES,
-  type PathRule,
-  type PathRuleMode,
-} from '../shared/permissions.js';
+import { chatAgentSource, chatIdOfAgentSource, isChatAgentSource } from '../shared/permissions.js';
 import { AppRail } from './rail.js';
 import { installColumnResizers } from './chat-resizer.js';
 import { getWorkarea } from './workarea.js';
-import type {
-  ModelEntry,
-  ProviderAccount,
-  ProviderRegistry,
-  WorkspaceSettings,
-} from '../shared/workspace.js';
-import { emptyProviderRegistry } from '../shared/workspace.js';
-import { presetOfAccount, PROVIDER_PRESETS } from '../shared/provider-presets/index.js';
+import type { ProviderAccount, WorkspaceSettings } from '../shared/workspace.js';
+import { presetOfAccount } from '../shared/provider-presets/index.js';
 import { readBridge } from '../shared/bridge.js';
 import {
   agentToolDefinition,
-  agentToolRule,
   availableAgentTools,
   buildAgentTools,
   CHAT_AGENT_SOURCE,
@@ -40,7 +24,7 @@ import {
   type AgentToolDeps,
   type AgentToolOutput,
 } from './agent-tools.js';
-import { type ChatSessionStore, type ChatEntry, type StoredChatSession, type StoredSystemPrompt } from './chat-sessions.js';
+import { type ChatSessionStore, type ChatEntry, type StoredChatSession } from './chat-sessions.js';
 import { JsonViewerElement } from './json-viewer-element.js';
 import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from '../shared/window-tools.js';
@@ -49,21 +33,13 @@ import type { PermissionGate } from './permission-gate.js';
 import { PatchStore, type PatchNotice } from './patch-store.js';
 import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
-import { PluginFieldGroup } from './plugin-fields.js';
-import { appendCodeRuns, renderMarkdown } from './text/render.js';
 import { requireElement } from './dom.js';
+import { ChatRenderer, type Chat, type ChatEditState } from './chat-render.js';
 import type { WorkspaceSettingsStore } from './settings-store.js';
-import {
-  EMPTY_SHARED_STORAGES,
-  type StorageShareRegistry,
-  type SharedStoragesRecord,
-  type StorageAccess,
-  type SharedStorageEntry,
-} from './storage-shares.js';
-import { applyTheme, resolveThemeId, THEMES } from './theme.js';
-import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
+import type { StorageShareRegistry } from './storage-shares.js';
 import type { PluginFolderController } from './plugin-folders.js';
 import { defaultSystemPromptSetup, NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
+import { effectiveDefaultAccount, effectiveDefaultModel, modelDisplayName, modelVision, SettingsView } from './settings.js';
 
 /** The longest edge of a pasted or dropped image, in pixels. Bigger pictures scale down. */
 const MAX_IMAGE_EDGE = 1280;
@@ -77,14 +53,6 @@ const CHAT_PIN_THRESHOLD = 8;
 /** How long the collapsed reasoning tail stays after the last reasoning delta, in milliseconds. */
 const REASONING_TAIL_TIMEOUT = 1200;
 
-/** The icon strokes of the message action zone, drawn on a 16 by 16 grid. */
-const ICON_COPY = 'M6 6h8v8H6z M12 3H2v9';
-const ICON_EDIT = 'M2 14h3L14 5l-3-3L2 11z';
-const ICON_FORK = 'M4 14V2 M4 7c4 0 8-2 8-5 M4 9c4 0 8 2 8 5';
-const ICON_RETRY = 'M13 8a5 5 0 11-1.5-3.5 M12.5 1.5v3h3';
-/** The icon strokes of the streaming status line, drawn on a 16 by 16 grid. */
-const ICON_CONNECTING = 'M13 8a5 5 0 11-1.5-3.5';
-const ICON_ERROR = 'M4 4l8 8 M12 4l-8 8';
 
 /** Reads the trailing words of a reasoning text, for the collapsed activity tail. */
 function reasoningTailOf(text: string): string {
@@ -97,33 +65,12 @@ function reasoningTailOf(text: string): string {
   return firstSpace >= 0 ? cut.slice(firstSpace + 1) : cut;
 }
 
-/** Reads the one or two words that title an error, from the message the provider produced. */
-function errorLabelOf(message: string): string {
-  if (message.includes('could not reach')) {
-    return 'Unreachable';
-  }
-  const status = /answered HTTP (\d+)/.exec(message);
-  if (status?.[1]) {
-    return `HTTP ${status[1]}`;
-  }
-  return 'Failed';
-}
-
 /** Reads the image files out of one clipboard or drag file list. */
 function imageFilesOf(files: FileList | null): readonly File[] {
   if (!files) {
     return [];
   }
   return Array.from(files).filter((file) => file.type.startsWith('image/'));
-}
-
-/** Splits one command line into the executable and its arguments, honoring double-quoted pieces. */
-function splitCommandLine(line: string): { readonly command: string; readonly args: readonly string[] } {
-  const parts = line.trim().match(/"([^"]*)"|(\S+)/g) ?? [];
-  const pieces = parts.map((part) =>
-    part.length >= 2 && part.startsWith('"') && part.endsWith('"') ? part.slice(1, -1) : part,
-  );
-  return { command: pieces[0] ?? '', args: pieces.slice(1) };
 }
 
 /** Formats one token count for the status bar: plain below 1000, one decimal in k above. */
@@ -135,76 +82,20 @@ function formatTokenCount(count: number | undefined): string {
   return count < 1000 ? String(count) : `${(count / 1000).toFixed(1)}k`;
 }
 
-/** One chat tab with its conversation. */
-interface Chat {
-  readonly id: number;
-  /** The session file id: one uuid per chat, stable across launches. */
-  readonly fileId: string;
-  readonly title: string;
-  /** ISO date and time of the chat creation. It fixes the restore order. */
-  readonly createdAt: string;
-  readonly entries: ChatEntry[];
-  /** True when this tab is the one MCP host tab that logs every session. */
-  readonly isMcpHostLog?: boolean;
-  /** True while the tab sits in the background and took traffic the user has not seen. */
-  unread?: boolean;
-  /** The system prompt source the menu holds while the chat has sent no message. */
-  pendingSystemPromptId?: string;
-  /** The system prompt the chat bound on its first send. It stays for the life of the chat. */
-  boundSystemPrompt?: StoredSystemPrompt;
-  /** The provider selection the status bar holds while the chat has sent no message. */
-  pendingProviderId?: string;
-  pendingModel?: string;
-  /** The provider and model the chat bound on its first send. They stay for the life of the chat. */
-  boundProviderId?: string;
-  boundModel?: string;
-  /** The context tokens of the last request, when the provider reported usage. */
-  contextTokens?: number;
-  /** The output tokens of the whole chat, summed over the requests the provider reported. */
-  outputTokens?: number;
-  /** The reasoning effort of this chat. Unset follows the workspace default. */
-  thinkingLevel?: ThinkingLevel;
-}
 
-/** One render slot: an entry with its list index, the key of the reasoning open-state. */
-interface EntrySlot {
-  readonly index: number;
-  readonly entry: ChatEntry;
-}
 
-/** One render group of the message list: one entry, an MCP request with its reply, or one agent
- * turn: the tool calls of an assistant reply with the tool results that answer them. */
-type MessageGroup =
-  | { readonly kind: 'single'; readonly slot: EntrySlot } |
-  { readonly kind: 'pair'; readonly request: EntrySlot; readonly reply: EntrySlot | null } |
-  { readonly kind: 'agent'; readonly request: EntrySlot; readonly replies: readonly EntrySlot[] };
-
-/** Drives the main app screen. */
-/** The settings label of each path rule mode. */
-const PATH_RULE_LABELS: Readonly<Record<PathRuleMode, string>> = {
-  allow: 'Free read and write',
-  'ask-write': 'Ask on write',
-  ask: 'Ask on read and write',
-  deny: 'Deny',
-};
-
+/** Drives the main app screen. The chat model and the message list live in `chat-render.ts`. */
 export class MainApp implements McpSessionSink {
   private readonly settings: WorkspaceSettings;
-  private readonly store: WorkspaceSettingsStore;
-  private readonly storageLabel: string;
   private readonly permissionGate: PermissionGate | null;
   private readonly mcpClients: McpClientSurface;
   private readonly notificationHub: NotificationHub;
   private readonly workspacePath: string;
   private readonly storageShares: StorageShareRegistry;
-  private readonly storageSetups: readonly StorageSetup[];
   private readonly chatSessions: ChatSessionStore;
   private readonly promptSources: readonly SystemPromptSetup[];
-  private readonly pluginFolders: PluginFolderController;
-  private mcpHost: McpHostHandle | null = null;
-  private registry: ProviderRegistry = emptyProviderRegistry();
-  private mcpEndpoints: McpEndpoints = { endpoints: [] };
-  private sharedStorages: SharedStoragesRecord = EMPTY_SHARED_STORAGES;
+  /** The settings pane of the center workspace. It owns the settings state of the workspace. */
+  private readonly settingsView: SettingsView;
   private readonly chats: Chat[] = [];
   private activeChatId: number | null = null;
   private nextChatId = 1;
@@ -213,7 +104,6 @@ export class MainApp implements McpSessionSink {
   /** The left rail: the approvals feed and the files tree. */
   private rail: AppRail | null = null;
   private patchStore: PatchStore | null = null;
-  private pathRules: readonly PathRule[] = [];
   /** The abort controllers of the running agent turns, keyed by chat id, in start order. Chats
    * run their turns in parallel; one chat queues its own sends while its turn runs. */
   private readonly runningTurns = new Map<number, AbortController>();
@@ -223,18 +113,11 @@ export class MainApp implements McpSessionSink {
   private chatPinned = true;
   /** The pending clear of the collapsed reasoning tail, armed on every reasoning delta. */
   private reasoningTailTimer: number | null = null;
-  /** How many provider rounds one message may spend on tool calls. Null means no limit. */
-  private agentTurnLimit: number | null = null;
-  /** The default reasoning effort of the chats. Null means the endpoint default. */
-  private agentThinkingDefault: ThinkingLevel | null = null;
   /** The one open message editor: the chat it belongs to, the entry index it replaces, and its draft.
    * A missing index marks the draft of a fork, which appends as a new message at the end. */
-  private editing: {
-    readonly chatId: number;
-    readonly index?: number;
-    readonly text: string;
-    readonly images?: readonly ChatImage[];
-  } | null = null;
+  private editing: ChatEditState | null = null;
+  /** The message list of the chat column. */
+  private readonly messages: ChatRenderer;
 
   private readonly appSettings = requireElement<HTMLButtonElement>('#app-settings');
   private readonly chatTabs = requireElement<HTMLElement>('#chat-tab-list');
@@ -249,39 +132,7 @@ export class MainApp implements McpSessionSink {
   private readonly chatSend = requireElement<HTMLButtonElement>('#chat-send');
   private readonly chatStop = requireElement<HTMLButtonElement>('#chat-stop');
   private readonly chatStatus = requireElement<HTMLElement>('#chat-status');
-  private readonly providerList = requireElement<HTMLElement>('#provider-list');
-  private readonly providerAdd = requireElement<HTMLDetailsElement>('#provider-add');
-  private readonly providerAddForm = requireElement<HTMLFormElement>('#provider-add-form');
-  private readonly providerAddPreset = requireElement<HTMLSelectElement>('#provider-add-preset');
-  private readonly providerAddLabel = requireElement<HTMLInputElement>('#provider-add-label');
-  private readonly providerAddUrl = requireElement<HTMLInputElement>('#provider-add-url');
-  private readonly providerAddKey = requireElement<HTMLInputElement>('#provider-add-key');
-  private readonly providerAddSubmit = requireElement<HTMLButtonElement>('#provider-add-submit');
-  private readonly providerStatus = requireElement<HTMLElement>('#provider-status');
   private readonly permissionRequests = requireElement<HTMLElement>('#permission-requests');
-  private readonly mcpEndpointList = requireElement<HTMLElement>('#mcp-endpoint-list');
-  private readonly mcpEndpointAdd = requireElement<HTMLDetailsElement>('#mcp-endpoint-add');
-  private readonly mcpEndpointAddForm = requireElement<HTMLFormElement>('#mcp-endpoint-add-form');
-  private readonly mcpAddLabel = requireElement<HTMLInputElement>('#mcp-add-label');
-  private readonly mcpAddKind = requireElement<HTMLSelectElement>('#mcp-add-kind');
-  private readonly mcpAddUrl = requireElement<HTMLInputElement>('#mcp-add-url');
-  private readonly mcpAddToken = requireElement<HTMLInputElement>('#mcp-add-token');
-  private readonly mcpAddCommand = requireElement<HTMLInputElement>('#mcp-add-command');
-  private readonly mcpAddMode = requireElement<HTMLSelectElement>('#mcp-add-mode');
-  private readonly mcpAddUrlField = requireElement<HTMLElement>('#mcp-add-url-field');
-  private readonly mcpAddTokenField = requireElement<HTMLElement>('#mcp-add-token-field');
-  private readonly mcpAddCommandField = requireElement<HTMLElement>('#mcp-add-command-field');
-  private readonly mcpEndpointStatus = requireElement<HTMLElement>('#mcp-endpoint-status');
-  private readonly shareList = requireElement<HTMLElement>('#storage-share-list');
-  private readonly shareAdd = requireElement<HTMLDetailsElement>('#storage-share-add');
-  private readonly shareAddForm = requireElement<HTMLFormElement>('#storage-share-add-form');
-  private readonly shareLabel = requireElement<HTMLInputElement>('#storage-share-label');
-  private readonly shareSetup = requireElement<HTMLSelectElement>('#storage-share-setup');
-  private readonly shareFields = requireElement<HTMLElement>('#storage-share-fields');
-  private readonly shareAccess = requireElement<HTMLSelectElement>('#storage-share-access');
-  private readonly shareStatus = requireElement<HTMLElement>('#storage-share-status');
-  private readonly agentToolList = requireElement<HTMLElement>('#agent-tool-list');
-  private readonly pluginFolderList = requireElement<HTMLElement>('#plugin-folder-list');
 
   /**
    * @param settings The workspace settings.
@@ -312,77 +163,66 @@ export class MainApp implements McpSessionSink {
     pluginFolders: PluginFolderController,
   ) {
     this.settings = settings;
-    this.store = store;
-    this.storageLabel = storageLabel;
     this.permissionGate = permissionGate;
     this.mcpClients = mcpClients;
     this.notificationHub = notificationHub;
     this.workspacePath = workspacePath;
     this.storageShares = storageShares;
-    this.storageSetups = storageSetups;
     this.chatSessions = chatSessions;
     this.promptSources = promptSources;
-    this.pluginFolders = pluginFolders;
+    this.settingsView = new SettingsView(
+      store,
+      permissionGate,
+      mcpClients,
+      storageShares,
+      storageSetups,
+      storageLabel,
+      pluginFolders,
+      {
+        onRegistryChange: () => {
+          this.renderChatStatus();
+        },
+        listAgentTools: () => availableAgentTools(this.agentToolDeps()),
+      },
+    );
+    this.messages = new ChatRenderer(requireElement<HTMLOListElement>('#chat-messages'), {
+      activeChat: () => this.activeChat(),
+      isTurnRunning: (chatId) => this.isTurnRunning(chatId),
+      editing: () => this.editing,
+      setEditing: (editing) => {
+        this.editing = editing;
+      },
+      promptSources: this.promptSources,
+      selectedSystemPromptId: (chat) => this.selectedSystemPromptId(chat),
+      chatHasConversation: (chat) => this.chatHasConversation(chat),
+      pinChatToBottom: () => this.pinChatToBottom(),
+      sendQueuedNow: (chat, index) => this.sendQueuedNow(chat, index),
+      retryChatFrom: (chat, index) => this.retryChatFrom(chat, index),
+      forkChatAt: (chat, index) => this.forkChatAt(chat, index),
+      copyEntryText: (text) => this.copyEntryText(text),
+      saveEditing: () => this.saveEditing(),
+    });
     this.notificationHub.setChatNotifier((text) => {
       this.pushChatNotification(text);
     });
   }
 
   /**
-   * Loads the provider settings, restores the stored chat sessions, and wires the events.
+   * Opens the settings pane, restores the stored chat sessions, and wires the events.
    *
    * @param mcpHost The running MCP host handle, or null when the host stays off.
    * @throws Error when the document misses a required element.
    */
   async start(mcpHost: McpHostHandle | null): Promise<void> {
-    this.mcpHost = mcpHost;
     PermissionRequestElement.define();
     JsonViewerElement.define();
     this.permissionGate?.subscribe(() => {
       this.renderPermissionRequests();
       this.renderTabs();
-      this.renderAgentTools();
+      this.settingsView.renderAgentTools();
     });
     requireElement<HTMLElement>('#workspace-name').textContent = this.settings.name;
-    requireElement<HTMLElement>('#workspace-storage-mode').textContent = `Setting storage: ${this.storageLabel}`;
-    try {
-      this.registry = await this.store.loadProviderRegistry();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the provider registry: ${message}`);
-    }
-    this.syncProviderCors();
-    try {
-      this.mcpEndpoints = await this.store.loadMcpEndpoints();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the MCP endpoints: ${message}`);
-    }
-    try {
-      this.sharedStorages = await this.store.loadSharedStorages();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the storage sharing: ${message}`);
-    }
-    try {
-      this.pathRules = await this.store.loadPathRules();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the path rules: ${message}`);
-    }
-    void this.mcpClients.applyEndpoints(this.mcpEndpoints);
-    this.mcpClients.subscribe(() => {
-      this.renderMcpEndpoints();
-      this.renderAgentTools();
-    });
-    this.storageShares.applyRecord(this.sharedStorages);
-    await this.initializeThemeControls();
-    await this.initializeFrameControls();
-    await this.initializeAgentTurnControls();
-    this.initializeMcpHostSection();
-    this.initializeMcpEndpointsSection();
-    this.initializeKnownPathsSection();
-    this.initializeStorageShareSection();
+    await this.settingsView.initialize(mcpHost);
     // The gate loads its rules lazily on the first check. The rule-reading UI renders before any
     // check runs, so it must await the load or it reads an empty list and shows every tool on ask.
     await this.permissionGate?.ready();
@@ -405,11 +245,7 @@ export class MainApp implements McpSessionSink {
       },
     });
     this.rail.start();
-    await this.seedAgentToolDefaults();
-    // The direct render covers a launch that seeds nothing and fires no gate or connection event.
-    this.renderAgentTools();
-    this.renderPluginFolders();
-    this.initializeProviderSection();
+    await this.settingsView.start();
     requireElement<HTMLButtonElement>('#app-close').addEventListener('click', () => {
       void closeWindow();
     });
@@ -448,10 +284,6 @@ export class MainApp implements McpSessionSink {
       },
       { passive: false },
     );
-    this.providerAddForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      this.addProviderFromForm();
-    });
     this.chatForm.addEventListener('submit', (event) => {
       event.preventDefault();
       void this.send();
@@ -557,720 +389,6 @@ export class MainApp implements McpSessionSink {
     this.chatSessions.saveSession(session);
   }
 
-  /** Wires the MCP host section. The section stays hidden while the host stays off. */
-  private initializeMcpHostSection(): void {
-    const section = requireElement<HTMLFieldSetElement>('#mcp-host-section');
-    const host = this.mcpHost;
-    if (!host) {
-      section.hidden = true;
-      return;
-    }
-    section.hidden = false;
-    requireElement<HTMLElement>('#mcp-host-endpoint').textContent = host.endpoint;
-    const tokenField = requireElement<HTMLInputElement>('#mcp-host-token');
-    requireElement<HTMLButtonElement>('#mcp-token-show').addEventListener('click', () => {
-      tokenField.value = host.readAccessToken();
-    });
-    requireElement<HTMLButtonElement>('#mcp-token-copy').addEventListener('click', () => {
-      void navigator.clipboard
-        .writeText(host.readAccessToken())
-        .then(() => {
-          tokenField.value = host.readAccessToken();
-        })
-        .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn(`[NodeWavenUI] the MCP host token could not be copied: ${message}`);
-        });
-    });
-  }
-
-  /** Wires the MCP endpoints section: the endpoint cards, the add form, and the live connection states. */
-  /** Renders and wires the known paths section: one row per path rule, the add form below. */
-  private initializeKnownPathsSection(): void {
-    const list = requireElement<HTMLDivElement>('#known-path-list');
-    const form = requireElement<HTMLFormElement>('#known-path-add');
-    const input = requireElement<HTMLInputElement>('#known-path-input');
-    const modeSelect = requireElement<HTMLSelectElement>('#known-path-mode');
-    const render = (): void => {
-      list.replaceChildren();
-      if (this.pathRules.length === 0) {
-        const empty = document.createElement('p');
-        empty.className = 'status';
-        empty.textContent = 'No path is known. Reads ask, and every write proposes a patch for review.';
-        list.append(empty);
-        return;
-      }
-      for (const rule of this.pathRules) {
-        list.append(this.buildKnownPathRow(rule, render));
-      }
-    };
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const path = input.value.trim().replace(/^\/+|\/+$/g, '');
-      if (path.length === 0 || path === '.') {
-        return;
-      }
-      const mode = PATH_RULE_MODES.includes(modeSelect.value as PathRuleMode) ? (modeSelect.value as PathRuleMode) : 'ask';
-      // A second add of the same path changes its mode instead of stacking a duplicate.
-      if (this.pathRules.some((rule) => rule.path === path)) {
-        this.pathRules = this.pathRules.map((rule) => (rule.path === path ? { path, mode } : rule));
-      } else {
-        this.pathRules = [...this.pathRules, { path, mode }];
-      }
-      input.value = '';
-      void this.savePathRules();
-      render();
-    });
-    render();
-  }
-
-  /** One known path row: the path, its mode select, and the remove action. */
-  private buildKnownPathRow(rule: PathRule, render: () => void): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'known-path';
-    const label = document.createElement('span');
-    label.className = 'known-path-label';
-    label.textContent = rule.path;
-    const modeSelect = document.createElement('select');
-    modeSelect.title = 'The access of the path';
-    for (const mode of PATH_RULE_MODES) {
-      const option = document.createElement('option');
-      option.value = mode;
-      option.textContent = PATH_RULE_LABELS[mode];
-      modeSelect.append(option);
-    }
-    modeSelect.value = rule.mode;
-    modeSelect.addEventListener('change', () => {
-      const next = modeSelect.value as PathRuleMode;
-      this.pathRules = this.pathRules.map((candidate) =>
-        candidate === rule ? { path: candidate.path, mode: next } : candidate,
-      );
-      void this.savePathRules();
-    });
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.textContent = 'Remove';
-    remove.addEventListener('click', () => {
-      this.pathRules = this.pathRules.filter((candidate) => candidate !== rule);
-      void this.savePathRules();
-      render();
-    });
-    row.append(label, modeSelect, remove);
-    return row;
-  }
-
-  /** Persists the known paths. A failure keeps the working list and logs. */
-  private async savePathRules(): Promise<void> {
-    try {
-      await this.store.savePathRules(this.pathRules);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not save the path rules: ${message}`);
-    }
-  }
-
-  private initializeMcpEndpointsSection(): void {
-    this.mcpAddKind.addEventListener('change', () => {
-      this.updateMcpAddFormShape();
-    });
-    this.mcpEndpointAddForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      this.addMcpEndpointFromForm();
-    });
-    this.updateMcpAddFormShape();
-    this.renderMcpEndpoints();
-  }
-
-  /** The add form shows the fields of the selected transport kind. */
-  private updateMcpAddFormShape(): void {
-    const http = this.mcpAddKind.value === 'http';
-    this.mcpAddUrlField.hidden = !http;
-    this.mcpAddTokenField.hidden = !http;
-    this.mcpAddCommandField.hidden = http;
-  }
-
-  private showMcpEndpointStatus(message: string, isError: boolean): void {
-    this.mcpEndpointStatus.textContent = message;
-    this.mcpEndpointStatus.className = isError ? 'status error' : 'status';
-    this.mcpEndpointStatus.hidden = false;
-  }
-
-  private addMcpEndpointFromForm(): void {
-    const label = this.mcpAddLabel.value.trim();
-    if (label.length === 0) {
-      this.showMcpEndpointStatus('The label is required.', true);
-      return;
-    }
-    const mode = this.mcpAddMode.value as McpEndpoint['mode'];
-    const isHttp = this.mcpAddKind.value === 'http';
-    const token = this.mcpAddToken.value.trim();
-    if (isHttp && this.mcpAddUrl.value.trim().length === 0) {
-      this.showMcpEndpointStatus('The endpoint URL is required.', true);
-      return;
-    }
-    const commandLine = splitCommandLine(this.mcpAddCommand.value);
-    if (!isHttp && commandLine.command.length === 0) {
-      this.showMcpEndpointStatus('The command is required.', true);
-      return;
-    }
-    const transport: McpEndpoint['transport'] = isHttp ?
-      { kind: 'http', url: this.mcpAddUrl.value.trim(), ...(token.length > 0 ? { token } : {}) } :
-      {
-        kind: 'stdio',
-        command: commandLine.command,
-        ...(commandLine.args.length > 0 ? { args: commandLine.args } : {}),
-      };
-    const endpoint: McpEndpoint = {
-      id: crypto.randomUUID(),
-      label,
-      transport,
-      mode,
-    };
-    this.mcpAddLabel.value = '';
-    this.mcpAddUrl.value = '';
-    this.mcpAddToken.value = '';
-    this.mcpAddCommand.value = '';
-    this.persistMcpEndpoints({ endpoints: [...this.mcpEndpoints.endpoints, endpoint] }, 'Endpoint added.');
-  }
-
-  /** Stores the next endpoint list, applies it to the connections, and re-renders the cards. */
-  private persistMcpEndpoints(next: McpEndpoints, successText: string): void {
-    void (async () => {
-      // The carry runs to completion first: it reads the live tool names of the old connections,
-      // so its rule moves finish before the new connections replace them.
-      await this.carryToolRulesOverRename(this.mcpEndpoints, next);
-      this.mcpEndpoints = next;
-      await this.mcpClients.applyEndpoints(next);
-      this.renderMcpEndpoints();
-      await this.store
-        .saveMcpEndpoints(next)
-        .then(() => {
-          this.showMcpEndpointStatus(successText, false);
-        })
-        .catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error);
-          this.showMcpEndpointStatus(message, true);
-        });
-    })();
-  }
-
-  /** Renders one card per endpoint, disabled ones included, with the live connection state. */
-  private renderMcpEndpoints(): void {
-    this.mcpEndpointList.replaceChildren();
-    if (this.mcpEndpoints.endpoints.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'status';
-      empty.textContent = 'No MCP endpoint is configured. Add one below.';
-      this.mcpEndpointList.append(empty);
-      return;
-    }
-    const states = new Map(this.mcpClients.listServers().map((state) => [state.id, state]));
-    for (const endpoint of this.mcpEndpoints.endpoints) {
-      this.mcpEndpointList.append(this.buildMcpEndpointCard(endpoint, states.get(endpoint.id) ?? null));
-    }
-  }
-
-  /** One endpoint card: label, transport, live state, the mode dropdown, and the remove action. */
-  private buildMcpEndpointCard(
-    endpoint: McpEndpoint,
-    state: { state: string; error: string | null } | null,
-  ): HTMLElement {
-    const card = document.createElement('div');
-    card.className = 'mcp-endpoint';
-    const title = document.createElement('span');
-    title.className = 'mcp-endpoint-label';
-    title.textContent = endpoint.label;
-    const transport = document.createElement('span');
-    transport.className = 'mcp-endpoint-transport';
-    transport.textContent =
-      endpoint.transport.kind === 'http' ? endpoint.transport.url : `stdio: ${endpoint.transport.command}`;
-    const stateText = document.createElement('span');
-    stateText.className = `mcp-endpoint-state ${state?.state ?? 'dormant'}`;
-    stateText.textContent =
-      !state ?
-        'disabled' :
-        state.state === 'error' && state.error ?
-          `error: ${state.error}` :
-          state.state;
-    const modeSelect = document.createElement('select');
-    modeSelect.className = 'mcp-endpoint-mode';
-    for (const [value, label] of [
-      ['native', 'Native'],
-      ['preloaded', 'Preloaded'],
-      ['none', 'None'],
-      ['disabled', 'Disabled'],
-    ] as const) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = label;
-      modeSelect.append(option);
-    }
-    modeSelect.value = endpoint.mode;
-    modeSelect.addEventListener('change', () => {
-      const nextMode = modeSelect.value as McpEndpoint['mode'];
-      this.persistMcpEndpoints(
-        {
-          endpoints: this.mcpEndpoints.endpoints.map((candidate) =>
-            candidate.id === endpoint.id ? { ...candidate, mode: nextMode } : candidate,
-          ),
-        },
-        'Mode saved.',
-      );
-    });
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.textContent = 'Remove';
-    remove.addEventListener('click', () => {
-      this.persistMcpEndpoints(
-        { endpoints: this.mcpEndpoints.endpoints.filter((candidate) => candidate.id !== endpoint.id) },
-        'Endpoint removed.',
-      );
-    });
-    card.append(title, transport, stateText, modeSelect, remove);
-    return card;
-  }
-
-  /** Wires the storage sharing section: the settings storage row, the shared cards, and the add form. */
-  private initializeStorageShareSection(): void {
-    this.shareSetup.replaceChildren();
-    for (const setup of this.storageSetups) {
-      const option = document.createElement('option');
-      option.value = setup.id;
-      option.textContent = setup.label;
-      this.shareSetup.append(option);
-    }
-    this.shareSetup.addEventListener('change', () => {
-      this.mountShareFields();
-    });
-    this.shareAddForm.addEventListener('submit', (event) => {
-      event.preventDefault();
-      this.addSharedStorageFromForm();
-    });
-    this.mountShareFields();
-    this.renderStorageShares();
-  }
-
-  /** Mounts the setup fields of the selected storage setup into the add form. */
-  private mountShareFields(): void {
-    const setup = this.storageSetups.find((candidate) => candidate.id === this.shareSetup.value);
-    if (!setup || !setup.fields) {
-      this.shareFields.replaceChildren();
-      this.shareFieldGroup = null;
-      this.shareAddForm.dataset.setupId = setup ? setup.id : '';
-      return;
-    }
-    this.shareFieldGroup = PluginFieldGroup.mount(this.shareFields, setup.fields);
-    this.shareAddForm.dataset.setupId = setup.id;
-  }
-
-  private shareFieldGroup: PluginFieldGroup | null = null;
-
-  private showShareStatus(message: string, isError: boolean): void {
-    this.shareStatus.textContent = message;
-    this.shareStatus.className = isError ? 'status error' : 'status';
-    this.shareStatus.hidden = false;
-  }
-
-  private addSharedStorageFromForm(): void {
-    const label = this.shareLabel.value.trim();
-    if (label.length === 0) {
-      this.showShareStatus('The label is required.', true);
-      return;
-    }
-    const setup = this.storageSetups.find((candidate) => candidate.id === this.shareAddForm.dataset.setupId);
-    if (!setup) {
-      this.showShareStatus('Pick a storage kind first.', true);
-      return;
-    }
-    const uriId = sanitizeEndpointLabel(label);
-    if (this.sharedStorages.storages.some((entry) => entry.uriId === uriId)) {
-      this.showShareStatus(`The storage id "${uriId}" is taken. Pick another label.`, true);
-      return;
-    }
-    const values = this.shareFieldGroup?.readValues() ?? {};
-    const configuration = setup.readConfiguration(values);
-    if (typeof configuration === 'string') {
-      this.showShareStatus(configuration, true);
-      return;
-    }
-    const entry: SharedStorageEntry = {
-      id: crypto.randomUUID(),
-      setupId: setup.id,
-      label,
-      uriId,
-      config: configuration.config,
-      password: configuration.password,
-      access: this.shareAccess.value === 'readonly' ? 'readonly' : 'none',
-    };
-    this.shareLabel.value = '';
-    this.persistSharedStorages(
-      { settingsAccess: this.sharedStorages.settingsAccess, storages: [...this.sharedStorages.storages, entry] },
-      'Storage added.',
-    );
-  }
-
-  /** Stores the next sharing record, applies it, and re-renders the cards. */
-  private persistSharedStorages(next: SharedStoragesRecord, successText: string): void {
-    this.sharedStorages = next;
-    this.storageShares.applyRecord(next);
-    this.renderStorageShares();
-    void this.store
-      .saveSharedStorages(next)
-      .then(() => {
-        this.showShareStatus(successText, false);
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.showShareStatus(message, true);
-      });
-  }
-
-  /** Renders the settings storage row and one card per shared storage. */
-  private renderStorageShares(): void {
-    this.shareList.replaceChildren();
-    const settingsRow = document.createElement('div');
-    settingsRow.className = 'mcp-endpoint';
-    const settingsLabel = document.createElement('span');
-    settingsLabel.className = 'mcp-endpoint-label';
-    settingsLabel.textContent = 'Settings storage';
-    const settingsId = document.createElement('span');
-    settingsId.className = 'mcp-endpoint-transport';
-    settingsId.textContent = this.storageShares.settingsBackendId;
-    const settingsAccess = this.buildShareAccessSelect(this.sharedStorages.settingsAccess, (access) => {
-      this.persistSharedStorages({ settingsAccess: access, storages: this.sharedStorages.storages }, 'Access saved.');
-    });
-    settingsRow.append(settingsLabel, settingsId, document.createTextNode('chat agent:'), settingsAccess);
-    this.shareList.append(settingsRow);
-    const states = this.storageShares.states();
-    if (states.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'status';
-      empty.textContent = 'No extra storage is shared. The settings storage stays unshared by default.';
-      this.shareList.append(empty);
-      return;
-    }
-    for (const state of states) {
-      const card = document.createElement('div');
-      card.className = 'mcp-endpoint';
-      const label = document.createElement('span');
-      label.className = 'mcp-endpoint-label';
-      label.textContent = state.label;
-      const transport = document.createElement('span');
-      transport.className = 'mcp-endpoint-transport';
-      transport.textContent = `${state.uriId} · ${state.setupId}${state.error ? ` · error: ${state.error}` : state.open ? ' · open' : ''}`;
-      const access = this.buildShareAccessSelect(state.access, (nextAccess) => {
-        this.persistSharedStorages(
-          {
-            settingsAccess: this.sharedStorages.settingsAccess,
-            storages: this.sharedStorages.storages.map((entry) =>
-              entry.id === state.id ? { ...entry, access: nextAccess } : entry,
-            ),
-          },
-          'Access saved.',
-        );
-      });
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.textContent = 'Remove';
-      remove.addEventListener('click', () => {
-        this.persistSharedStorages(
-          {
-            settingsAccess: this.sharedStorages.settingsAccess,
-            storages: this.sharedStorages.storages.filter((entry) => entry.id !== state.id),
-          },
-          'Storage removed.',
-        );
-      });
-      card.append(label, transport, access, remove);
-      this.shareList.append(card);
-    }
-  }
-
-  /** The access dropdown of one shared storage or the settings storage. */
-  private buildShareAccessSelect(current: StorageAccess, onChange: (access: StorageAccess) => void): HTMLSelectElement {
-    const select = document.createElement('select');
-    select.className = 'mcp-endpoint-mode';
-    const notShared = document.createElement('option');
-    notShared.value = 'none';
-    notShared.textContent = 'Not shared';
-    const readOnly = document.createElement('option');
-    readOnly.value = 'readonly';
-    readOnly.textContent = 'Read-only';
-    select.append(notShared, readOnly);
-    select.value = current;
-    select.addEventListener('change', () => {
-      onChange(select.value === 'readonly' ? 'readonly' : 'none');
-    });
-    return select;
-  }
-
-  /** Seeds the tool defaults once per workspace: the two trusted built-ins, read and evaluate, start allowed. */
-  private async seedAgentToolDefaults(): Promise<void> {
-    const gate = this.permissionGate;
-    if (!gate) {
-      return;
-    }
-    try {
-      if (await this.store.loadAgentToolDefaults()) {
-        return;
-      }
-      for (const name of ['read', 'evaluate']) {
-        // A rule that already governs the tool holds the user's choice, so a repeated seeding adds nothing.
-        if (agentToolRule(name, gate.listRules())) {
-          continue;
-        }
-        await gate.addRule({
-          id: crypto.randomUUID(),
-          enabled: true,
-          principal: 'agent',
-          resource: 'tool',
-          actions: [name],
-          effect: 'allow',
-        });
-      }
-      await this.store.saveAgentToolDefaults(true);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the agent tool defaults could not be seeded: ${message}`);
-    }
-  }
-
-  /** Renders the agent tools section: one group head per origin, one row per tool with its state. */
-  private renderAgentTools(): void {
-    this.agentToolList.replaceChildren();
-    const gate = this.permissionGate;
-    const rules = gate?.listRules() ?? [];
-    const tools = availableAgentTools(this.agentToolDeps());
-    if (tools.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'status';
-      empty.textContent = 'No tool is available to the chat agent.';
-      this.agentToolList.append(empty);
-      return;
-    }
-    let group = '';
-    for (const tool of tools) {
-      const origin = this.toolOriginLabel(tool.name);
-      if (origin !== group) {
-        group = origin;
-        const head = document.createElement('p');
-        head.className = 'agent-tool-group';
-        head.textContent = origin;
-        this.agentToolList.append(head);
-      }
-      const row = document.createElement('div');
-      row.className = 'mcp-endpoint';
-      const name = document.createElement('span');
-      name.className = 'mcp-endpoint-label';
-      name.textContent = tool.name;
-      name.title = tool.description;
-      const description = document.createElement('span');
-      description.className = 'mcp-endpoint-transport';
-      description.textContent =
-        tool.description.length > 60 ? `${tool.description.slice(0, 57)}…` : tool.description;
-      const state = agentToolRule(tool.name, rules)?.effect ?? 'ask';
-      const select = document.createElement('select');
-      select.className = 'mcp-endpoint-mode';
-      select.title = 'Ask prompts on first use, Allow skips the prompts, Disable hides the tool.';
-      for (const [value, label] of [
-        ['ask', 'Ask'],
-        ['allow', 'Allow'],
-        ['deny', 'Disable'],
-      ] as const) {
-        const option = document.createElement('option');
-        option.value = value;
-        option.textContent = label;
-        select.append(option);
-      }
-      select.value = state === 'allow' ? 'allow' : state === 'deny' ? 'deny' : 'ask';
-      select.addEventListener('change', () => {
-        const next = select.value === 'allow' ? 'allow' : select.value === 'deny' ? 'deny' : 'ask';
-        void this.setAgentToolState(tool.name, next);
-      });
-      row.append(name, description, select);
-      this.agentToolList.append(row);
-    }
-  }
-
-  /** The group head of one tool: the built-ins, the file tools, the page tools, or the endpoint label of a native tool. */
-  private toolOriginLabel(name: string): string {
-    if (name === 'read' || name === 'evaluate') {
-      return 'Built-in tools';
-    }
-    if (name === 'files' || name === 'write' || name === 'task') {
-      return 'File tools';
-    }
-    if (name === 'run' || name === 'process_output' || name === 'process_stop') {
-      return 'Command tools';
-    }
-    const separator = name.indexOf('.');
-    if (separator > 0) {
-      const prefix = name.slice(0, separator);
-      const endpoint = this.mcpEndpoints.endpoints.find(
-        (candidate) => sanitizeEndpointLabel(candidate.label) === prefix,
-      );
-      return endpoint?.label ?? 'MCP tools';
-    }
-    return 'Page tools';
-  }
-
-  /** Writes the state of one agent tool as its rule: ask removes the rule, allow and deny replace it. */
-  private async setAgentToolState(name: string, effect: 'ask' | 'allow' | 'deny'): Promise<void> {
-    const gate = this.permissionGate;
-    if (!gate) {
-      return;
-    }
-    try {
-      const existing = agentToolRule(name, gate.listRules());
-      if (existing) {
-        await gate.removeRule(existing.id);
-      }
-      if (effect !== 'ask') {
-        await gate.addRule({
-          id: existing?.id ?? crypto.randomUUID(),
-          enabled: true,
-          principal: 'agent',
-          resource: 'tool',
-          actions: [name],
-          effect,
-        });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the state of the tool "${name}" could not be saved: ${message}`);
-    }
-  }
-
-  /** Renders the plugin folder section: one row per folder of the app `plugins/` directory, with its switch. */
-  private renderPluginFolders(): void {
-    this.pluginFolderList.replaceChildren();
-    const states = this.pluginFolders.list();
-    if (states.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'status';
-      empty.textContent = 'No plugin folder found under plugins/ of the app.';
-      this.pluginFolderList.append(empty);
-      return;
-    }
-    for (const state of states) {
-      const row = document.createElement('div');
-      row.className = 'mcp-endpoint';
-      const name = document.createElement('span');
-      name.className = 'mcp-endpoint-label';
-      const versionText = state.version ? ` ${state.version}` : '';
-      name.textContent = `${state.name}${versionText}`;
-      if (state.description) {
-        name.title = state.description;
-      }
-      const detail = document.createElement('span');
-      detail.className = 'mcp-endpoint-transport';
-      detail.textContent = state.detail.length > 0 ? state.detail : this.pluginFolderStatusText(state.status);
-      if (state.status !== 'skipped') {
-        const select = document.createElement('select');
-        select.className = 'mcp-endpoint-mode';
-        select.title = 'Enable loads the plugin and pins its content digest. Disable keeps it out of the next start.';
-        for (const [value, label] of [
-          ['disabled', 'Disabled'],
-          ['enabled', 'Enabled'],
-        ] as const) {
-          const option = document.createElement('option');
-          option.value = value;
-          option.textContent = label;
-          select.append(option);
-        }
-        select.value = state.enabled ? 'enabled' : 'disabled';
-        select.addEventListener('change', () => {
-          void this.setPluginFolderEnabled(state.id, select.value === 'enabled');
-        });
-        row.append(name, detail, select);
-      } else {
-        row.append(name, detail);
-      }
-      // A reset row shows the stored digest beside the digest of the changed folder, so the
-      // cause of the disabled state reads at a glance.
-      if (state.previousDigest) {
-        row.append(this.pluginDigestLine(`sha256 old ${state.previousDigest}`));
-      }
-      if (state.digest) {
-        row.append(this.pluginDigestLine(`sha256 ${state.previousDigest ? 'new ' : ''}${state.digest}`));
-      }
-      this.pluginFolderList.append(row);
-    }
-  }
-
-  /** One SHA-256 line under a plugin folder row. */
-  private pluginDigestLine(text: string): HTMLElement {
-    const line = document.createElement('div');
-    line.className = 'plugin-folder-digest';
-    line.textContent = text;
-    return line;
-  }
-
-  /** The idle status text of one plugin folder state. */
-  private pluginFolderStatusText(status: 'disabled' | 'loaded' | 'reset' | 'failed' | 'skipped'): string {
-    if (status === 'loaded') {
-      return 'Loaded.';
-    }
-    if (status === 'failed') {
-      return 'The plugin failed to load.';
-    }
-    return 'Off.';
-  }
-
-  /** Writes one plugin folder switch through the controller and re-renders the rows. */
-  private async setPluginFolderEnabled(id: string, enabled: boolean): Promise<void> {
-    await this.pluginFolders.setEnabled(id, enabled);
-    this.renderPluginFolders();
-  }
-
-  /** Carries the tool rules of an endpoint over a label rename. A rule moves only when every one of its
-   * actions maps to a live tool of the endpoint under the new prefix. Anything else stays behind, so the
-   * affected tools fall back to ask. */
-  private async carryToolRulesOverRename(previous: McpEndpoints, next: McpEndpoints): Promise<void> {
-    const gate = this.permissionGate;
-    if (!gate) {
-      return;
-    }
-    for (const endpoint of next.endpoints) {
-      const old = previous.endpoints.find((candidate) => candidate.id === endpoint.id);
-      if (!old || old.label === endpoint.label) {
-        continue;
-      }
-      const oldPrefix = sanitizeEndpointLabel(old.label);
-      const newPrefix = sanitizeEndpointLabel(endpoint.label);
-      if (oldPrefix === newPrefix) {
-        continue;
-      }
-      const toolNames = this.mcpClients.listServers().find((state) => state.id === endpoint.id)?.toolNames ?? [];
-      for (const rule of gate.listRules()) {
-        if (rule.resource !== 'tool' || rule.actions === '*') {
-          continue;
-        }
-        const mapped: string[] = [];
-        let perfect = rule.actions.length > 0;
-        for (const action of rule.actions) {
-          const suffix = action.startsWith(`${oldPrefix}.`) ? action.slice(oldPrefix.length + 1) : null;
-          if (suffix !== null && toolNames.includes(suffix)) {
-            mapped.push(`${newPrefix}.${suffix}`);
-          } else {
-            perfect = false;
-            break;
-          }
-        }
-        if (!perfect) {
-          continue;
-        }
-        try {
-          await gate.removeRule(rule.id);
-          await gate.addRule({ ...rule, actions: mapped });
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          console.warn(`[NodeWavenUI] the tool rules of "${old.label}" could not move to "${endpoint.label}": ${message}`);
-        }
-      }
-    }
-  }
-
   /** McpSessionSink: every MCP session logs into one shared host tab, and each new connection posts its facts. */
   sessionOpened(sessionId: string, info: McpConnectionInfo): void {
     const chat = this.mcpHostTab() ?? this.createMcpHostTab();
@@ -1290,7 +408,7 @@ export class MainApp implements McpSessionSink {
       content: `Connection ${sessionId.slice(0, 8)} at ${new Date().toLocaleTimeString()} — ${detail}.`,
     });
     if (chat.id === this.activeChatId) {
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     chat.unread = true;
@@ -1351,7 +469,7 @@ export class MainApp implements McpSessionSink {
       mcpSession: sessionId.slice(0, 8),
     });
     if (chat.id === this.activeChatId) {
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     // The tab sits in the background, so the entry marks it unread.
@@ -1368,7 +486,7 @@ export class MainApp implements McpSessionSink {
     chat.entries.push({ role: 'user', content: text });
     this.persistChat(chat);
     if (chat.id === this.activeChatId) {
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     chat.unread = true;
@@ -1422,586 +540,31 @@ export class MainApp implements McpSessionSink {
     this.permissionRequests.hidden = this.permissionRequests.childElementCount === 0;
   }
 
-  /** Loads the theme of the workspace and wires the theme dropdown of the settings pane. */
-  private async initializeThemeControls(): Promise<void> {
-    let stored: string | null = null;
-    try {
-      stored = await this.store.loadThemePreference();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored theme could not be read, the default applies: ${message}`);
-    }
-    const themeId = resolveThemeId(stored);
-    applyTheme(themeId);
-    const themeSelect = requireElement<HTMLSelectElement>('#theme-select');
-    themeSelect.replaceChildren();
-    for (const theme of THEMES) {
-      const option = document.createElement('option');
-      option.value = theme.id;
-      option.textContent = theme.label;
-      themeSelect.append(option);
-    }
-    themeSelect.value = themeId;
-    themeSelect.addEventListener('change', () => {
-      applyTheme(themeSelect.value);
-      this.store.saveThemePreference(themeSelect.value).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the theme choice could not be saved: ${message}`);
-      });
-    });
-  }
-
-  /** Loads the frame mode of the workspace and wires the frame dropdown of the settings pane.
-   *  NW.js fixes the frame at window creation, so the choice applies the next time the workspace window opens. */
-  private async initializeFrameControls(): Promise<void> {
-    let stored: string | null = null;
-    try {
-      stored = await this.store.loadFrameModePreference();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored window frame could not be read, the default applies: ${message}`);
-    }
-    const frameSelect = requireElement<HTMLSelectElement>('#frame-mode-select');
-    frameSelect.replaceChildren();
-    for (const mode of FRAME_MODES) {
-      const option = document.createElement('option');
-      option.value = mode.id;
-      option.textContent = mode.label;
-      frameSelect.append(option);
-    }
-    frameSelect.value = resolveFrameMode(stored);
-    frameSelect.addEventListener('change', () => {
-      this.store.saveFrameModePreference(frameSelect.value).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the window frame choice could not be saved: ${message}`);
-      });
-    });
-  }
-
-  /** Loads the agent round limit and thinking default of the workspace and wires the dropdowns of the settings pane. */
-  private async initializeAgentTurnControls(): Promise<void> {
-    try {
-      this.agentTurnLimit = await this.store.loadAgentTurnLimit();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored agent round limit could not be read, no limit applies: ${message}`);
-    }
-    const turnsSelect = requireElement<HTMLSelectElement>('#agent-turns-select');
-    turnsSelect.value = this.agentTurnLimit ? String(this.agentTurnLimit) : '';
-    turnsSelect.addEventListener('change', () => {
-      const value = Number(turnsSelect.value);
-      this.agentTurnLimit = turnsSelect.value === '' ? null : value;
-      this.store.saveAgentTurnLimit(this.agentTurnLimit).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the agent round limit could not be saved: ${message}`);
-      });
-    });
-    try {
-      this.agentThinkingDefault = await this.store.loadAgentThinking();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored agent thinking default could not be read, the endpoint default applies: ${message}`);
-    }
-    const thinkingSelect = requireElement<HTMLSelectElement>('#agent-thinking-select');
-    thinkingSelect.value = this.agentThinkingDefault ?? '';
-    thinkingSelect.addEventListener('change', () => {
-      const value = thinkingSelect.value;
-      this.agentThinkingDefault = value === 'low' || value === 'medium' || value === 'high' ? value : null;
-      this.store.saveAgentThinking(this.agentThinkingDefault).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the agent thinking default could not be saved: ${message}`);
-      });
-    });
-  }
-
-  /** Renders the provider cards. The add form is a collapsed disclosure below the list. */
-  private initializeProviderSection(): void {
-    this.renderProviders();
-    // The preset list offers every known endpoint; picking one prefills the label and the URL.
-    const custom = document.createElement('option');
-    custom.value = '';
-    custom.textContent = 'Custom endpoint';
-    this.providerAddPreset.append(custom);
-    for (const preset of PROVIDER_PRESETS) {
-      const option = document.createElement('option');
-      option.value = preset.id;
-      option.textContent = `${preset.label} — ${preset.baseUrl}`;
-      this.providerAddPreset.append(option);
-    }
-    this.providerAddPreset.addEventListener('change', () => {
-      const preset = PROVIDER_PRESETS.find((candidate) => candidate.id === this.providerAddPreset.value);
-      if (!preset) {
-        return;
-      }
-      if (this.providerAddLabel.value.trim().length === 0) {
-        this.providerAddLabel.value = preset.label;
-      }
-      this.providerAddUrl.value = preset.baseUrl;
-      this.updateAddFormState();
-    });
-    for (const field of [this.providerAddLabel, this.providerAddUrl, this.providerAddKey]) {
-      field.addEventListener('input', () => {
-        this.updateAddFormState();
-      });
-    }
-    this.updateAddFormState();
-  }
-
-  /** The add form submit stays disabled until a field holds input. */
-  private updateAddFormState(): void {
-    const dirty =
-      this.providerAddLabel.value.length > 0 ||
-      this.providerAddUrl.value.length > 0 ||
-      this.providerAddKey.value.length > 0;
-    this.providerAddSubmit.disabled = !dirty;
-  }
-
-  /** Rebuilds the provider list: one card per account, or the empty hint. Open cards stay open. */
-  private renderProviders(): void {
-    const openIds = new Set<string>();
-    for (const card of this.providerList.querySelectorAll<HTMLDetailsElement>('details.provider-card[open]')) {
-      const id = card.dataset.id;
-      if (id) {
-        openIds.add(id);
-      }
-    }
-    this.providerList.replaceChildren();
-    if (this.registry.accounts.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'status';
-      empty.textContent = 'No provider is configured. Add one below.';
-      this.providerList.append(empty);
-      return;
-    }
-    for (const account of this.registry.accounts) {
-      const card = this.buildProviderCard(account);
-      if (openIds.has(account.id)) {
-        card.open = true;
-      }
-      this.providerList.append(card);
-    }
-  }
-
-  /** Registers the base URLs of the registry with the CORS filter of the main process, so the
-   * provider fetch of the sandboxed page passes the preflight its endpoints do not answer. */
-  private syncProviderCors(): void {
-    readBridge()?.workspace
-      .allowProviderCors(this.registry.accounts.map((account) => account.baseUrl))
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the provider CORS allowlist could not be registered: ${message}`);
-      });
-  }
-
-  /** The account the chats use: the chosen default, or the first one. */
-  private effectiveDefaultAccount(): ProviderAccount | null {
-    return (
-      this.registry.accounts.find((account) => account.id === this.registry.defaultProviderId) ??
-      this.registry.accounts[0] ??
-      null
-    );
-  }
-
-  /** The model the chats use: the chosen default when it belongs to the account, or the account's first. */
-  private effectiveDefaultModel(account: ProviderAccount): string | null {
-    const wanted = this.registry.defaultModel;
-    if (wanted && account.models.some((model) => model.id === wanted)) {
-      return wanted;
-    }
-    return account.models[0]?.id ?? null;
-  }
-
-  /** Reads the vision flag of one model of an account. An unknown model reads text only. */
-  private modelVision(account: ProviderAccount, modelId: string | null): boolean {
-    if (!modelId) {
-      return false;
-    }
-    return account.models.find((model) => model.id === modelId)?.vision ?? false;
-  }
-
-  /** The status-bar display name of one model: the id, plus the vision marker when the model sees images. */
-  private modelDisplayName(account: ProviderAccount, modelId: string): string {
-    return this.modelVision(account, modelId) ? `${modelId} · vision` : modelId;
-  }
-
-  /** Stores the next registry, re-renders the cards, and reports the outcome. */
-  private persistRegistry(next: ProviderRegistry, successText: string): void {
-    this.registry = next;
-    this.syncProviderCors();
-    this.renderProviders();
-    this.renderChatStatus();
-    void this.store
-      .saveProviderRegistry(next)
-      .then(() => {
-        this.showProviderStatus(successText, false);
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.showProviderStatus(message, true);
-      });
-  }
-
-  private addProviderFromForm(): void {
-    const baseUrl = this.providerAddUrl.value.trim();
-    if (baseUrl.length === 0) {
-      this.showProviderStatus('The endpoint base URL is required.', true);
-      return;
-    }
-    const account: ProviderAccount = {
-      id: crypto.randomUUID(),
-      label: this.providerAddLabel.value.trim() || 'Provider',
-      baseUrl,
-      apiKey: this.providerAddKey.value.trim(),
-      ...(this.providerAddPreset.value ? { presetId: this.providerAddPreset.value } : {}),
-      models: [],
-    };
-    this.providerAddPreset.value = '';
-    this.providerAddLabel.value = '';
-    this.providerAddUrl.value = '';
-    this.providerAddKey.value = '';
-    this.updateAddFormState();
-    const isFirst = this.registry.accounts.length === 0;
-    this.persistRegistry(
-      {
-        accounts: [...this.registry.accounts, account],
-        defaultProviderId: isFirst ? account.id : this.registry.defaultProviderId,
-        defaultModel: this.registry.defaultModel,
-      },
-      'Provider added.',
-    );
-    this.openProviderCard(account.id);
-    this.providerAdd.open = false;
-  }
-
-  /** Opens the card of one account, e.g. the one the form just added. */
-  private openProviderCard(id: string): void {
-    const card = this.providerList.querySelector(`details.provider-card[data-id="${CSS.escape(id)}"]`);
-    if (card instanceof HTMLDetailsElement) {
-      card.open = true;
-    }
-  }
-
-  /** One collapsible card per account: the summary row names it, the body edits it. */
-  private buildProviderCard(account: ProviderAccount): HTMLDetailsElement {
-    const card = document.createElement('details') as HTMLDetailsElement;
-    card.className = 'provider-card';
-    card.dataset.id = account.id;
-
-    const head = document.createElement('summary');
-    head.className = 'provider-card-head';
-    // The title doubles as the name editor: editing it marks the card dirty, and Save stores the name.
-    const titleInput = document.createElement('input');
-    titleInput.type = 'text';
-    titleInput.className = 'provider-title-input';
-    titleInput.value = account.label;
-    titleInput.spellcheck = false;
-    titleInput.title = 'Provider name';
-    const modelCount = account.models.length;
-    const meta = document.createElement('span');
-    meta.className = 'provider-card-meta';
-    meta.textContent = modelCount === 1 ? '1 model' : `${modelCount} models`;
-    // The default pill lives in the head, so the default provider reads and changes while the card sits collapsed.
-    const isDefaultAccount = this.effectiveDefaultAccount()?.id === account.id;
-    const defaultButton = document.createElement('button');
-    defaultButton.type = 'button';
-    defaultButton.className = 'provider-default-toggle';
-    defaultButton.textContent = isDefaultAccount ? 'Default' : 'Set default';
-    defaultButton.setAttribute('aria-pressed', String(isDefaultAccount));
-    defaultButton.title = 'New chats pick this provider and its current default model.';
-    defaultButton.addEventListener('click', (event) => {
-      // The click must not open or close the card around the button.
-      event.preventDefault();
-      // The latched pill stays latched: another provider's pill moves the default.
-      if (isDefaultAccount) {
-        return;
-      }
-      this.makeDefaultProvider(account.id);
-    });
-    head.append(titleInput, meta, defaultButton);
-
-    const body = document.createElement('div');
-    body.className = 'provider-card-body';
-    const urlField = document.createElement('label');
-    urlField.className = 'provider-field';
-    urlField.append('Base URL');
-    const urlInput = document.createElement('input');
-    urlInput.type = 'text';
-    urlInput.value = account.baseUrl;
-    urlInput.placeholder = 'https://api.moonshot.ai/v1';
-    urlInput.spellcheck = false;
-    urlField.append(urlInput);
-    const keyField = document.createElement('label');
-    keyField.className = 'provider-field';
-    keyField.append('API key');
-    const keyInput = document.createElement('input');
-    keyInput.type = 'password';
-    keyInput.value = account.apiKey;
-    keyField.append(keyInput);
-
-    const models = document.createElement('div');
-    models.className = 'provider-models';
-    // Only the default model of the default account reads "In use": every other model offers its Use button,
-    // so the default pair can move anywhere, one-model accounts included.
-    const defaultAccount = this.effectiveDefaultAccount();
-    const defaultModel = defaultAccount ? this.effectiveDefaultModel(defaultAccount) : null;
-    for (const model of account.models) {
-      models.append(this.buildModelRow(account, model, defaultAccount?.id === account.id && model.id === defaultModel));
-    }
-    if (account.models.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'status';
-      empty.textContent = 'No model on this account. Add one below.';
-      models.append(empty);
-    }
-    const addModelRow = document.createElement('div');
-    addModelRow.className = 'provider-add-model';
-    const modelInput = document.createElement('input');
-    modelInput.type = 'text';
-    modelInput.placeholder = 'kimi-k2.6';
-    modelInput.spellcheck = false;
-    // The vision flag of the new model latches as a pill and resets after the add.
-    const visionToggle = document.createElement('button');
-    visionToggle.type = 'button';
-    visionToggle.className = 'model-vision-toggle';
-    visionToggle.textContent = 'Vision';
-    visionToggle.setAttribute('aria-pressed', 'false');
-    visionToggle.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
-    visionToggle.addEventListener('click', () => {
-      visionToggle.setAttribute('aria-pressed', String(visionToggle.getAttribute('aria-pressed') !== 'true'));
-    });
-    const addModelButton = document.createElement('button');
-    addModelButton.type = 'button';
-    addModelButton.textContent = 'Add model';
-    addModelButton.addEventListener('click', () => {
-      this.addModel(account.id, modelInput.value, visionToggle.getAttribute('aria-pressed') === 'true');
-      modelInput.value = '';
-      visionToggle.setAttribute('aria-pressed', 'false');
-    });
-    addModelRow.append(modelInput, visionToggle, addModelButton);
-
-    const actions = document.createElement('div');
-    actions.className = 'provider-card-actions';
-    const saveButton = document.createElement('button');
-    saveButton.type = 'button';
-    saveButton.className = 'primary provider-save';
-    saveButton.textContent = 'Save';
-    saveButton.disabled = true;
-    saveButton.addEventListener('click', () => {
-      this.saveAccount(account.id, titleInput.value.trim() || 'Provider', urlInput.value.trim(), keyInput.value);
-    });
-    const removeButton = document.createElement('button');
-    removeButton.type = 'button';
-    removeButton.className = 'provider-remove';
-    removeButton.textContent = 'Remove';
-    removeButton.addEventListener('click', () => {
-      this.removeProvider(account.id);
-    });
-    actions.append(saveButton, removeButton);
-
-    /** The save action enables while an edited value differs from the stored account. */
-    const updateSaveState = (): void => {
-      const dirty =
-        (titleInput.value.trim() || 'Provider') !== account.label ||
-        urlInput.value.trim() !== account.baseUrl ||
-        keyInput.value !== account.apiKey;
-      saveButton.disabled = !dirty;
-      card.classList.toggle('dirty', dirty);
-    };
-    for (const field of [titleInput, urlInput, keyInput]) {
-      field.addEventListener('input', updateSaveState);
-    }
-
-    body.append(urlField, keyField, models, addModelRow, actions);
-    card.append(head, body);
-    return card;
-  }
-
-  private buildModelRow(account: ProviderAccount, model: ModelEntry, isDefault: boolean): HTMLElement {
-    const row = document.createElement('div');
-    row.className = 'provider-model';
-    const name = document.createElement('span');
-    name.className = 'provider-model-name';
-    name.textContent = model.id;
-    // The vision flag latches as a pill: filled when the model reads images, quiet when it does not.
-    const visionToggle = document.createElement('button');
-    visionToggle.type = 'button';
-    visionToggle.className = 'model-vision-toggle';
-    visionToggle.textContent = 'Vision';
-    visionToggle.setAttribute('aria-pressed', String(model.vision));
-    visionToggle.title = 'The model reads image parts: pasted, dropped, and screenshotted pictures reach it.';
-    visionToggle.addEventListener('click', () => {
-      this.setModelVision(account.id, model.id, !model.vision);
-    });
-    // The Use pill latches on the default pair and never unlatches on itself: another Use moves the latch.
-    const useButton = document.createElement('button');
-    useButton.type = 'button';
-    useButton.className = 'model-use';
-    useButton.textContent = isDefault ? 'In use' : 'Use';
-    useButton.setAttribute('aria-pressed', String(isDefault));
-    useButton.addEventListener('click', () => {
-      if (isDefault) {
-        return;
-      }
-      this.makeDefault(account.id, model.id);
-    });
-    const removeButton = document.createElement('button');
-    removeButton.type = 'button';
-    removeButton.className = 'provider-remove';
-    removeButton.textContent = '×';
-    removeButton.title = `Remove ${model.id}`;
-    removeButton.addEventListener('click', () => {
-      this.removeModel(account.id, model.id);
-    });
-    row.append(name, visionToggle, useButton, removeButton);
-    return row;
-  }
-
-  private accountById(id: string): ProviderAccount | null {
-    return this.registry.accounts.find((account) => account.id === id) ?? null;
-  }
-
-  /** Rewrites one account in the registry. */
-  private withAccount(id: string, rewrite: (account: ProviderAccount) => ProviderAccount, successText: string): void {
-    const account = this.accountById(id);
-    if (!account) {
-      return;
-    }
-    this.persistRegistry(
-      {
-        ...this.registry,
-        accounts: this.registry.accounts.map((candidate) => (candidate.id === id ? rewrite(candidate) : candidate)),
-      },
-      successText,
-    );
-  }
-
-  private saveAccount(id: string, label: string, baseUrl: string, apiKey: string): void {
-    if (baseUrl.length === 0) {
-      this.showProviderStatus('The endpoint base URL is required.', true);
-      return;
-    }
-    this.withAccount(id, (account) => ({ ...account, label, baseUrl, apiKey }), 'Saved.');
-  }
-
-  private addModel(id: string, model: string, vision: boolean): void {
-    const trimmed = model.trim();
-    if (trimmed.length === 0) {
-      this.showProviderStatus('The model id is required.', true);
-      return;
-    }
-    const account = this.accountById(id);
-    if (!account) {
-      return;
-    }
-    if (account.models.some((candidate) => candidate.id === trimmed)) {
-      this.showProviderStatus(`The model "${trimmed}" already exists on this account.`, true);
-      return;
-    }
-    this.persistRegistry(
-      {
-        accounts: this.registry.accounts.map((candidate) =>
-          candidate.id === id ? { ...candidate, models: [...candidate.models, { id: trimmed, vision }] } : candidate,
-        ),
-        defaultProviderId: this.registry.defaultProviderId ?? id,
-        defaultModel: this.registry.defaultModel ?? trimmed,
-      },
-      'Model added.',
-    );
-  }
-
-  /** Flips the vision flag of one model. The chats of the model follow at their next send. */
-  private setModelVision(id: string, modelId: string, vision: boolean): void {
-    this.withAccount(
-      id,
-      (account) => ({
-        ...account,
-        models: account.models.map((model) => (model.id === modelId ? { ...model, vision } : model)),
-      }),
-      vision ? 'Vision on.' : 'Vision off.',
-    );
-  }
-
-  private removeModel(id: string, model: string): void {
-    const account = this.accountById(id);
-    if (!account) {
-      return;
-    }
-    const models = account.models.filter((candidate) => candidate.id !== model);
-    const wasDefault = this.registry.defaultModel === model;
-    const nextDefault = wasDefault ? (models[0]?.id ?? null) : this.registry.defaultModel;
-    this.persistRegistry(
-      {
-        ...this.registry,
-        accounts: this.registry.accounts.map((candidate) =>
-          candidate.id === id ? { ...candidate, models } : candidate,
-        ),
-        defaultModel: nextDefault,
-      },
-      'Model removed.',
-    );
-  }
-
-  private makeDefault(id: string, model: string): void {
-    this.persistRegistry({ ...this.registry, defaultProviderId: id, defaultModel: model }, 'Default set.');
-  }
-
-  /** Makes one account the default provider, with its effective model as the default model. */
-  private makeDefaultProvider(id: string): void {
-    const account = this.accountById(id);
-    if (!account) {
-      return;
-    }
-    this.persistRegistry(
-      { ...this.registry, defaultProviderId: id, defaultModel: this.effectiveDefaultModel(account) },
-      'Default set.',
-    );
-  }
-
-  private removeProvider(id: string): void {
-    const accounts = this.registry.accounts.filter((account) => account.id !== id);
-    const wasDefault = this.registry.defaultProviderId === id;
-    const nextDefaultAccount = wasDefault ? (accounts[0] ?? null) : this.effectiveDefaultAccount();
-    const nextDefaultModel = nextDefaultAccount ? this.effectiveDefaultModel(nextDefaultAccount) : null;
-    this.persistRegistry(
-      {
-        accounts,
-        defaultProviderId: nextDefaultAccount?.id ?? null,
-        defaultModel: nextDefaultModel,
-      },
-      'Provider removed.',
-    );
-  }
-
   /** The connection one chat runs on: its bound provider and model, or the status bar selection.
    * Null when the chat has no usable provider, or when its bound provider no longer exists. */
   private resolveChatConnection(chat: Chat): { account: ProviderAccount; model: string; vision: boolean } | null {
+    const registry = this.settingsView.registry;
     if (chat.boundProviderId) {
-      const account = this.registry.accounts.find((candidate) => candidate.id === chat.boundProviderId);
+      const account = registry.accounts.find((candidate) => candidate.id === chat.boundProviderId);
       if (!account || !chat.boundModel) {
         return null;
       }
-      return { account, model: chat.boundModel, vision: this.modelVision(account, chat.boundModel) };
+      return { account, model: chat.boundModel, vision: modelVision(account, chat.boundModel) };
     }
     const account =
-      this.registry.accounts.find((candidate) => candidate.id === chat.pendingProviderId) ??
-      this.effectiveDefaultAccount();
+      registry.accounts.find((candidate) => candidate.id === chat.pendingProviderId) ??
+      effectiveDefaultAccount(registry);
     if (!account) {
       return null;
     }
     const model =
       chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel) ?
         chat.pendingModel :
-        this.effectiveDefaultModel(account);
+        effectiveDefaultModel(registry, account);
     if (!model) {
       return null;
     }
-    return { account, model, vision: this.modelVision(account, model) };
-  }
-
-  private showProviderStatus(message: string, isError: boolean): void {
-    this.providerStatus.textContent = message;
-    this.providerStatus.className = isError ? 'status error' : 'status';
-    this.providerStatus.hidden = false;
+    return { account, model, vision: modelVision(account, model) };
   }
 
   private async send(): Promise<void> {
@@ -2014,7 +577,7 @@ export class MainApp implements McpSessionSink {
     if (chat.isMcpHostLog) {
       // The host tab logs sessions. It holds no provider and no transcript, so it answers no send.
       chat.entries.push({ role: 'notice', content: 'The MCP Host tab only logs host sessions. Send from a chat tab.' });
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     if (this.isTurnRunning(chat.id)) {
@@ -2024,7 +587,7 @@ export class MainApp implements McpSessionSink {
       this.pendingImages = [];
       this.renderAttachments();
       chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images: [...images] } : {}), queued: true });
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     // The user acts on the latest message, so the send pins the view back to it.
@@ -2063,11 +626,11 @@ export class MainApp implements McpSessionSink {
         role: 'error',
         content: `The system prompt source "${setup.label}" failed: ${message}`,
       });
-      this.renderMessages();
+      this.messages.render();
       return false;
     }
     chat.boundSystemPrompt = { sourceId: setup.id, title: setup.label, text: promptText };
-    this.renderMessages();
+    this.messages.render();
     return true;
   }
 
@@ -2080,7 +643,7 @@ export class MainApp implements McpSessionSink {
         role: 'notice',
         content: `The model "${connection.model}" reads text only. Turn on its Vision flag in the settings, or remove the images.`,
       });
-      this.renderMessages();
+      this.messages.render();
       this.persistChat(chat);
       return;
     }
@@ -2112,7 +675,7 @@ export class MainApp implements McpSessionSink {
           'The provider of this chat no longer exists. Open a new chat tab for a different model.' :
           'No provider is configured. Open the Settings tab, add a provider, and give it a model.',
       });
-      this.renderMessages();
+      this.messages.render();
       this.persistChat(chat);
       return;
     }
@@ -2131,7 +694,7 @@ export class MainApp implements McpSessionSink {
     const abort = new AbortController();
     this.runningTurns.set(chat.id, abort);
     this.updateTurnControls(chat.id, true);
-    this.renderMessages();
+    this.messages.render();
     let stopped = false;
     try {
       await this.runAgentTurn(
@@ -2139,8 +702,8 @@ export class MainApp implements McpSessionSink {
         provider,
         connection.model,
         connection.vision,
-        this.agentTurnLimit,
-        chat.thinkingLevel ?? this.agentThinkingDefault ?? undefined,
+        this.settingsView.agentTurnLimit,
+        chat.thinkingLevel ?? this.settingsView.agentThinkingDefault ?? undefined,
         abort.signal,
       );
     } catch (error) {
@@ -2168,7 +731,7 @@ export class MainApp implements McpSessionSink {
         this.runningTurns.delete(chat.id);
       }
       this.updateTurnControls(chat.id, false);
-      this.renderMessages();
+      this.messages.render();
       this.renderTabs();
       this.persistChat(chat);
     }
@@ -2187,7 +750,7 @@ export class MainApp implements McpSessionSink {
     }
     chat.entries.splice(messageIndex + 1);
     this.chatPinned = true;
-    this.renderMessages();
+    this.messages.render();
     await this.runChatTurn(chat);
   }
 
@@ -2231,13 +794,13 @@ export class MainApp implements McpSessionSink {
     const chat = this.chats.find((candidate) => candidate.id === editing.chatId) ?? null;
     this.editing = null;
     if (!chat || this.isTurnRunning(chat.id)) {
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     const target = typeof editing.index === 'number' ? chat.entries[editing.index] : undefined;
     const images = editing.images ?? target?.images ?? [];
     if (text.length === 0 && images.length === 0) {
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     if (this.chatNeedsSystemPrompt(chat)) {
@@ -2249,7 +812,7 @@ export class MainApp implements McpSessionSink {
     chat.entries.splice(editing.index ?? chat.entries.length);
     chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
     this.chatPinned = true;
-    this.renderMessages();
+    this.messages.render();
     await this.runChatTurn(chat);
   }
 
@@ -2268,7 +831,7 @@ export class MainApp implements McpSessionSink {
     const queued = index >= 0 ? chat.entries[index] : undefined;
     if (queued) {
       chat.entries.splice(index, 1);
-      this.renderMessages();
+      this.messages.render();
       await this.deliver(chat, queued.content, queued.images ?? []);
       return;
     }
@@ -2281,7 +844,7 @@ export class MainApp implements McpSessionSink {
       }
       if (entry?.role === 'user' && entry.queued === false) {
         chat.entries.splice(position, 1);
-        this.renderMessages();
+        this.messages.render();
         await this.deliver(chat, entry.content, entry.images ?? []);
         return;
       }
@@ -2305,11 +868,11 @@ export class MainApp implements McpSessionSink {
         // False, not absent: the drain after the run answers it when the turn ends without it.
         queued: false,
       });
-      this.renderMessages();
+      this.messages.render();
       this.persistChat(chat);
       return;
     }
-    this.renderMessages();
+    this.messages.render();
     await this.deliver(chat, entry.content, entry.images ?? []);
   }
 
@@ -2324,7 +887,7 @@ export class MainApp implements McpSessionSink {
         role: 'notice',
         content: `One message carries at most ${MAX_ATTACHMENTS} images.`,
       });
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     if (files.length > room) {
@@ -2332,7 +895,7 @@ export class MainApp implements McpSessionSink {
         role: 'notice',
         content: `One message carries at most ${MAX_ATTACHMENTS} images. The first ${room} ${room === 1 ? 'stays' : 'stay'}, the rest drop.`,
       });
-      this.renderMessages();
+      this.messages.render();
     }
     for (const file of files.slice(0, room)) {
       try {
@@ -2404,7 +967,7 @@ export class MainApp implements McpSessionSink {
       source: chat ? chatAgentSource(chat.id) : CHAT_AGENT_SOURCE,
       chatId: chat?.id ?? this.activeChatId ?? 0,
       patchStore: this.patchStore ?? new PatchStore(this.workspacePath),
-      pathRules: () => this.pathRules,
+      pathRules: () => this.settingsView.pathRules,
     };
   }
 
@@ -2416,7 +979,7 @@ export class MainApp implements McpSessionSink {
       return;
     }
     chat.entries.push({ role: 'user', content: notice.text });
-    this.renderMessages();
+    this.messages.render();
     this.persistChat(chat);
     if (!this.isTurnRunning(chat.id)) {
       await this.runChatTurn(chat);
@@ -2519,7 +1082,7 @@ export class MainApp implements McpSessionSink {
       toolCallId: call.id,
       toolName: call.name,
     });
-    this.renderMessages();
+    this.messages.render();
     // The turn runs on, so the result lands in the session file now: a crash mid-turn keeps it.
     this.persistChat(chat);
   }
@@ -2628,7 +1191,7 @@ export class MainApp implements McpSessionSink {
       },
       settle: (entry: ChatEntry): void => {
         replaceSlot(entry);
-        this.renderMessages();
+        this.messages.render();
       },
     };
   }
@@ -2652,16 +1215,16 @@ export class MainApp implements McpSessionSink {
     const entry = index >= 0 ? chat.entries[index] : undefined;
     const item = this.chatMessages.querySelector(`:scope > li[data-entry-index="${index}"]`);
     if (!entry || entry.role !== 'assistant' || !(item instanceof HTMLElement)) {
-      this.renderMessages();
+      this.messages.render();
       return;
     }
     const text = item.querySelector(':scope > .message-text');
     const body = item.querySelector(':scope > details.reasoning > .reasoning-body');
     if (!(text instanceof HTMLElement) || !(body instanceof HTMLElement)) {
-      this.renderMessages();
+      this.messages.render();
       return;
     }
-    this.fillEntryText(text, entry);
+    this.messages.fillEntryText(text, entry);
     const reasoning = entry.reasoning ?? '';
     body.textContent = reasoning;
     const tail = item.querySelector(':scope > details.reasoning > summary > .reasoning-tail');
@@ -2769,7 +1332,7 @@ export class MainApp implements McpSessionSink {
     this.chatForm.hidden = sessionLog;
     this.chatStatus.hidden = sessionLog;
     this.renderTabs();
-    this.renderMessages();
+    this.messages.render();
     this.renderPermissionRequests();
     this.renderChatStatus();
     if (!sessionLog) {
@@ -2910,23 +1473,24 @@ export class MainApp implements McpSessionSink {
     if (!chat) {
       return;
     }
+    const registry = this.settingsView.registry;
     const usage = document.createElement('span');
     usage.className = 'chat-status-usage';
     usage.title = 'Context tokens of the last request · output tokens of the whole chat';
     usage.textContent = `ctx ${formatTokenCount(chat.contextTokens)} · out ${formatTokenCount(chat.outputTokens)}`;
     if (chat.boundProviderId) {
-      const account = this.registry.accounts.find((candidate) => candidate.id === chat.boundProviderId);
+      const account = registry.accounts.find((candidate) => candidate.id === chat.boundProviderId);
       const providerLabel = document.createElement('span');
       providerLabel.className = 'chat-status-label';
       providerLabel.textContent = account?.label ?? 'unknown provider';
       const modelLabel = document.createElement('span');
       modelLabel.className = 'chat-status-label';
       modelLabel.textContent =
-        account && chat.boundModel ? this.modelDisplayName(account, chat.boundModel) : (chat.boundModel ?? '–');
+        account && chat.boundModel ? modelDisplayName(account, chat.boundModel) : (chat.boundModel ?? '–');
       this.chatStatus.append(providerLabel, modelLabel, this.buildThinkingSelect(chat), usage);
       return;
     }
-    if (this.registry.accounts.length === 0) {
+    if (registry.accounts.length === 0) {
       const empty = document.createElement('span');
       empty.className = 'chat-status-label';
       empty.textContent = 'No provider';
@@ -2934,14 +1498,14 @@ export class MainApp implements McpSessionSink {
       return;
     }
     const selectedAccount =
-      this.registry.accounts.find((candidate) => candidate.id === chat.pendingProviderId) ??
-      this.effectiveDefaultAccount();
+      registry.accounts.find((candidate) => candidate.id === chat.pendingProviderId) ??
+      effectiveDefaultAccount(registry);
     if (!selectedAccount) {
       return;
     }
     const providerSelect = document.createElement('select');
     providerSelect.title = 'The provider of the first message. The chat stays on it after the send.';
-    for (const account of this.registry.accounts) {
+    for (const account of registry.accounts) {
       const option = document.createElement('option');
       option.value = account.id;
       option.textContent = account.label;
@@ -2955,13 +1519,13 @@ export class MainApp implements McpSessionSink {
       for (const model of account.models) {
         const option = document.createElement('option');
         option.value = model.id;
-        option.textContent = this.modelDisplayName(account, model.id);
+        option.textContent = modelDisplayName(account, model.id);
         modelSelect.append(option);
       }
       const pending =
         chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel) ?
           chat.pendingModel :
-          this.effectiveDefaultModel(account);
+          effectiveDefaultModel(registry, account);
       if (pending) {
         modelSelect.value = pending;
       }
@@ -2970,7 +1534,7 @@ export class MainApp implements McpSessionSink {
     providerSelect.addEventListener('change', () => {
       chat.pendingProviderId = providerSelect.value;
       delete chat.pendingModel;
-      const next = this.registry.accounts.find((candidate) => candidate.id === providerSelect.value);
+      const next = registry.accounts.find((candidate) => candidate.id === providerSelect.value);
       if (next) {
         renderModelOptions(next);
       }
@@ -2979,693 +1543,6 @@ export class MainApp implements McpSessionSink {
       chat.pendingModel = modelSelect.value;
     });
     this.chatStatus.append(providerSelect, modelSelect, this.buildThinkingSelect(chat), usage);
-  }
-
-  /** Groups the entries of one chat for the message list: an MCP request pairs with the reply that
-   * follows it, and the tool calls of one agent turn pair with the tool results that answer them.
-   * A request still in flight, or brushed aside by an unrelated entry, renders with the wait hint. */
-  private groupChatEntries(chat: Chat): readonly MessageGroup[] {
-    const groups: MessageGroup[] = [];
-    // A message queued while a turn runs stays pinned at the bottom, under the running output.
-    const queuedSlots: EntrySlot[] = [];
-    let open: EntrySlot | null = null;
-    const flush = (): void => {
-      if (open) {
-        groups.push({ kind: 'pair', request: open, reply: null });
-        open = null;
-      }
-    };
-    for (let index = 0; index < chat.entries.length; index += 1) {
-      const entry = chat.entries[index];
-      if (!entry) {
-        continue;
-      }
-      const slot: EntrySlot = { index, entry };
-      if (entry.queued) {
-        queuedSlots.push(slot);
-        continue;
-      }
-      if (entry.role === 'user' && entry.json && entry.toolName) {
-        // A second request while one waits in flight closes the waiting one as unanswered.
-        flush();
-        open = slot;
-      } else if (entry.role !== 'user' && entry.role !== 'tool' && entry.toolName) {
-        if (open) {
-          groups.push({ kind: 'pair', request: open, reply: slot });
-          open = null;
-        } else {
-          groups.push({ kind: 'single', slot });
-        }
-      } else if (entry.role === 'assistant' && entry.toolCalls && entry.toolCalls.length > 0) {
-        flush();
-        // The tool results follow the assistant reply in call order, until a different role speaks.
-        const replies: EntrySlot[] = [];
-        let cursor = index + 1;
-        while (cursor < chat.entries.length) {
-          const candidate = chat.entries[cursor];
-          if (!candidate || candidate.role !== 'tool') {
-            break;
-          }
-          replies.push({ index: cursor, entry: candidate });
-          cursor += 1;
-        }
-        groups.push({ kind: 'agent', request: slot, replies });
-        index = cursor - 1;
-      } else {
-        flush();
-        groups.push({ kind: 'single', slot });
-      }
-    }
-    flush();
-    for (const slot of queuedSlots) {
-      groups.push({ kind: 'single', slot });
-    }
-    return groups;
-  }
-
-  /** Builds the reasoning disclosure of one assistant entry, empty until reasoning arrives. */
-  private buildReasoningDisclosure(index: number, openReasoning: ReadonlySet<string>): {
-    disclosure: HTMLDetailsElement;
-    body: HTMLDivElement;
-  } {
-    const disclosure = document.createElement('details');
-    disclosure.className = 'reasoning';
-    disclosure.open = openReasoning.has(String(index));
-    const summary = document.createElement('summary');
-    const label = document.createElement('span');
-    label.textContent = 'Reasoning';
-    // The collapsed tail carries the latest reasoning words while they stream, and clears when they stop.
-    const tail = document.createElement('span');
-    tail.className = 'reasoning-tail';
-    summary.append(label, tail);
-    const body = document.createElement('div');
-    body.className = 'reasoning-body';
-    disclosure.append(summary, body);
-    return { disclosure, body };
-  }
-
-  /** Builds one message item of a single entry: the bubble, the tool cards, or the reasoning disclosure.
-   * The user, assistant, and error bubbles carry the action zone at their bottom right.
-   * Returns null for one error entry the empty slot before it already rendered as its bubble body. */
-  private buildMessageItem(
-    chat: Chat,
-    slot: EntrySlot,
-    openReasoning: ReadonlySet<string>,
-    isStreaming = false,
-  ): HTMLLIElement | null {
-    const { index, entry } = slot;
-    if (this.editing?.chatId === chat.id && this.editing.index === index) {
-      return this.buildMessageEditor(this.editing);
-    }
-    const item = document.createElement('li');
-    item.dataset.entryIndex = String(index);
-    if (entry.role === 'tool' || (entry.toolName && entry.role !== 'user')) {
-      item.append(this.buildToolReplyCard(entry));
-      return item;
-    }
-    if (entry.role === 'assistant' && entry.reasoning) {
-      // The disclosure mounts with the first reasoning piece, never before it.
-      item.className = 'message assistant';
-      const { disclosure, body } = this.buildReasoningDisclosure(index, openReasoning);
-      body.textContent = entry.reasoning;
-      const text = document.createElement('span');
-      text.className = 'message-text';
-      this.fillEntryText(text, entry);
-      item.append(disclosure, text);
-      const actions = this.buildMessageActions(chat, slot);
-      if (actions) {
-        item.append(actions);
-      }
-      return item;
-    }
-    if (entry.role === 'assistant' && !entry.content && !isStreaming && chat.entries[index + 1]?.role === 'error') {
-      // The turn died before its first piece: one error bubble, the icon and a short label as its
-      // title, the provider message as its content.
-      const failure = chat.entries[index + 1];
-      item.className = 'message error-bubble';
-      const head = document.createElement('div');
-      head.className = 'error-bubble-head';
-      head.append(this.buildIconSvg(ICON_ERROR));
-      const title = document.createElement('span');
-      title.textContent = errorLabelOf(failure?.content ?? '');
-      head.append(title);
-      const body = document.createElement('div');
-      body.className = 'error-bubble-body';
-      body.textContent = failure?.content ?? '';
-      item.append(head, body);
-      return item;
-    }
-    if (
-      entry.role === 'error' &&
-      !entry.toolName &&
-      chat.entries[index - 1]?.role === 'assistant' &&
-      !chat.entries[index - 1]?.content &&
-      !chat.entries[index - 1]?.reasoning &&
-      !chat.entries[index - 1]?.toolCalls
-    ) {
-      // The empty slot before this error rendered the pair as one bubble.
-      return null;
-    }
-    if (entry.role === 'assistant' && !entry.content && isStreaming) {
-      // The slot holds nothing yet: the pulsing accent icon of the open connection.
-      item.className = 'message stream-status connecting';
-      item.append(this.buildIconSvg(ICON_CONNECTING));
-      const label = document.createElement('span');
-      label.textContent = 'Connecting…';
-      item.append(label);
-      return item;
-    }
-    item.className = `message ${entry.role}${entry.queued ? ' queued' : ''}`;
-    this.fillEntryText(item, entry);
-    if (entry.queued) {
-      const marker = document.createElement('span');
-      marker.className = 'queued-marker';
-      marker.textContent = '(queued)';
-      const sendNow = document.createElement('button');
-      sendNow.type = 'button';
-      sendNow.className = 'queued-send-now';
-      sendNow.textContent = 'Send now';
-      sendNow.title = 'Sends at the next step of the running turn, without waiting for it to end.';
-      sendNow.addEventListener('click', () => {
-        void this.sendQueuedNow(chat, index);
-      });
-      marker.append(' ', sendNow);
-      item.append(marker);
-    }
-    if (entry.images && entry.images.length > 0) {
-      item.append(this.buildImageStrip(entry.images));
-    }
-    const actions = this.buildMessageActions(chat, slot);
-    if (actions) {
-      item.append(actions);
-    }
-    return item;
-  }
-
-  /** Builds the action zone of one message: the icon row at the bottom right of the bubble.
-   * A user message offers retry, copy, edit, and fork; an assistant reply offers copy. The retry
-   * shows only on the user message whose turn ended in an error. The host log and a running turn
-   * carry no zone. */
-  /** Fills one message text element: an assistant reply renders as markdown with highlighted
-   * code, every other role renders as plain text. */
-  private fillEntryText(target: HTMLElement, entry: ChatEntry): void {
-    if (entry.role === 'assistant') {
-      target.classList.add('md-body');
-      renderMarkdown(target, entry.content);
-      return;
-    }
-    target.textContent = entry.content;
-  }
-
-  /** The tracked page titles, so a tool call head names the page it targets. */
-  private readonly pageTitles = new Map<number, string>();
-  /** True while one page title refresh runs, so renders never stack refreshes. */
-  private pageTitlesLoading = false;
-
-  /** Reads the tracked page titles over the bridge and re-renders when one changed. A failed
-   * read keeps the titles as they were. */
-  private async refreshPageTitles(): Promise<void> {
-    if (this.pageTitlesLoading) {
-      return;
-    }
-    this.pageTitlesLoading = true;
-    try {
-      const bridge = readBridge();
-      if (!bridge) {
-        return;
-      }
-      const result = (await bridge.workspace.runWindowTool('list_pages', {})) as { content?: { type: string; text?: string }[] } | null;
-      const text = result?.content?.find((block) => block.type === 'text')?.text;
-      if (typeof text !== 'string') {
-        return;
-      }
-      const list = JSON.parse(text) as { id?: unknown; title?: unknown }[];
-      let changed = false;
-      for (const page of list) {
-        if (typeof page.id === 'number' && typeof page.title === 'string' && this.pageTitles.get(page.id) !== page.title) {
-          this.pageTitles.set(page.id, page.title);
-          changed = true;
-        }
-      }
-      if (changed) {
-        this.renderMessages();
-      }
-    } catch {
-      // The page list stays as it was.
-    } finally {
-      this.pageTitlesLoading = false;
-    }
-  }
-
-  /** Reads the target label of a tool call that names a page: the tracked title, or the bare id
-   * while the titles load. A miss triggers one refresh. */
-  private pageTargetOf(args: unknown): string | null {
-    const pageId = (args as Record<string, unknown> | null)?.['pageId'];
-    if (typeof pageId !== 'number') {
-      return null;
-    }
-    const known = this.pageTitles.get(pageId);
-    if (known) {
-      return known;
-    }
-    void this.refreshPageTitles();
-    return `page ${pageId}`;
-  }
-
-  private buildMessageActions(chat: Chat, slot: EntrySlot): HTMLElement | null {
-    const { index, entry } = slot;
-    if (chat.isMcpHostLog || this.isTurnRunning(chat.id)) {
-      return null;
-    }
-    const zone = document.createElement('div');
-    zone.className = 'message-actions';
-    if (entry.role === 'user' && !entry.queued) {
-      if (this.messageTurnFailed(chat, index)) {
-        zone.append(
-          this.buildMessageAction('Retry the failed message', ICON_RETRY, () => {
-            void this.retryChatFrom(chat, index);
-          }),
-        );
-      }
-      zone.append(
-        this.buildMessageAction('Copy the message text', ICON_COPY, () => {
-          this.copyEntryText(entry.content);
-        }),
-        this.buildMessageAction('Edit and resend from here', ICON_EDIT, () => {
-          this.editing = { chatId: chat.id, index, text: entry.content };
-          this.renderMessages();
-        }),
-        this.buildMessageAction('Fork into a new tab from here', ICON_FORK, () => {
-          this.forkChatAt(chat, index);
-        }),
-      );
-      return zone;
-    }
-    if (entry.role === 'assistant') {
-      zone.append(
-        this.buildMessageAction('Copy the message text', ICON_COPY, () => {
-          this.copyEntryText(entry.content);
-        }),
-      );
-      return zone;
-    }
-    return null;
-  }
-
-  /** True when the turn of one user message ended in an error entry: no later sent message owns
-   * the conversation between them. */
-  private messageTurnFailed(chat: Chat, index: number): boolean {
-    for (let cursor = index + 1; cursor < chat.entries.length; cursor += 1) {
-      const entry = chat.entries[cursor];
-      if (!entry) {
-        continue;
-      }
-      if (entry.role === 'user' && !entry.queued) {
-        return false;
-      }
-      if (entry.role === 'error' && !entry.toolName) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /** Builds one stroke icon svg for the message UI, drawn on a 16 by 16 grid. */
-  private buildIconSvg(iconPath: string): SVGSVGElement {
-    const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    icon.setAttribute('viewBox', '0 0 16 16');
-    icon.setAttribute('aria-hidden', 'true');
-    const stroke = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    stroke.setAttribute('d', iconPath);
-    icon.append(stroke);
-    return icon;
-  }
-
-  /** Builds one icon button of the message action zone. */
-  private buildMessageAction(title: string, iconPath: string, onClick: () => void): HTMLButtonElement {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'message-action';
-    button.title = title;
-    button.setAttribute('aria-label', title);
-    button.append(this.buildIconSvg(iconPath));
-    button.addEventListener('click', () => {
-      onClick();
-    });
-    return button;
-  }
-
-  /** Builds the open message editor: the pre-filled text area with the send and cancel actions.
-   * An entry index replaces that message; a fork draft appends as a new message. */
-  private buildMessageEditor(editing: { readonly text: string }): HTMLLIElement {
-    const item = document.createElement('li');
-    item.className = 'message-edit';
-    const editor = document.createElement('textarea');
-    editor.className = 'message-editor';
-    editor.value = editing.text;
-    const actions = document.createElement('div');
-    actions.className = 'message-edit-actions';
-    const send = document.createElement('button');
-    send.type = 'button';
-    send.className = 'primary';
-    send.textContent = 'Send';
-    send.addEventListener('click', () => {
-      void this.saveEditing();
-    });
-    const cancel = document.createElement('button');
-    cancel.type = 'button';
-    cancel.textContent = 'Cancel';
-    cancel.addEventListener('click', () => {
-      this.editing = null;
-      this.renderMessages();
-    });
-    actions.append(send, cancel);
-    item.append(editor, actions);
-    editor.addEventListener('input', () => {
-      this.fitMessageEditor(editor);
-    });
-    // Enter sends; Shift+Enter and Ctrl+Enter break the line, like the chat input.
-    editor.addEventListener('keydown', (event) => {
-      if (event.key !== 'Enter' || event.ctrlKey || event.shiftKey || event.isComposing) {
-        return;
-      }
-      event.preventDefault();
-      void this.saveEditing();
-    });
-    // The editor still sits detached here, so the fit and the focus wait one frame for the list to mount it.
-    requestAnimationFrame(() => {
-      this.fitMessageEditor(editor);
-      editor.focus();
-    });
-    // The caret starts at the end, so typing appends to the draft.
-    editor.selectionStart = editing.text.length;
-    editor.selectionEnd = editing.text.length;
-    return item;
-  }
-
-  /** Grows the editor text area with its written lines. */
-  private fitMessageEditor(editor: HTMLTextAreaElement): void {
-    editor.style.height = 'auto';
-    editor.style.height = `${editor.scrollHeight}px`;
-  }
-
-  /** The text body of one tool reply: a pre when the content carries new lines, so its formatting
-   * survives the page layout, a span for a single line. */
-  private buildToolText(content: string): HTMLElement {
-    const body = document.createElement(content.includes('\n') ? 'pre' : 'span');
-    body.className = 'tool-reply-text';
-    body.textContent = content;
-    return body;
-  }
-
-  /** One request/response pair: the framed group card with the labeled request section over the
-   * labeled reply section. A missing reply shows the wait hint. */
-  private buildToolPair(toolName: string, args: unknown, reply: ChatEntry | null, session?: string): HTMLElement {
-    const item = document.createElement('li');
-    item.className = 'tool-pair';
-    const requestTitle = document.createElement('p');
-    requestTitle.className = 'tool-pair-title';
-    const requestBadge = document.createElement('span');
-    requestBadge.className = 'tool-badge request';
-    requestBadge.textContent = '→ Request';
-    const nameLabel = document.createElement('span');
-    nameLabel.className = 'tool-pair-tool';
-    nameLabel.textContent = toolName;
-    requestTitle.append(requestBadge, nameLabel);
-    // A call that names a page carries its title, so the head reads where the call went.
-    const pageTarget = this.pageTargetOf(args);
-    if (pageTarget) {
-      const targetChip = document.createElement('span');
-      targetChip.className = 'tool-pair-target';
-      targetChip.textContent = pageTarget;
-      requestTitle.append(targetChip);
-    }
-    if (session) {
-      const sessionChip = document.createElement('span');
-      sessionChip.className = 'tool-pair-session';
-      sessionChip.textContent = session;
-      requestTitle.append(sessionChip);
-    }
-    const requestSection = document.createElement('div');
-    requestSection.className = 'tool-pair-section';
-    requestSection.append(this.buildToolRequestSection(toolName, args));
-    const replyTitle = document.createElement('p');
-    replyTitle.className = 'tool-pair-title';
-    const replyBadge = document.createElement('span');
-    replyBadge.className = reply && reply.role === 'error' ? 'tool-badge reply error' : 'tool-badge reply';
-    replyBadge.textContent = '← Reply';
-    replyTitle.append(replyBadge);
-    item.append(requestTitle, requestSection, replyTitle);
-    if (reply) {
-      const replySection = document.createElement('div');
-      replySection.className = reply.role === 'error' ? 'tool-pair-section error' : 'tool-pair-section';
-      if (reply.json) {
-        const replyViewer = document.createElement('json-viewer') as JsonViewerElement;
-        replyViewer.value = reply.json;
-        replySection.append(replyViewer);
-      } else {
-        replySection.append(this.buildToolText(reply.content));
-      }
-      if (reply.images && reply.images.length > 0) {
-        replySection.append(this.buildImageStrip(reply.images));
-      }
-      item.append(replySection);
-    } else {
-      const pending = document.createElement('p');
-      pending.className = 'tool-pair-pending';
-      pending.textContent = 'waiting for the reply…';
-      item.append(pending);
-    }
-    return item;
-  }
-
-  /** Builds the request section of one tool call: an evaluate call shows its expression as
-   * highlighted JavaScript, every other call shows the JSON viewer of its arguments. */
-  private buildToolRequestSection(toolName: string, args: unknown): HTMLElement {
-    const expression = toolName === 'evaluate' ? (args as Record<string, unknown> | null)?.['expression'] : undefined;
-    if (typeof expression === 'string') {
-      const code = document.createElement('div');
-      code.className = 'md-code';
-      const label = document.createElement('span');
-      label.className = 'md-code-label';
-      label.textContent = 'javascript';
-      const body = document.createElement('code');
-      body.className = 'md-code-body';
-      appendCodeRuns(body, expression, 'javascript');
-      code.append(label, body);
-      return code;
-    }
-    const viewer = document.createElement('json-viewer') as JsonViewerElement;
-    viewer.value = args;
-    return viewer;
-  }
-
-  /** The reply half of a pair, or a standalone tool reply: the tool name head over the text or viewer. */
-  private buildToolReplyCard(entry: ChatEntry): HTMLElement {
-    const card = document.createElement('div');
-    card.className = entry.role === 'error' ? 'message tool-result tool-error' : 'message tool-result';
-    const head = document.createElement('p');
-    head.className = 'tool-result-name';
-    head.textContent = entry.toolName ?? 'tool';
-    card.append(head);
-    if (entry.json) {
-      const viewer = document.createElement('json-viewer') as JsonViewerElement;
-      viewer.value = entry.json;
-      card.append(viewer);
-    } else {
-      card.append(this.buildToolText(entry.content));
-    }
-    if (entry.images && entry.images.length > 0) {
-      card.append(this.buildImageStrip(entry.images));
-    }
-    return card;
-  }
-
-  /** Builds the thumbnail strip of one entry: one small image per attached picture. */
-  private buildImageStrip(images: readonly ChatImage[]): HTMLElement {
-    const strip = document.createElement('div');
-    strip.className = 'image-strip';
-    for (const image of images) {
-      const thumbnail = document.createElement('img');
-      thumbnail.src = `data:${image.mimeType};base64,${image.data}`;
-      thumbnail.alt = 'image';
-      strip.append(thumbnail);
-    }
-    return strip;
-  }
-
-  /** Appends one agent turn: the intro bubble of the assistant reply, one request/response rail per
-   * tool call — paired over the tool call id — and any result that lost its call. */
-  private appendAgentTurn(group: Extract<MessageGroup, { kind: 'agent' }>, openReasoning: ReadonlySet<string>): void {
-    const entry = group.request.entry;
-    if (entry.reasoning || entry.content.length > 0) {
-      const intro = document.createElement('li');
-      intro.dataset.entryIndex = String(group.request.index);
-      intro.className = 'message assistant';
-      if (entry.reasoning) {
-        // The reasoning of a tool-calling reply stays visible once the turn completes.
-        const { disclosure, body } = this.buildReasoningDisclosure(group.request.index, openReasoning);
-        body.textContent = entry.reasoning;
-        intro.append(disclosure);
-      }
-      if (entry.content.length > 0) {
-        const text = document.createElement('span');
-        text.className = 'message-text';
-        this.fillEntryText(text, entry);
-        intro.append(text);
-      }
-      this.chatMessages.append(intro);
-    }
-    const calls = entry.toolCalls ?? [];
-    const callIds = new Set(calls.map((call) => call.id));
-    const replies = new Map<string, EntrySlot>();
-    for (const slot of group.replies) {
-      if (slot.entry.toolCallId) {
-        replies.set(slot.entry.toolCallId, slot);
-      }
-    }
-    for (const call of calls) {
-      let args: unknown;
-      try {
-        args = JSON.parse(call.arguments);
-      } catch {
-        args = call.arguments;
-      }
-      const reply = replies.get(call.id);
-      this.chatMessages.append(this.buildToolPair(call.name, args, reply ? reply.entry : null));
-    }
-    for (const slot of group.replies) {
-      if (slot.entry.toolCallId && callIds.has(slot.entry.toolCallId)) {
-        continue;
-      }
-      const item = document.createElement('li');
-      item.append(this.buildToolReplyCard(slot.entry));
-      this.chatMessages.append(item);
-    }
-  }
-
-  private renderMessages(): void {
-    // An open reasoning disclosure stays open across the rebuild, keyed by the entry index.
-    const openReasoning = new Set<string>();
-    for (const item of this.chatMessages.children) {
-      if (!(item instanceof HTMLElement)) {
-        continue;
-      }
-      const key = item.dataset.entryIndex;
-      if (!key) {
-        continue;
-      }
-      const disclosure = item.querySelector(':scope > details.reasoning');
-      if (disclosure instanceof HTMLDetailsElement && disclosure.open) {
-        openReasoning.add(key);
-      }
-    }
-    // The open state of the system prompt disclosure survives the rebuild the same way.
-    const promptDisclosure = this.chatMessages.querySelector(':scope > li.system-prompt-item > details.system-prompt');
-    const promptOpen = promptDisclosure instanceof HTMLDetailsElement ? promptDisclosure.open : false;
-    this.chatMessages.replaceChildren();
-    const chat = this.activeChat();
-    if (!chat) {
-      return;
-    }
-    this.appendSystemPromptItem(chat, promptOpen);
-    // The streaming entry of a busy chat renders as the connecting status until its first piece lands.
-    let streamingIndex = -1;
-    if (this.runningTurns.has(chat.id)) {
-      for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
-        const candidate = chat.entries[index];
-        if (candidate && candidate.role === 'assistant') {
-          streamingIndex = index;
-          break;
-        }
-      }
-    }
-    for (const group of this.groupChatEntries(chat)) {
-      if (group.kind === 'single') {
-        const item = this.buildMessageItem(chat, group.slot, openReasoning, group.slot.index === streamingIndex);
-        if (item) {
-          this.chatMessages.append(item);
-        }
-        continue;
-      }
-      if (group.kind === 'agent') {
-        this.appendAgentTurn(group, openReasoning);
-        continue;
-      }
-      const reply = group.reply ? group.reply.entry : null;
-      this.chatMessages.append(
-        this.buildToolPair(
-          group.request.entry.toolName ?? group.request.entry.content,
-          group.request.entry.json,
-          reply,
-          group.request.entry.mcpSession,
-        ),
-      );
-    }
-    // The fork draft carries no entry yet, so its editor renders after the copied history.
-    if (this.editing?.chatId === chat.id && this.editing.index === undefined) {
-      this.chatMessages.append(this.buildMessageEditor(this.editing));
-    }
-    this.pinChatToBottom();
-  }
-
-  /** Renders the system prompt element first in the message list: the source menu before the first
-   * sent message, the collapsed bound prompt after it. The none source and the host tab render nothing.
-   * A chat that predates the prompt, or carries messages without one, renders nothing: its window passed. */
-  private appendSystemPromptItem(chat: Chat, promptOpen: boolean): void {
-    if (chat.isMcpHostLog || this.promptSources.length === 0) {
-      return;
-    }
-    const bound = chat.boundSystemPrompt;
-    if (bound) {
-      if (bound.sourceId === NONE_SYSTEM_PROMPT_SETUP_ID || bound.text.length === 0) {
-        return;
-      }
-      const item = document.createElement('li');
-      item.className = 'system-prompt-item';
-      const disclosure = document.createElement('details');
-      disclosure.className = 'system-prompt';
-      disclosure.open = promptOpen;
-      const summary = document.createElement('summary');
-      const label = document.createElement('span');
-      label.className = 'system-prompt-title';
-      label.textContent = bound.title;
-      summary.append(label);
-      const body = document.createElement('div');
-      body.className = 'system-prompt-body';
-      body.textContent = bound.text;
-      disclosure.append(summary, body);
-      item.append(disclosure);
-      this.chatMessages.append(item);
-      return;
-    }
-    if (this.chatHasConversation(chat)) {
-      return;
-    }
-    const selected = this.selectedSystemPromptId(chat);
-    const item = document.createElement('li');
-    // The menu variant carries its own emphasis: centered and accented before the first send.
-    item.className = 'system-prompt-item system-prompt-menu';
-    const label = document.createElement('span');
-    label.className = 'system-prompt-menu-label';
-    label.textContent = 'System prompt';
-    const select = document.createElement('select');
-    select.className = 'system-prompt-select';
-    select.title = 'The system prompt of the first message. The chat keeps it after the send.';
-    for (const source of this.promptSources) {
-      const option = document.createElement('option');
-      option.value = source.id;
-      option.textContent = source.label;
-      select.append(option);
-    }
-    select.value = this.promptSources.some((source) => source.id === selected) ?
-      selected :
-      (this.promptSources[0]?.id ?? '');
-    select.addEventListener('change', () => {
-      chat.pendingSystemPromptId = select.value;
-    });
-    item.append(label, select);
-    this.chatMessages.append(item);
   }
 
   /** The source id the chat menu holds: the pending selection, or the default of the workspace. */
