@@ -1,6 +1,6 @@
 /**
- * Specs for the file tool permissions: a workspace write proposes without a card, an outside
- * write and an outside read each ask one card, a deny rule refuses, an allow rule reads free,
+ * Specs for the file tool permissions: every write proposes without a card, an outside read
+ * asks one card, a deny rule refuses, an allow rule reads free,
  * and the read-first gate holds until the chat reads the file.
  */
 
@@ -102,11 +102,13 @@ describe('the file tool permissions', () => {
     expect(existsSync(join(root, 'inside.md'))).to.equal(false);
   });
 
-  it('asks one propose card for a write outside the workspace', async () => {
+  it('proposes a patch for a write outside the workspace without a card', async () => {
     const target = join(outside, 'agent-test.md');
-    await write.run({ action: 'write', path: target, text: 'outside\n' });
-    expect(checks).to.deep.equal([{ action: 'propose', path: target }]);
+    const output = await write.run({ action: 'write', path: target, text: 'outside\n' });
+    expect(checks).to.deep.equal([]);
+    expect(output.text).to.include('waits for review');
     expect(store.listPatches()).to.have.lengthOf(1);
+    expect(existsSync(target)).to.equal(false);
   });
 
   it('asks one read card for a read outside the workspace', async () => {

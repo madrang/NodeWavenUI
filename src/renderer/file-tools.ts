@@ -62,12 +62,6 @@ function resolveWorkspacePath(raw: string, workspacePath: string): string {
   return raw.startsWith('/') ? raw : joinPath(root, raw);
 }
 
-/** True when one path sits outside the workspace, where no known path rule can cover it. */
-function outsideWorkspace(path: string, workspacePath: string): boolean {
-  const root = workspacePath.replace(/[\\/]+$/, '');
-  return path !== root && !path.startsWith(`${root}/`);
-}
-
 /** True when text holds a null byte, so it reads as binary rather than text. */
 function looksBinary(text: string): boolean {
   return text.includes('\u0000');
@@ -86,18 +80,6 @@ async function checkRead(deps: FileToolDeps, path: string, detail: string): Prom
     return;
   }
   await deps.check.check('agent', 'read', { kind: 'file', path }, detail, deps.source);
-}
-
-/**
- * Runs the propose permission of one path. An ask or ask-write rule asks one card before the
- * patch proposes, and a path outside the workspace asks too, because no known path covers it. A
- * workspace path without a rule proposes straight: the patch review is the write permission there.
- */
-async function checkWrite(deps: FileToolDeps, path: string): Promise<void> {
-  const rule = matchPathRule(deps.pathRules(), path, deps.workspacePath);
-  if (rule?.mode === 'ask' || rule?.mode === 'ask-write' || (!rule && outsideWorkspace(path, deps.workspacePath))) {
-    await deps.check.check('agent', 'propose', { kind: 'file', path }, `patch for ${path}`, deps.source);
-  }
 }
 
 /** Builds the `files` tool: the read surface. Every action answers from the live file. */
@@ -242,7 +224,7 @@ function createWriteTool(deps: FileToolDeps): AgentTool {
   return {
     name: 'write',
     description:
-      'Proposes file changes as unified diff patches that wait for the user review, so nothing lands on disk until the user approves. action write proposes the whole file text, action replace changes one exact text passage, and action insert adds text before or after a line. A relative path joins the workspace root and an absolute path serves as given: a write outside the workspace asks one card before its patch proposes. One chat works one rolling patch per task and file: a later write on the same waiting file refreshes its patch. A write on an existing file the chat never read refuses. Binary files answer with a not-implemented denial.',
+      'Proposes file changes as unified diff patches that wait for the user review, so nothing lands on disk until the user approves: the review is the write permission, and no approval card blocks the turn. action write proposes the whole file text, action replace changes one exact text passage, and action insert adds text before or after a line. A relative path joins the workspace root and an absolute path serves as given. One chat works one rolling patch per task and file: a later write on the same waiting file refreshes its patch. A write on an existing file the chat never read refuses, and a known deny path refuses every write. Binary files answer with a not-implemented denial.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -291,7 +273,6 @@ function createWriteTool(deps: FileToolDeps): AgentTool {
       if (proposed === base) {
         return { text: `No change for ${path}: the proposed text matches the file.` };
       }
-      await checkWrite(deps, path);
       const record = await deps.store.propose(deps.chatId, path, base, proposed);
       const counts = patchCounts(record.patch);
       return {

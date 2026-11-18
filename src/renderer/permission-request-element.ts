@@ -94,7 +94,10 @@ export class PermissionRequestElement extends HTMLElement {
     }
     const line = document.createElement('p');
     line.className = 'permission-request-line';
-    line.textContent = `"${info.principal}" requests "${info.action}" on ${info.target}.`;
+    // The verb reads naturally against the target text the gate builds, for example
+    // "The agent asks to read file /tmp/note.md."
+    const verb = info.action === 'read' ? 'read' : info.action === 'run' ? 'run' : 'use';
+    line.textContent = `The ${info.principal} asks to ${verb} ${info.target}.`;
     const detail = document.createElement('p');
     detail.className = 'permission-request-detail';
     detail.textContent = info.detail;
