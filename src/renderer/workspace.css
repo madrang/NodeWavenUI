@@ -1011,6 +1011,64 @@ body.resizing-column {
   background: var(--bg);
 }
 
+/* One editor view of the center workspace: the action bar above the editor page. */
+.editor-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-view-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.editor-view-button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.editor-view-button:hover {
+  background: var(--surface);
+}
+
+.editor-view-status {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.editor-view iframe {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  background: var(--bg);
+}
+
+/* A file row of the tree opens the editor, so it keeps the pointer and the hover. */
+.rail-tree-row.file {
+  cursor: pointer;
+}
+
+.rail-tree-row.file:hover {
+  background: var(--surface);
+  border-radius: 6px;
+}
+
 /* The kind badge inside one workarea tab: iframe or webview. */
 .workarea-badge {
   flex: none;

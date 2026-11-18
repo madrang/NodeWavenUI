@@ -35,6 +35,7 @@ import { PatchStore, type PatchNotice } from './patch-store.js';
 import { TaskStore } from './task-store.js';
 import type { TaskToolDeps } from './task-tools.js';
 import { openTaskBoardView } from './task-board.js';
+import { openEditorView } from './editor-view.js';
 import type { TaskRecord } from '../shared/tasks.js';
 import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
@@ -269,6 +270,13 @@ export class MainApp implements McpSessionSink {
       taskStore: this.taskStore,
       openTaskBoard: () => {
         this.openTaskBoard();
+      },
+      openFile: (path, separateTab) => {
+        void openEditorView(
+          path,
+          separateTab,
+          this.taskStore ? { store: this.taskStore, openBoard: () => this.openTaskBoard() } : null,
+        );
       },
     });
     this.rail.start();

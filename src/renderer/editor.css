@@ -76,6 +76,76 @@ body {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+/* One rendered logical line. A block per line keeps the gutter numbers on their own rows while
+   the host keeps its wrapping for long lines. */
+.editor-line {
+  display: block;
+  min-height: 1.5em;
+}
+
+/* The Prism token colors read the theme palette, so every theme colors code without its own rules. */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: color-mix(in srgb, var(--text) 65%, var(--muted));
+}
+
+.token.keyword,
+.token.tag,
+.token.deleted {
+  color: var(--chart-4);
+}
+
+.token.string,
+.token.char,
+.token.attr-value,
+.token.inserted {
+  color: var(--chart-2);
+}
+
+.token.number,
+.token.boolean {
+  color: var(--chart-3);
+}
+
+.token.function,
+.token.class-name {
+  color: var(--chart-5);
+}
+
+.token.operator,
+.token.entity,
+.token.url {
+  color: var(--chart-6);
+}
+
+.token.attr-name,
+.token.property,
+.token.constant,
+.token.symbol {
+  color: var(--chart-1);
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: var(--chart-3);
+}
+
+.token.bold {
+  font-weight: 600;
+}
+
+.token.italic {
+  font-style: italic;
+}
+
 /* The input method asks for the composition range to look active. */
 #editor-root::highlight(ime-composition) {
   text-decoration: underline;

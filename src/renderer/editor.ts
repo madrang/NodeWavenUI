@@ -1,15 +1,16 @@
 /**
  * The Editor window: a plain-text editor built on the EditContext API, driven through the
  * `nodewavenEditor` page global. One document lives in one window (see docs/editor.md).
- * The EditContext instance holds the text and the selection. The page renders the text into
- * one DOM text node after every change, so the native caret, the mouse selection, and the
- * agent calls share one state. The buffer and the view stay separate: a later layer can
- * restyle the rendered text without touching the edit logic.
+ * The EditContext instance holds the text and the selection. The page renders the text as one
+ * span per line, colored by the Prism runs of the file language, so the native caret, the mouse
+ * selection, and the agent calls share one state over highlighted code. The buffer and the view
+ * stay separate: the offset mapping between the plain text and the line spans lives in this page.
  */
 
 import './edit-context.js';
 import { requireElement } from './dom.js';
 import { resolveThemeId, THEME_MIRROR_KEY } from './theme.js';
+import { highlightRuns, languageName, type HighlightRun } from './text/highlight.js';
 
 /** The title bar, the scroll area with gutter and editing host, the status bar, and the unsupported banner. */
 const titleBar = requireElement<HTMLElement>('#editor-title');
@@ -38,8 +39,100 @@ function ctx(): EditContext {
 /** The code unit of the line break. */
 const NEWLINE = 10;
 
-/** The text node inside the host. One node holds the whole document, so an offset maps straight onto it. */
-let textNode: Text | null = null;
+/** The Prism grammar name of the document, or null for plain text. The title extension decides. */
+let activeLanguage: string | null = null;
+
+/** The start offset of every rendered line element, rebuilt on each render. */
+const lineStarts = new Map<HTMLElement, number>();
+
+/** One piece of one rendered line: a text slice and its Prism token type, or null for plain. */
+interface LinePiece {
+  readonly text: string;
+  readonly type: string | null;
+}
+
+/** Splits the highlight runs of the whole text into the pieces of each line. */
+function linePieces(runs: readonly HighlightRun[]): LinePiece[][] {
+  const lines: LinePiece[][] = [[]];
+  for (const run of runs) {
+    const parts = run.text.split('\n');
+    parts.forEach((part, index) => {
+      if (index > 0) {
+        lines.push([]);
+      }
+      if (part.length > 0) {
+        lines[lines.length - 1]?.push({ text: part, type: run.type });
+      }
+    });
+  }
+  return lines;
+}
+
+/** Reads the text length of one rendered line element. */
+function lineTextLength(line: HTMLElement): number {
+  let length = 0;
+  for (const node of line.childNodes) {
+    length += node.textContent?.length ?? 0;
+  }
+  return length;
+}
+
+/** Reads the text nodes of one rendered line element, in order. */
+function textNodesOf(line: HTMLElement): Text[] {
+  const nodes: Text[] = [];
+  const walk = (parent: Node): void => {
+    for (const child of parent.childNodes) {
+      if (child instanceof Text) {
+        nodes.push(child);
+      } else {
+        walk(child);
+      }
+    }
+  };
+  walk(line);
+  return nodes;
+}
+
+/** Reads the line element one node sits in, or null outside the lines. */
+function lineOf(node: Node | null): HTMLElement | null {
+  let current: Node | null = node;
+  while (current && current !== host) {
+    if (current instanceof HTMLElement && lineStarts.has(current)) {
+      return current;
+    }
+    current = current.parentNode;
+  }
+  return null;
+}
+
+/** Reads the DOM position of one text offset: the text node and the offset inside it. The offset
+ * of a line break maps onto the end of its line, and an empty line maps onto the line itself. */
+function positionAt(offset: number): { readonly node: Node; readonly offset: number } | null {
+  let chosen: HTMLElement | null = null;
+  for (const line of lineStarts.keys()) {
+    const start = lineStarts.get(line) ?? 0;
+    if (start <= offset && (!chosen || start > (lineStarts.get(chosen) ?? 0))) {
+      chosen = line;
+    }
+  }
+  if (!chosen) {
+    return null;
+  }
+  const base = lineStarts.get(chosen) ?? 0;
+  let local = Math.min(offset - base, lineTextLength(chosen));
+  if (local < 0) {
+    local = 0;
+  }
+  let consumed = 0;
+  for (const textNode of textNodesOf(chosen)) {
+    const length = textNode.data.length;
+    if (local <= consumed + length) {
+      return { node: textNode, offset: local - consumed };
+    }
+    consumed += length;
+  }
+  return { node: chosen, offset: chosen.childNodes.length };
+}
 
 /** One stored editor state, for undo and redo. */
 interface EditorSnapshot {
@@ -132,25 +225,31 @@ function selectedText(): string {
 
 /** The client rectangle of the caret or selection, or null when the layout hides it. */
 function caretRect(): DOMRect | null {
-  if (!textNode) {
-    return null;
-  }
   const context = ctx();
   const range = document.createRange();
-  range.setStart(textNode, Math.min(context.selectionStart, context.selectionEnd));
-  range.setEnd(textNode, Math.max(context.selectionStart, context.selectionEnd));
-  const rect = range.getClientRects()[0];
-  if (rect) {
-    return new DOMRect(rect.x, rect.y, Math.max(rect.width, 1), rect.height);
+  const start = Math.min(context.selectionStart, context.selectionEnd);
+  const end = Math.max(context.selectionStart, context.selectionEnd);
+  const from = positionAt(start);
+  const to = positionAt(end);
+  if (from && to) {
+    range.setStart(from.node, from.offset);
+    range.setEnd(to.node, to.offset);
+    const rect = range.getClientRects()[0];
+    if (rect) {
+      return new DOMRect(rect.x, rect.y, Math.max(rect.width, 1), rect.height);
+    }
   }
   // A caret at a line boundary can carry no rectangle. The character before it gives the position.
-  const start = Math.min(context.selectionStart, context.selectionEnd);
   if (start > 0) {
-    range.setStart(textNode, start - 1);
-    range.setEnd(textNode, start);
-    const before = range.getClientRects()[0];
-    if (before) {
-      return new DOMRect(before.right, before.y, Math.max(before.width, 1), before.height);
+    const before = positionAt(start - 1);
+    const after = positionAt(start);
+    if (before && after) {
+      range.setStart(before.node, before.offset);
+      range.setEnd(after.node, after.offset);
+      const previous = range.getClientRects()[0];
+      if (previous) {
+        return new DOMRect(previous.right, previous.y, Math.max(previous.width, 1), previous.height);
+      }
     }
   }
   const hostRect = host.getBoundingClientRect();
@@ -181,19 +280,34 @@ function scrollCaretIntoView(): void {
   }
 }
 
-/** Maps one DOM selection position onto a text offset. Positions outside the text node map to null. */
+/** Maps one DOM selection position onto a text offset. Positions outside the lines map to null. */
 function domPositionToOffset(node: Node | null, offset: number): number | null {
-  if (textNode === null || node === null) {
+  if (!node) {
     return null;
   }
-  if (node === textNode) {
-    return Math.min(offset, textNode.length);
-  }
   if (node === host) {
-    // The browser placed the selection on the host itself, before or after the text node.
-    return offset === 0 ? 0 : textNode.length;
+    // The browser placed the selection on the host itself, before or after the lines.
+    return offset === 0 ? 0 : ctx().text.length;
   }
-  return null;
+  const line = lineOf(node);
+  if (!line) {
+    return null;
+  }
+  const base = lineStarts.get(line) ?? 0;
+  if (node === line) {
+    return base + (offset === 0 ? 0 : lineTextLength(line));
+  }
+  if (!(node instanceof Text)) {
+    return base;
+  }
+  let local = offset;
+  for (const textNode of textNodesOf(line)) {
+    if (textNode === node) {
+      return base + Math.min(local, textNode.data.length);
+    }
+    local += textNode.data.length;
+  }
+  return base;
 }
 
 /** Reads the DOM selection as offsets into the text, or null when it sits outside the editor. */
@@ -212,34 +326,38 @@ function readDomSelection(): { readonly start: number; readonly end: number } | 
 
 /** Restores the DOM selection from the edit context selection. */
 function renderSelection(): void {
-  if (!textNode) {
-    return;
-  }
   const context = ctx();
   const selection = document.getSelection();
-  if (!selection) {
+  const start = positionAt(context.selectionStart);
+  const end = positionAt(context.selectionEnd);
+  if (!selection || !start || !end) {
     return;
   }
   const range = document.createRange();
-  range.setStart(textNode, context.selectionStart);
-  range.setEnd(textNode, context.selectionEnd);
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
   selection.removeAllRanges();
   selection.addRange(range);
 }
 
 /** The client rectangle of the character at an offset. A one-character look back covers line boundaries. */
 function charRectAt(offset: number): DOMRect | null {
-  if (!textNode) {
+  const from = positionAt(offset);
+  const to = positionAt(offset + 1) ?? from;
+  if (!from || !to) {
     return null;
   }
   const range = document.createRange();
-  range.setStart(textNode, offset);
-  range.setEnd(textNode, Math.min(offset + 1, textNode.length));
+  range.setStart(from.node, from.offset);
+  range.setEnd(to.node, to.offset);
   let rect = range.getClientRects()[0];
   if (rect === undefined && offset > 0) {
-    range.setStart(textNode, offset - 1);
-    range.setEnd(textNode, offset);
-    rect = range.getClientRects()[0];
+    const before = positionAt(offset - 1);
+    if (before) {
+      range.setStart(before.node, before.offset);
+      range.setEnd(from.node, from.offset);
+      rect = range.getClientRects()[0];
+    }
   }
   return rect ?? null;
 }
@@ -299,26 +417,55 @@ function renderComposition(): void {
   if (!registry) {
     return;
   }
-  if (compositionRange === null || textNode === null) {
+  if (!compositionRange) {
+    registry.delete('ime-composition');
+    return;
+  }
+  const start = positionAt(compositionRange.start);
+  const end = positionAt(compositionRange.end);
+  if (!start || !end) {
     registry.delete('ime-composition');
     return;
   }
   const range = document.createRange();
-  range.setStart(textNode, Math.min(compositionRange.start, textNode.length));
-  range.setEnd(textNode, Math.min(compositionRange.end, textNode.length));
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
   registry.set('ime-composition', new Highlight(range));
+}
+
+/** Renders the text: one line span per logical line, its pieces colored by the Prism runs of the
+ * active language. A full pass per render keeps the offset mapping simple; the line count of an
+ * edited file stays small enough that the rebuild costs less than a diff layer. */
+function renderText(text: string): void {
+  const pieces = linePieces(highlightRuns(text, activeLanguage));
+  lineStarts.clear();
+  const elements: HTMLElement[] = [];
+  let start = 0;
+  for (const linePiecesOfLine of pieces) {
+    const line = document.createElement('span');
+    line.className = 'editor-line';
+    for (const piece of linePiecesOfLine) {
+      if (piece.type) {
+        const token = document.createElement('span');
+        token.className = `token ${piece.type}`;
+        token.textContent = piece.text;
+        line.append(token);
+      } else {
+        line.append(document.createTextNode(piece.text));
+      }
+    }
+    lineStarts.set(line, start);
+    elements.push(line);
+    start += linePiecesOfLine.reduce((sum, piece) => sum + piece.text.length, 0) + 1;
+  }
+  host.replaceChildren(...elements);
 }
 
 /** Renders the editor state: the text, the selection, the gutter, the status bar, and the input method bounds. */
 function render(): void {
   const context = ctx();
   const text = context.text;
-  if (!textNode) {
-    textNode = document.createTextNode(text);
-    host.replaceChildren(textNode);
-  } else {
-    textNode.data = text;
-  }
+  renderText(text);
   renderSelection();
   renderGutter(text);
   renderStatus(text);
@@ -328,11 +475,15 @@ function render(): void {
   committed = { text, selectionStart: context.selectionStart, selectionEnd: context.selectionEnd };
 }
 
-/** Applies a title: the title bar text, its visibility, and the window title. */
+/** Applies a title: the title bar text, its visibility, the window title, and the language the
+ * title extension names. A title without an extension keeps the active language. */
 function applyTitle(title: string): void {
   titleBar.textContent = title;
   titleBar.hidden = title.length === 0;
   document.title = title.length > 0 ? `${title} — NodeWavenUI Editor` : 'Editor — NodeWavenUI';
+  if (title.includes('.')) {
+    activeLanguage = languageName(title.slice(title.lastIndexOf('.') + 1));
+  }
 }
 
 /** Reads the optional title from the setText options object. */
@@ -341,7 +492,7 @@ function readTitleOption(options: unknown): string | undefined {
     return undefined;
   }
   if (typeof options !== 'object') {
-    throw new Error('The editor options must be an object: { title }.');
+    throw new Error('The editor options must be an object: { title, language }.');
   }
   const title = (options as Record<string, unknown>)['title'];
   if (!title) {
@@ -351,6 +502,21 @@ function readTitleOption(options: unknown): string | undefined {
     throw new Error('The editor title must be a string.');
   }
   return title;
+}
+
+/** Reads the optional language from the setText options object: a grammar name or a file extension. */
+function readLanguageOption(options: unknown): string | undefined {
+  if (typeof options !== 'object' || options === null) {
+    return undefined;
+  }
+  const language = (options as Record<string, unknown>)['language'];
+  if (!language) {
+    return undefined;
+  }
+  if (typeof language !== 'string') {
+    throw new Error('The editor language must be a string.');
+  }
+  return language;
 }
 
 /** Checks that a value is an integer, then clamps it into the text. */
@@ -367,6 +533,10 @@ function resetUndo(): void {
   redoStack.length = 0;
 }
 
+/** True when the editor page runs embedded in another page, so the view above serves its save
+ * and task actions. The editor window stands alone and hears nothing. */
+const framed = window.parent !== window;
+
 /** Attaches every editor event. The page calls it once, after the context attached to the host. */
 function wireEditor(): void {
   const context = ctx();
@@ -375,15 +545,16 @@ function wireEditor(): void {
   context.addEventListener('textupdate', () => {
     recordUndoStep();
     render();
+    // The framing view tracks the dirty state of its buffer from these notes.
+    if (framed) {
+      window.parent.postMessage({ type: 'nodewavenui-editor-changed' }, '*');
+    }
   });
 
   // The input method asks where the composed characters sit, so it can place its candidate window.
   context.addEventListener('characterboundsupdate', (event) => {
-    if (!textNode) {
-      return;
-    }
     const bounds: DOMRect[] = [];
-    for (let offset = event.rangeStart; offset < event.rangeEnd && offset < textNode.length; offset += 1) {
+    for (let offset = event.rangeStart; offset < event.rangeEnd && offset < ctx().text.length; offset += 1) {
       const rect = charRectAt(offset);
       bounds.push(rect ?? new DOMRect(0, 0, 0, 0));
     }
@@ -421,6 +592,14 @@ function wireEditor(): void {
       return;
     }
     const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && !event.shiftKey && (event.key === 's' || event.key === 'S')) {
+      event.preventDefault();
+      // The framing view owns the file path, so it owns the save. The window keeps its buffer-only role.
+      if (framed) {
+        window.parent.postMessage({ type: 'nodewavenui-editor-save' }, '*');
+      }
+      return;
+    }
     if (modifier && !event.shiftKey && (event.key === 'z' || event.key === 'Z')) {
       event.preventDefault();
       undo();
@@ -486,7 +665,9 @@ function wireEditor(): void {
 
 /** The page global the agents drive. Every method validates its arguments and answers with a confirmation string. */
 export const nodewavenEditor = {
-  /** Replaces the whole document. The options carry an optional title. The undo history starts over. */
+  /** Replaces the whole document. The options carry an optional title and language. The undo
+   * history starts over. The language names a Prism grammar or a file extension and overrides
+   * the one the title extension implies. */
   setText: (text: unknown, options?: unknown): string => {
     if (typeof text !== 'string') {
       throw new Error('The editor text must be a string.');
@@ -494,6 +675,10 @@ export const nodewavenEditor = {
     const title = readTitleOption(options);
     if (title) {
       applyTitle(title);
+    }
+    const language = readLanguageOption(options);
+    if (language) {
+      activeLanguage = languageName(language);
     }
     const context = ctx();
     context.updateText(0, context.text.length, text);

@@ -33,6 +33,8 @@ export interface RailDeps {
   readonly taskStore: TaskStore | null;
   /** Opens the task board in the center workspace. */
   readonly openTaskBoard: () => void;
+  /** Opens one file of the tree in the editor view. The flag opens it in its own tab. */
+  readonly openFile: (path: string, separateTab: boolean) => void;
 }
 
 /** One row of the events feed: one approval request, one patch proposal, or one task record. */
@@ -449,10 +451,10 @@ export class AppRail {
     }
   }
 
-  /** Builds one tree row: a lazy folder with its twisty, or a plain file line. */
+  /** Builds one tree row: a lazy folder with its twisty, or a plain file line that opens the editor. */
   private buildTreeRow(directory: string, entry: { name: string; directory: boolean }, depth: number): HTMLElement {
     const row = document.createElement('div');
-    row.className = `rail-tree-row${entry.directory ? ' folder' : ''}`;
+    row.className = `rail-tree-row${entry.directory ? ' folder' : ' file'}`;
     row.style.setProperty('--d', String(depth));
     const twisty = document.createElement('span');
     twisty.className = 'rail-twisty';
@@ -463,6 +465,10 @@ export class AppRail {
     label.textContent = entry.name;
     row.append(twisty, icon, label);
     if (!entry.directory) {
+      row.title = 'Open the file in the editor. Hold CTRL to open it in its own tab.';
+      row.addEventListener('click', (click) => {
+        this.deps.openFile(joinPath(directory, entry.name), click.ctrlKey);
+      });
       return row;
     }
     const children = document.createElement('div');
