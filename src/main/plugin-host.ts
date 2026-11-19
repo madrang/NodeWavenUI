@@ -25,7 +25,7 @@ interface CollectorRegistry {
 function hasDescriptorShape(
   value: unknown,
 ): value is { id: string; setup: (registry: CollectorRegistry) => void; platforms?: readonly string[] } {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const descriptor = value as Record<string, unknown>;

@@ -72,7 +72,7 @@ async function readEventStreamReply(
         if (!reply) {
           continue;
         }
-        if (typeof reply.method === 'string' && reply.id === undefined) {
+        if (typeof reply.method === 'string' && !Object.hasOwn(reply, 'id')) {
           onNotification(reply.method, reply.params);
           continue;
         }
@@ -119,7 +119,7 @@ export class HttpMcpTransport implements McpTransport {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
     };
-    if (this.token !== undefined && this.token.length > 0) {
+    if (this.token) {
       headers.Authorization = `Bearer ${this.token}`;
     }
     if (this.sessionId) {
@@ -131,7 +131,7 @@ export class HttpMcpTransport implements McpTransport {
       body: JSON.stringify(message),
     });
     const sessionHeader = response.headers.get('mcp-session-id');
-    if (sessionHeader !== null && sessionHeader.length > 0) {
+    if (sessionHeader) {
       this.sessionId = sessionHeader;
     }
     if (!response.ok) {
@@ -143,7 +143,7 @@ export class HttpMcpTransport implements McpTransport {
       return {};
     }
     const contentType = response.headers.get('content-type') ?? '';
-    if (response.body !== null && contentType.includes('text/event-stream')) {
+    if (response.body && contentType.includes('text/event-stream')) {
       return readEventStreamReply(response.body, message.id as number | string, this.onNotification);
     }
     const payload: unknown = await response.json().catch(() => null);
@@ -265,7 +265,7 @@ export class StdioMcpTransport implements McpTransport {
       return;
     }
     const id = record.id;
-    if (record.result !== undefined || record.error !== undefined) {
+    if (Object.hasOwn(record, 'result') || Object.hasOwn(record, 'error')) {
       if (typeof id === 'number') {
         const pending = this.pending.get(id);
         if (!pending) {
@@ -274,8 +274,8 @@ export class StdioMcpTransport implements McpTransport {
         this.pending.delete(id);
         if (record.error) {
           const error = asRecord(record.error);
-          const code = error !== null && typeof error.code === 'number' ? error.code : -32603;
-          const message = error !== null && typeof error.message === 'string' ? error.message : 'unknown error';
+          const code = error && typeof error.code === 'number' ? error.code : -32603;
+          const message = error && typeof error.message === 'string' ? error.message : 'unknown error';
           pending.reject(new Error(`The MCP stdio call failed with code ${code}: ${message}`));
         } else {
           pending.resolve(record.result);
@@ -296,7 +296,7 @@ export class StdioMcpTransport implements McpTransport {
 
   private writeLine(text: string): void {
     const stdin = this.child?.stdin;
-    if (stdin === null || stdin === undefined) {
+    if (!stdin) {
       return;
     }
     stdin.write(`${text}\n`);

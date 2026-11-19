@@ -110,7 +110,7 @@ export interface InferenceProvider {
  * @returns True when the value carries an id string and a complete function.
  */
 export function isInferenceProvider(value: unknown): value is InferenceProvider {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;

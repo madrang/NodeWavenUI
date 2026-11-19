@@ -22,7 +22,7 @@ function containerEntries(value: unknown): readonly JsonEntry[] | null {
   if (Array.isArray(value)) {
     return value.map((item) => ({ key: null, value: item }));
   }
-  if (typeof value === 'object' && value !== null) {
+  if (typeof value === 'object' && value) {
     return Object.entries(value).map(([entryKey, item]) => ({ key: entryKey, value: item }));
   }
   return null;
@@ -39,7 +39,7 @@ function tokenClass(value: unknown): string {
   if (typeof value === 'boolean') {
     return 'json-boolean';
   }
-  if (value === null || value === undefined) {
+  if (!value) {
     return 'json-null';
   }
   // An empty container renders inline. A symbol or a function is a value JSON cannot carry.
@@ -78,7 +78,7 @@ export class JsonViewerElement extends HTMLElement {
   /** Builds one tree node: a collapsible container, or one highlighted row for a leaf. */
   private buildNode(value: unknown, key: string | null, depth: number): HTMLElement {
     const entries = containerEntries(value);
-    if (entries === null || entries.length === 0) {
+    if (!entries || entries.length === 0) {
       return this.buildLeafRow(value, key);
     }
     const isArray = Array.isArray(value);

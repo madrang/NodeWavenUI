@@ -1978,10 +1978,6 @@ permission-request {
   white-space: nowrap;
 }
 
-[hidden] {
-  display: none !important;
-}
-
 /* A task row keeps the patch row interaction: every row opens the board. */
 .rail-event.task {
   cursor: pointer;

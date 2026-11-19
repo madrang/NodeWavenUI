@@ -4,6 +4,7 @@
  * preload bridge.
  */
 
+import { log } from './logger.js';
 import { app, BrowserWindow, ipcMain, Menu, session, type MenuItemConstructorOptions } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,18 +66,18 @@ function runSmokeProbe(win: BrowserWindow): void {
   const expression = expressions[probe];
   if (!expression) {
     // Another probe of the app owns this name, for example the workspace probe of the window service.
-    console.log(`[NodeWavenUI] smoke: the launcher knows no probe "${probe}", it stays for another handler.`);
+    log.smoke!.informative(`the launcher knows no probe "${probe}", it stays for another handler.`);
     return;
   }
   win.webContents.once('did-finish-load', () => {
     void win.webContents
       .executeJavaScript(expression)
       .then((value) => {
-        console.log(`[NodeWavenUI] smoke ${probe}: ${JSON.stringify(value)}`);
+        log.smoke!.informative(`${probe}: ${JSON.stringify(value)}`);
         app.quit();
       })
       .catch((error: unknown) => {
-        console.log(`[NodeWavenUI] smoke ${probe} failed: ${String(error)}`);
+        log.smoke!.error(`smoke ${probe} failed: ${String(error)}`);
         app.quit();
       });
   });
@@ -96,7 +97,7 @@ void app.whenReady().then(() => {
   registerWorkspaceLink();
   registerToolService();
   createLauncherWindow();
-  console.log(`[NodeWavenUI] main ready: electron ${process.versions.electron}, node ${process.versions.node}`);
+  log.main!.informative('main ready: electron %s, node %s', process.versions.electron, process.versions.node);
 });
 
 /**
@@ -183,7 +184,7 @@ function registerToolService(): void {
     if (!tool) {
       throw new Error(`The tool "${candidate.name}" is unknown.`);
     }
-    const args = typeof candidate.args === 'object' && candidate.args !== null ? (candidate.args as Record<string, unknown>) : {};
+    const args = typeof candidate.args === 'object' && candidate.args ? (candidate.args as Record<string, unknown>) : {};
     const source = typeof candidate.source === 'string' && candidate.source.length > 0 ? candidate.source : CHAT_AGENT_SOURCE;
     return tool.handler(args, { principal: 'agent', source });
   });
@@ -197,7 +198,7 @@ function registerToolService(): void {
       return host.readEndpoint();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the MCP host could not start: ${message}`);
+      log.main!.warning(`the MCP host could not start: ${message}`);
       return null;
     }
   });

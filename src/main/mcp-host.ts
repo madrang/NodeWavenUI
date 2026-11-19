@@ -87,7 +87,7 @@ export function createTools(): McpToolDescriptor[] {
     open_uri: async (args, caller) => {
       const url = requireString(args, 'url');
       const kind = args['kind'];
-      if (kind !== undefined && kind !== 'iframe' && kind !== 'webview' && kind !== 'window') {
+      if (Object.hasOwn(args, 'kind') && kind !== 'iframe' && kind !== 'webview' && kind !== 'window') {
         throw new Error('The argument "kind" must be "iframe", "webview", or "window".');
       }
       if (kind === 'window') {
@@ -187,7 +187,7 @@ function jsonOfResult(result: McpToolResult): unknown {
   }
   try {
     const parsed: unknown = JSON.parse(block.text ?? '');
-    return typeof parsed === 'object' && parsed !== null ? parsed : undefined;
+    return typeof parsed === 'object' && parsed ? parsed : undefined;
   } catch {
     return undefined;
   }

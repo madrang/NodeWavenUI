@@ -122,7 +122,3 @@ body {
 .fill-series-5 {
   fill: var(--chart-6);
 }
-
-[hidden] {
-  display: none !important;
-}

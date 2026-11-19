@@ -28,6 +28,7 @@ const SHARED_STORAGES_KEY = 'shared-storages';
 const PATH_RULES_KEY = 'path-rules';
 const THEME_KEY = 'theme';
 const FRAME_MODE_KEY = 'window-frame';
+const LANGUAGE_KEY = 'language';
 const AGENT_TURN_LIMIT_KEY = 'agent-turn-limit';
 const AGENT_THINKING_KEY = 'agent-thinking';
 const CHAT_KEY_KEY = 'chat-key';
@@ -315,6 +316,26 @@ export class WorkspaceSettingsStore {
   }
 
   /**
+   * Reads the chosen interface language of the workspace.
+   *
+   * @returns The stored language id, or null when the store holds none. The locale registry applies the navigator preference.
+   * @throws StorageError when the store fails.
+   */
+  async loadLanguagePreference(): Promise<string | null> {
+    return this.backend.get(LANGUAGE_KEY);
+  }
+
+  /**
+   * Writes the chosen interface language of the workspace.
+   *
+   * @param language The language id to persist.
+   * @throws StorageError when the store fails.
+   */
+  async saveLanguagePreference(language: string): Promise<void> {
+    await this.backend.set(LANGUAGE_KEY, language);
+  }
+
+  /**
    * Reads the chosen window frame mode of the workspace.
    *
    * @returns The stored frame mode id, or null when the store holds none. The frame mode registry applies the default.
@@ -461,13 +482,13 @@ export class WorkspaceSettingsStore {
       console.warn(`[NodeWavenUI] the stored plugin folders are damaged and ignored: ${message}`);
       return {};
     }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    if (typeof parsed !== 'object' || !parsed || Array.isArray(parsed)) {
       console.warn('[NodeWavenUI] the stored plugin folders carry an invalid shape. They are ignored.');
       return {};
     }
     const record: StoredPluginFolders = {};
     for (const [folder, value] of Object.entries(parsed)) {
-      const candidate = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+      const candidate = typeof value === 'object' && value ? (value as Record<string, unknown>) : {};
       record[folder] = {
         enabled: candidate.enabled === true,
         ...(typeof candidate.digest === 'string' ? { digest: candidate.digest } : {}),

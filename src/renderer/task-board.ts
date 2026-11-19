@@ -249,7 +249,7 @@ function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState):
       actions.append(dispatch);
     }
   }
-  if (task.status === 'running' && task.sessionChatId !== null) {
+  if (task.status === 'running' && typeof task.sessionChatId === 'number') {
     const chatId = task.sessionChatId;
     actions.append(
       button('Open session', () => {

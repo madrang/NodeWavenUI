@@ -169,7 +169,7 @@ function concatBytes(parts: readonly Uint8Array<ArrayBuffer>[]): Uint8Array<Arra
 /** Derives raw key bytes with scrypt through the Node crypto module. */
 function deriveScryptKeyBytes(password: string, parameters: KdfParameters): Uint8Array<ArrayBuffer> {
   const cryptoModule = nodeCrypto();
-  if (cryptoModule === null || typeof cryptoModule.scryptSync !== 'function') {
+  if (!cryptoModule || typeof cryptoModule.scryptSync !== 'function') {
     throw new StorageError('The Node crypto module carries no scryptSync.');
   }
   return cryptoModule.scryptSync(password, parameters.salt, KEY_BYTES, {
@@ -259,7 +259,7 @@ const SUITES: Record<EncryptionSuiteId, EncryptionSuite> = {
         throw new StorageError('This store derived a non-Node key.');
       }
       const cryptoModule = nodeCrypto();
-      if (cryptoModule === null || typeof cryptoModule.createCipheriv !== 'function') {
+      if (!cryptoModule || typeof cryptoModule.createCipheriv !== 'function') {
         throw new StorageError('The Node crypto module carries no createCipheriv.');
       }
       const createCipheriv = cryptoModule.createCipheriv;
@@ -272,7 +272,7 @@ const SUITES: Record<EncryptionSuiteId, EncryptionSuite> = {
         throw new StorageError('This store derived a non-Node key.');
       }
       const cryptoModule = nodeCrypto();
-      if (cryptoModule === null || typeof cryptoModule.createDecipheriv !== 'function') {
+      if (!cryptoModule || typeof cryptoModule.createDecipheriv !== 'function') {
         throw new StorageError('The Node crypto module carries no createDecipheriv.');
       }
       const createDecipheriv = cryptoModule.createDecipheriv;
@@ -360,7 +360,7 @@ export async function openRecord(
   envelope: string,
 ): Promise<string> {
   const [prefix, ivText, sealedText] = envelope.split('.');
-  if (prefix !== ENVELOPE_PREFIX || ivText === undefined || sealedText === undefined) {
+  if (prefix !== ENVELOPE_PREFIX || typeof ivText !== 'string' || typeof sealedText !== 'string') {
     throw new StorageError(`The record "${keyName}" is not a ${ENVELOPE_PREFIX} envelope.`);
   }
   try {
@@ -399,7 +399,7 @@ export function encodeKdf(parameters: KdfParameters): string {
 export function decodeKdf(value: string): KdfParameters | null {
   try {
     const parsed: unknown = JSON.parse(value);
-    if (typeof parsed !== 'object' || parsed === null) {
+    if (typeof parsed !== 'object' || !parsed) {
       return null;
     }
     const record = parsed as Record<string, unknown>;

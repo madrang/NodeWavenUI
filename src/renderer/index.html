@@ -12,42 +12,42 @@
   <main id="screen-launcher" class="screen screen-launcher">
     <header class="launcher-header">
       <h1>NodeWavenUI</h1>
-      <button id="launcher-close" class="icon-button" type="button" title="Close">×</button>
+      <button id="launcher-close" class="icon-button" type="button" title="${common.close}">×</button>
     </header>
     <div class="launcher-body">
-      <p class="subtitle launcher-tagline">AI Workspace</p>
+      <p class="subtitle launcher-tagline">${launcher.tagline}</p>
       <form id="unlock-form" class="unlock" hidden>
-        <input id="unlock-password" type="password" placeholder="Workspace password" autocomplete="current-password">
-        <button type="submit" class="primary">Unlock</button>
+        <input id="unlock-password" type="password" placeholder="${launcher.passwordPlaceholder}" autocomplete="current-password">
+        <button type="submit" class="primary">${launcher.unlock}</button>
       </form>
       <p id="launcher-status" class="status" hidden></p>
     </div>
     <div class="launcher-actions">
-      <button id="launcher-close-text" class="corner-button" type="button">Close</button>
-      <button id="select-directory" class="corner-button primary" type="button">Select Working Directory…</button>
+      <button id="launcher-close-text" class="corner-button" type="button">${common.close}</button>
+      <button id="select-directory" class="corner-button primary" type="button">${launcher.selectDirectory}</button>
     </div>
   </main>
   <section id="screen-wizard" class="screen" hidden>
     <header class="wizard-header">
       <div>
-        <h2>Initialize workspace</h2>
+        <h2>${launcher.wizardTitle}</h2>
         <p id="wizard-note" class="status" hidden></p>
       </div>
-      <button id="wizard-close" class="icon-button" type="button" title="Close">×</button>
+      <button id="wizard-close" class="icon-button" type="button" title="${common.close}">×</button>
     </header>
     <form id="wizard-form">
-      <label class="field">Workspace name
+      <label class="field">${launcher.wizardName}
         <input id="wizard-name" type="text" autocomplete="off">
       </label>
-      <label class="field">Setting storage
+      <label class="field">${launcher.wizardStorage}
         <select id="wizard-storage"></select>
       </label>
       <div id="wizard-storage-config"></div>
       <p id="wizard-error" class="status error" hidden></p>
     </form>
     <footer class="wizard-footer">
-      <button id="wizard-back" class="corner-button" type="button">Back</button>
-      <button id="wizard-submit" class="corner-button primary" type="button">Initialize</button>
+      <button id="wizard-back" class="corner-button" type="button">${launcher.wizardBack}</button>
+      <button id="wizard-submit" class="corner-button primary" type="button">${launcher.wizardInitialize}</button>
     </footer>
   </section>
 </body>

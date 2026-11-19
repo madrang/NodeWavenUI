@@ -29,7 +29,7 @@ interface PrismLike {
 /** Reads the loaded Prism, or null when the page carries no Prism. */
 function prism(): PrismLike | null {
   const candidate = (globalThis as { Prism?: unknown }).Prism;
-  return typeof candidate === 'object' && candidate !== null ? (candidate as PrismLike) : null;
+  return typeof candidate === 'object' && candidate ? (candidate as PrismLike) : null;
 }
 
 /** The language tags and file extensions the registry knows, mapped to their Prism grammar. */

@@ -27,7 +27,7 @@ export interface McpEndpoints {
 const ENDPOINT_MODES: ReadonlySet<string> = new Set(['native', 'preloaded', 'none', 'disabled']);
 
 function isTransport(value: unknown): value is McpEndpointTransport {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -57,7 +57,7 @@ function isTransport(value: unknown): value is McpEndpointTransport {
  * @returns True when the value satisfies the endpoint shape.
  */
 export function isMcpEndpoint(value: unknown): value is McpEndpoint {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -79,7 +79,7 @@ export function isMcpEndpoint(value: unknown): value is McpEndpoint {
  * @returns True when the value satisfies the record shape.
  */
 export function isMcpEndpoints(value: unknown): value is McpEndpoints {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;

@@ -313,12 +313,12 @@ function domPositionToOffset(node: Node | null, offset: number): number | null {
 /** Reads the DOM selection as offsets into the text, or null when it sits outside the editor. */
 function readDomSelection(): { readonly start: number; readonly end: number } | null {
   const selection = document.getSelection();
-  if (selection === null || selection.rangeCount === 0) {
+  if (!selection || selection.rangeCount === 0) {
     return null;
   }
   const anchor = domPositionToOffset(selection.anchorNode, selection.anchorOffset);
   const focus = domPositionToOffset(selection.focusNode, selection.focusOffset);
-  if (anchor === null || focus === null) {
+  if (typeof anchor !== 'number' || typeof focus !== 'number') {
     return null;
   }
   return { start: Math.min(anchor, focus), end: Math.max(anchor, focus) };
@@ -351,7 +351,7 @@ function charRectAt(offset: number): DOMRect | null {
   range.setStart(from.node, from.offset);
   range.setEnd(to.node, to.offset);
   let rect = range.getClientRects()[0];
-  if (rect === undefined && offset > 0) {
+  if (!rect && offset > 0) {
     const before = positionAt(offset - 1);
     if (before) {
       range.setStart(before.node, before.offset);
@@ -488,7 +488,7 @@ function applyTitle(title: string): void {
 
 /** Reads the optional title from the setText options object. */
 function readTitleOption(options: unknown): string | undefined {
-  if (options === undefined || options === null) {
+  if (!options) {
     return undefined;
   }
   if (typeof options !== 'object') {
@@ -506,7 +506,7 @@ function readTitleOption(options: unknown): string | undefined {
 
 /** Reads the optional language from the setText options object: a grammar name or a file extension. */
 function readLanguageOption(options: unknown): string | undefined {
-  if (typeof options !== 'object' || options === null) {
+  if (typeof options !== 'object' || !options) {
     return undefined;
   }
   const language = (options as Record<string, unknown>)['language'];

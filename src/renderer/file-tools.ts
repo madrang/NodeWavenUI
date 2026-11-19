@@ -131,7 +131,7 @@ async function runRead(deps: FileToolDeps, path: string, args: Record<string, un
   readsOf(deps.chatId).add(path);
   const start = typeof args['startLine'] === 'number' && args['startLine'] >= 1 ? Math.floor(args['startLine']) : null;
   const end = typeof args['endLine'] === 'number' && args['endLine'] >= 1 ? Math.floor(args['endLine']) : null;
-  if (start === null && end === null) {
+  if (!start && !end) {
     return text;
   }
   const lines = text.split('\n');
@@ -192,7 +192,7 @@ async function runGrep(
         continue;
       }
       const text = await readTextFile(entry);
-      if (text === null || looksBinary(text)) {
+      if (typeof text !== 'string' || looksBinary(text)) {
         continue;
       }
       for (let index = 0; index < text.length && !truncated; index += 1) {
@@ -255,7 +255,7 @@ function createWriteTool(deps: FileToolDeps): AgentTool {
         );
       }
       const oldText = exists ? await readTextFile(path) : null;
-      if (oldText === null && exists) {
+      if (typeof oldText !== 'string' && exists) {
         throw new Error(`The file ${path} does not read.`);
       }
       const base = oldText ?? '';

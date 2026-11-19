@@ -21,6 +21,8 @@ import { readDirectoryEntries, readWorkspaceMarker } from './workspace-files.js'
 import { migrateWorkspaceData } from './workspace-migration.js';
 import { startWizard } from './wizard.js';
 import { initializeTheme } from './theme.js';
+import { log } from './logger.js';
+import { init as initLanguage, LANGUAGE_MIRROR_KEY, localizeHTML } from './locale/index.js';
 
 /** The launcher width. The window creation fixes the height for the compact state. */
 const LAUNCHER_WINDOW_WIDTH = 300;
@@ -59,7 +61,7 @@ async function loadWorkspaceFromArgument(): Promise<void> {
   const marker = await readWorkspaceMarker(candidate);
   if (!marker) {
     const message = `"${candidate}" holds no NodeWavenUI workspace.`;
-    console.error(`[NodeWavenUI] ${message}`);
+    log.launcher!.error(message);
     showLauncherStatus(message);
     window.setTimeout(() => {
       void closeWindow();
@@ -232,7 +234,7 @@ async function handleSelectedDirectory(directory: WorkspaceDirectory): Promise<v
   }
   const entries = await readDirectoryEntries(directory.path);
   const note =
-    entries !== null && entries.length > 0 ?
+    entries && entries.length > 0 ?
       'This folder holds files but no workspace. The wizard initializes it.' :
       null;
   showScreen('wizard');
@@ -274,7 +276,7 @@ unlockForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const directory = pendingUnlock.directory;
   const settings = pendingUnlock.settings;
-  if (directory === null || settings === null) {
+  if (!directory || !settings) {
     return;
   }
   const setup = plugins.getStorageSetup(settings.storageId);
@@ -315,30 +317,32 @@ unlockForm.addEventListener('submit', async (event) => {
 // One global catch for rejected promises, so the stderr log carries every unhandled failure.
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason;
-  console.error(`[NodeWavenUI] unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
+  log.launcher!.error(`unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
 });
 
-/** Boots the launcher: the theme, the screens, then the argument flow. */
+/** Boots the launcher: the theme, the language, the screens, then the argument flow. */
 async function boot(): Promise<void> {
-  console.info('[NodeWavenUI] launcher boot: theme');
+  log.launcher!.informative('launcher boot: theme');
   await initializeTheme();
+  initLanguage(localStorage.getItem(LANGUAGE_MIRROR_KEY));
+  localizeHTML(document.documentElement);
   showScreen('launcher');
-  console.info('[NodeWavenUI] launcher boot: arguments');
+  log.launcher!.informative('launcher boot: arguments');
   const appArguments = await readAppArguments();
   // The print-and-quit arguments run before anything else opens.
   if (appArguments.version) {
-    console.info(`NodeWavenUI ${await readAppVersion()}`);
+    log.launcher!.notice('NodeWavenUI %s', await readAppVersion());
   }
   if (appArguments.help) {
-    console.info(`[NodeWavenUI] ${HELP_TEXT}`);
+    log.launcher!.notice(HELP_TEXT);
   }
   if (appArguments.version || appArguments.help) {
     void closeWindow();
     return;
   }
-  console.info('[NodeWavenUI] launcher boot: workspace argument');
+  log.launcher!.informative('launcher boot: workspace argument');
   await loadWorkspaceFromArgument();
-  console.info('[NodeWavenUI] renderer ready');
+  log.launcher!.informative('renderer ready');
 }
 
 void boot();

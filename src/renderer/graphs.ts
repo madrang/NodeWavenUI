@@ -81,7 +81,7 @@ function isSeriesList(value: unknown): value is readonly GraphSeries[] {
     return false;
   }
   return value.every((series) => {
-    if (typeof series !== 'object' || series === null) {
+    if (typeof series !== 'object' || !series) {
       return false;
     }
     const record = series as Record<string, unknown>;
@@ -102,7 +102,7 @@ function isBarList(value: unknown): value is readonly GraphBar[] {
     return false;
   }
   return value.every((bar) => {
-    if (typeof bar !== 'object' || bar === null) {
+    if (typeof bar !== 'object' || !bar) {
       return false;
     }
     const record = bar as Record<string, unknown>;
@@ -113,7 +113,7 @@ function isBarList(value: unknown): value is readonly GraphBar[] {
 /** Reads the optional title of a spec. Throws on a non-string title. */
 function readTitle(spec: Record<string, unknown>): string | null {
   const title = spec['title'];
-  if (title === undefined || title === null) {
+  if (!title) {
     return null;
   }
   if (typeof title !== 'string') {
@@ -367,7 +367,7 @@ function readLiveY(value: unknown): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
   }
-  if (typeof value === 'object' && value !== null) {
+  if (typeof value === 'object' && value) {
     const y = (value as Record<string, unknown>)['y'];
     if (typeof y === 'number' && Number.isFinite(y)) {
       return y;
@@ -385,7 +385,7 @@ function readLiveY(value: unknown): number {
  * @throws Error when the window is not an integer between 2 and 100000.
  */
 function startLive(spec: unknown): string {
-  if (typeof spec !== 'object' || spec === null) {
+  if (typeof spec !== 'object' || !spec) {
     throw new Error('The live graph needs a spec object: { title?, window, mean?, unit? }.');
   }
   const record = spec as Record<string, unknown>;
@@ -393,8 +393,8 @@ function startLive(spec: unknown): string {
     throw new Error('The live graph needs a window: an integer between 2 and 100000 points.');
   }
   const title = readTitle(record);
-  const unit = record['unit'] === undefined || record['unit'] === null ? '' : String(record['unit']);
-  const wantMean = record['mean'] === undefined || record['mean'] === null ? false : record['mean'] === true;
+  const unit = String(record['unit'] ?? '');
+  const wantMean = !record['mean'] ? false : record['mean'] === true;
   surface.replaceChildren();
   lastDraw = null;
   emptyHint.hidden = true;
@@ -559,21 +559,21 @@ export const nodewavenGraphs = {
   append: (point: unknown): string => appendLive(point),
   line: (spec: unknown): string =>
     draw(() => {
-      if (typeof spec !== 'object' || spec === null) {
+      if (typeof spec !== 'object' || !spec) {
         throw new Error('The line graph needs a spec object: { title, series }.');
       }
       return drawSeriesPlot(spec as LineGraphSpec, false);
     }),
   scatter: (spec: unknown): string =>
     draw(() => {
-      if (typeof spec !== 'object' || spec === null) {
+      if (typeof spec !== 'object' || !spec) {
         throw new Error('The scatter graph needs a spec object: { title, series }.');
       }
       return drawSeriesPlot(spec as ScatterGraphSpec, true);
     }),
   bars: (spec: unknown): string =>
     draw(() => {
-      if (typeof spec !== 'object' || spec === null) {
+      if (typeof spec !== 'object' || !spec) {
         throw new Error('The bar graph needs a spec object: { title, bars }.');
       }
       return drawBars(spec as BarGraphSpec);

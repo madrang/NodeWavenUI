@@ -103,28 +103,28 @@ function isStringArray(value: unknown): value is string[] {
  * @returns The record, or null when one field carries a wrong type.
  */
 export function readTaskRecord(value: unknown): TaskRecord | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
   if (
     typeof candidate.id !== 'string' || candidate.id.length === 0 ||
     typeof candidate.title !== 'string' ||
-    (candidate.description !== null && typeof candidate.description !== 'string') ||
-    (candidate.goal !== null && typeof candidate.goal !== 'string') ||
+    (candidate.description && typeof candidate.description !== 'string') ||
+    (candidate.goal && typeof candidate.goal !== 'string') ||
     (candidate.origin !== 'user' && candidate.origin !== 'agent') ||
-    (candidate.originChatId !== null && typeof candidate.originChatId !== 'number') ||
-    (candidate.parentTaskId !== null && typeof candidate.parentTaskId !== 'string') ||
+    (candidate.originChatId && typeof candidate.originChatId !== 'number') ||
+    (candidate.parentTaskId && typeof candidate.parentTaskId !== 'string') ||
     !isStringArray(candidate.blockedBy) || !isTaskStatus(candidate.status) ||
-    (candidate.dispatchMode !== null && !isTaskDispatchMode(candidate.dispatchMode)) ||
-    (candidate.sessionFileId !== null && typeof candidate.sessionFileId !== 'string') ||
-    (candidate.sessionChatId !== null && typeof candidate.sessionChatId !== 'number') ||
-    (candidate.result !== null && typeof candidate.result !== 'string') ||
-    (candidate.evidence !== null && typeof candidate.evidence !== 'string') ||
-    (candidate.note !== null && typeof candidate.note !== 'string') ||
+    (candidate.dispatchMode && !isTaskDispatchMode(candidate.dispatchMode)) ||
+    (candidate.sessionFileId && typeof candidate.sessionFileId !== 'string') ||
+    (candidate.sessionChatId && typeof candidate.sessionChatId !== 'number') ||
+    (candidate.result && typeof candidate.result !== 'string') ||
+    (candidate.evidence && typeof candidate.evidence !== 'string') ||
+    (candidate.note && typeof candidate.note !== 'string') ||
     typeof candidate.createdAt !== 'string' || candidate.createdAt.length === 0 ||
-    (candidate.dispatchedAt !== null && typeof candidate.dispatchedAt !== 'string') ||
-    (candidate.settledAt !== null && typeof candidate.settledAt !== 'string')
+    (candidate.dispatchedAt && typeof candidate.dispatchedAt !== 'string') ||
+    (candidate.settledAt && typeof candidate.settledAt !== 'string')
   ) {
     return null;
   }
@@ -132,21 +132,21 @@ export function readTaskRecord(value: unknown): TaskRecord | null {
     id: candidate.id,
     title: candidate.title,
     // Older records stored null for an absent brief or goal: they read as empty strings.
-    description: candidate.description ?? '',
-    goal: candidate.goal ?? '',
+    description: typeof candidate.description === 'string' ? candidate.description : '',
+    goal: typeof candidate.goal === 'string' ? candidate.goal : '',
     origin: candidate.origin,
-    originChatId: candidate.originChatId,
-    parentTaskId: candidate.parentTaskId,
+    originChatId: typeof candidate.originChatId === 'number' ? candidate.originChatId : null,
+    parentTaskId: typeof candidate.parentTaskId === 'string' ? candidate.parentTaskId : null,
     blockedBy: candidate.blockedBy,
     status: candidate.status,
-    dispatchMode: candidate.dispatchMode,
-    sessionFileId: candidate.sessionFileId,
-    sessionChatId: candidate.sessionChatId,
-    result: candidate.result,
-    evidence: candidate.evidence,
-    note: candidate.note,
+    dispatchMode: isTaskDispatchMode(candidate.dispatchMode) ? candidate.dispatchMode : null,
+    sessionFileId: typeof candidate.sessionFileId === 'string' ? candidate.sessionFileId : null,
+    sessionChatId: typeof candidate.sessionChatId === 'number' ? candidate.sessionChatId : null,
+    result: typeof candidate.result === 'string' ? candidate.result : null,
+    evidence: typeof candidate.evidence === 'string' ? candidate.evidence : null,
+    note: typeof candidate.note === 'string' ? candidate.note : null,
     createdAt: candidate.createdAt,
-    dispatchedAt: candidate.dispatchedAt,
-    settledAt: candidate.settledAt,
+    dispatchedAt: typeof candidate.dispatchedAt === 'string' ? candidate.dispatchedAt : null,
+    settledAt: typeof candidate.settledAt === 'string' ? candidate.settledAt : null,
   };
 }

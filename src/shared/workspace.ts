@@ -19,7 +19,7 @@ export interface WorkspaceDirectory {
  * @returns True when the value carries a non-empty name and a non-empty path, both strings.
  */
 export function isWorkspaceDirectory(value: unknown): value is WorkspaceDirectory {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -59,7 +59,7 @@ export interface WorkspaceSettings {
  * @returns True when the value carries a name, a storage setup id, and a creation date, all strings.
  */
 export function isWorkspaceSettings(value: unknown): value is WorkspaceSettings {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -125,7 +125,7 @@ function readModelEntry(value: unknown): ModelEntry | null {
   if (typeof value === 'string' && value.length > 0) {
     return { id: value, vision: false };
   }
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
@@ -142,7 +142,7 @@ function readModelEntry(value: unknown): ModelEntry | null {
  * @returns True when the value carries the account strings and a model entry list.
  */
 function isProviderAccount(value: unknown): value is ProviderAccount {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -166,7 +166,7 @@ function isProviderAccount(value: unknown): value is ProviderAccount {
  * @returns True when the value carries an account list and the default selectors.
  */
 export function isProviderRegistry(value: unknown): value is ProviderRegistry {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -210,7 +210,7 @@ export function readProviderRegistry(value: unknown): ProviderRegistry | null {
  * @returns True when the value carries the three strings of the provider connection.
  */
 export function isProviderSettings(value: unknown): value is ProviderSettings {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;

@@ -96,7 +96,7 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
 
 /** Reads one stored tool call. Returns null on an invalid shape. */
 function readToolCall(value: unknown): ToolCall | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
@@ -108,7 +108,7 @@ function readToolCall(value: unknown): ToolCall | null {
 
 /** Reads one stored image. Returns null on an invalid shape. */
 function readChatImage(value: unknown): ChatImage | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
@@ -125,12 +125,12 @@ function readChatImage(value: unknown): ChatImage | null {
  * @returns The entry, or null when one field carries a wrong type.
  */
 function readChatEntry(value: unknown): ChatEntry | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
   const role = CHAT_ENTRY_ROLES.find((entryRole) => entryRole === candidate.role);
-  if (role === undefined || typeof candidate.content !== 'string') {
+  if (!role || typeof candidate.content !== 'string') {
     return null;
   }
   const reasoning = candidate.reasoning;
@@ -143,29 +143,27 @@ function readChatEntry(value: unknown): ChatEntry | null {
     undefined;
   const images = Array.isArray(candidate.images) ? candidate.images.map((image) => readChatImage(image)) : undefined;
   if (
-    (reasoning !== undefined && typeof reasoning !== 'string') ||
-    (toolCallId !== undefined && typeof toolCallId !== 'string') ||
-    (toolName !== undefined && typeof toolName !== 'string') ||
-    (mcpSession !== undefined && typeof mcpSession !== 'string') ||
-    (queued !== undefined && typeof queued !== 'boolean') ||
-    (toolCalls !== undefined && toolCalls.some((call) => call === null)) ||
-    (images !== undefined && images.some((image) => image === null))
+    (Object.hasOwn(candidate, 'reasoning') && typeof reasoning !== 'string') ||
+    (Object.hasOwn(candidate, 'toolCallId') && typeof toolCallId !== 'string') ||
+    (Object.hasOwn(candidate, 'toolName') && typeof toolName !== 'string') ||
+    (Object.hasOwn(candidate, 'mcpSession') && typeof mcpSession !== 'string') ||
+    (Object.hasOwn(candidate, 'queued') && typeof queued !== 'boolean') ||
+    (toolCalls && toolCalls.some((call) => call === null)) ||
+    (images && images.some((image) => image === null))
   ) {
     return null;
   }
   return {
     role,
     content: candidate.content,
-    // eslint-disable-next-line local/prefer-truthiness -- a false or zero json payload must stay on the record
-    ...(candidate.json !== undefined ? { json: candidate.json } : {}),
-    ...(reasoning ? { reasoning } : {}),
+    ...(Object.hasOwn(candidate, 'json') ? { json: candidate.json } : {}),
+    ...(reasoning ? { reasoning: reasoning as string } : {}),
     ...(toolCalls ? { toolCalls: toolCalls as readonly ToolCall[] } : {}),
-    ...(toolCallId ? { toolCallId } : {}),
-    ...(toolName ? { toolName } : {}),
+    ...(toolCallId ? { toolCallId: toolCallId as string } : {}),
+    ...(toolName ? { toolName: toolName as string } : {}),
     ...(images ? { images: images as readonly ChatImage[] } : {}),
-    ...(mcpSession ? { mcpSession } : {}),
-    // eslint-disable-next-line local/prefer-truthiness -- queued false is a real state, not an absent field
-    ...(queued !== undefined ? { queued } : {}),
+    ...(mcpSession ? { mcpSession: mcpSession as string } : {}),
+    ...(Object.hasOwn(candidate, 'queued') ? { queued: queued as boolean } : {}),
   };
 }
 
@@ -176,7 +174,7 @@ function readChatEntry(value: unknown): ChatEntry | null {
  * @returns The prompt record, or null when it carries an invalid shape.
  */
 function readStoredSystemPrompt(value: unknown): StoredSystemPrompt | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
@@ -200,7 +198,7 @@ function readStoredSystemPrompt(value: unknown): StoredSystemPrompt | null {
  * @returns The session, or null when the record carries an invalid shape.
  */
 export function readStoredChatSession(value: unknown): StoredChatSession | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
@@ -228,12 +226,12 @@ export function readStoredChatSession(value: unknown): StoredChatSession | null 
   const outputTokens = candidate.outputTokens;
   const systemPrompt = readStoredSystemPrompt(candidate.systemPrompt);
   if (
-    (boundProviderId !== undefined && typeof boundProviderId !== 'string') ||
-    (boundModel !== undefined && typeof boundModel !== 'string') ||
-    (contextTokens !== undefined && typeof contextTokens !== 'number') ||
-    (outputTokens !== undefined && typeof outputTokens !== 'number') ||
-    (candidate.systemPrompt !== undefined && systemPrompt === null) ||
-    (candidate.thinkingLevel !== undefined && !isThinkingLevel(candidate.thinkingLevel))
+    (Object.hasOwn(candidate, 'boundProviderId') && typeof boundProviderId !== 'string') ||
+    (Object.hasOwn(candidate, 'boundModel') && typeof boundModel !== 'string') ||
+    (Object.hasOwn(candidate, 'contextTokens') && typeof contextTokens !== 'number') ||
+    (Object.hasOwn(candidate, 'outputTokens') && typeof outputTokens !== 'number') ||
+    (Object.hasOwn(candidate, 'systemPrompt') && !systemPrompt) ||
+    (Object.hasOwn(candidate, 'thinkingLevel') && !isThinkingLevel(candidate.thinkingLevel))
   ) {
     return null;
   }
@@ -242,12 +240,10 @@ export function readStoredChatSession(value: unknown): StoredChatSession | null 
     title: candidate.title,
     createdAt: candidate.createdAt,
     entries,
-    ...(boundProviderId ? { boundProviderId } : {}),
-    ...(boundModel ? { boundModel } : {}),
-    // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
-    ...(contextTokens !== undefined ? { contextTokens } : {}),
-    // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
-    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(boundProviderId ? { boundProviderId: boundProviderId as string } : {}),
+    ...(boundModel ? { boundModel: boundModel as string } : {}),
+    ...(Object.hasOwn(candidate, 'contextTokens') ? { contextTokens: contextTokens as number } : {}),
+    ...(Object.hasOwn(candidate, 'outputTokens') ? { outputTokens: outputTokens as number } : {}),
     ...(systemPrompt ? { systemPrompt } : {}),
     ...(isThinkingLevel(candidate.thinkingLevel) ? { thinkingLevel: candidate.thinkingLevel } : {}),
   };
@@ -267,7 +263,7 @@ interface ChatKeyRecord {
  * @returns The record, or null when it carries an invalid shape or a wrong key length.
  */
 function readChatKeyRecord(value: unknown): ChatKeyRecord | null {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
@@ -322,9 +318,8 @@ export class ChatSessionStore {
       console.warn(`[NodeWavenUI] the chat key could not be read. The chat sessions stay in memory: ${message}`);
       return;
     }
-    // eslint-disable-next-line local/prefer-truthiness -- an empty key file is present but invalid, it must reach the shape warning
-    let record = raw === null ? null : readChatKeyRecord(safeParse(raw));
-    if (raw !== null && record === null) {
+    let record = typeof raw === 'string' ? readChatKeyRecord(safeParse(raw)) : null;
+    if (typeof raw === 'string' && !record) {
       console.warn('[NodeWavenUI] the stored chat key carries an invalid shape. A new key is generated.');
     }
     if (!record) {
@@ -420,7 +415,7 @@ export class ChatSessionStore {
   /** Writes one session file, plain or sealed with the chat key. */
   private async writeSession(session: StoredChatSession): Promise<void> {
     // An encrypted workspace without its key writes nothing: a plain file would leak the conversation.
-    if (this.encrypted && this.fileKey === null) {
+    if (this.encrypted && !this.fileKey) {
       return;
     }
     await makeDirectory(this.chatsPath);

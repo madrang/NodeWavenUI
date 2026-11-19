@@ -753,7 +753,7 @@ export class ChatRenderer {
     }
     // The fork draft carries no entry yet, so its editor renders after the copied history.
     const editing = this.context.editing();
-    if (editing?.chatId === chat.id && editing.index === undefined) {
+    if (editing?.chatId === chat.id && !Object.hasOwn(editing, 'index')) {
       this.chatMessages.append(this.buildMessageEditor(editing));
     }
     this.context.pinChatToBottom();

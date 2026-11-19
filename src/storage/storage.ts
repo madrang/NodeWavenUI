@@ -64,7 +64,7 @@ export interface StorageBackend {
  * @returns True when the value carries an id string and the four methods as functions.
  */
 export function isStorageBackend(value: unknown): value is StorageBackend {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;

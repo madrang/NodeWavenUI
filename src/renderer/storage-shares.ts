@@ -43,7 +43,7 @@ function isAccess(value: unknown): value is StorageAccess {
  * @returns True when the value satisfies the record shape.
  */
 export function isSharedStoragesRecord(value: unknown): value is SharedStoragesRecord {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;

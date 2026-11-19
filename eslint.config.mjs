@@ -9,14 +9,16 @@ import globals from 'globals';
 
 /**
  * The local truthiness rule: a conditional that compares against `undefined`, `null`, `true`, or
- * `false` takes the simple form (`if (name)` or `if (!name)`), per the project convention. The
- * comparison and the truthiness differ when a false, empty, zero, or non-boolean value changes
- * the outcome — such a site carries an inline disable with its reason.
+ * `false` takes the simple form (`if (name)` or `if (!name)`), per the project convention. A
+ * comparison inside a `&&` or `||` chain of a conditional test counts too (`if (a && b !==
+ * undefined)` reads `if (a && b)`). The comparison and the truthiness differ when a false,
+ * empty, zero, or non-boolean value changes the outcome — such a site carries an inline disable
+ * with its reason.
  */
 const preferTruthiness = {
   meta: {
     type: 'suggestion',
-    docs: { description: 'Prefer the truthiness form over comparing against undefined, null, true, or false in a conditional.' },
+    docs: { description: 'Prefer the truthiness form over comparing against undefined, null, true, or false in a conditional or a logical chain of its test.' },
     schema: [],
     messages: {
       truthiness:
@@ -27,12 +29,23 @@ const preferTruthiness = {
     const isBareConstant = (node) =>
       (node.type === 'Identifier' && (node.name === 'undefined' || node.name === 'null')) ||
       (node.type === 'Literal' && (node.value === null || node.value === true || node.value === false));
+    // Walks up through `&&` and `||` chains: a comparison nested in the test of a conditional
+    // still decides through truthiness, so it counts as part of the test.
     const isTest = (node) => {
-      const parent = node.parent;
-      if (parent === undefined || parent.type === 'ConditionalExpression') {
-        return parent !== undefined && parent.test === node;
+      let current = node;
+      while (current.parent !== undefined && current.parent.type === 'LogicalExpression') {
+        current = current.parent;
       }
-      return (parent.type === 'IfStatement' || parent.type === 'WhileStatement' || parent.type === 'DoWhileStatement') && parent.test === node;
+      const parent = current.parent;
+      if (parent === undefined) {
+        return false;
+      }
+      return (
+        parent.type === 'IfStatement' ||
+        parent.type === 'WhileStatement' ||
+        parent.type === 'DoWhileStatement' ||
+        parent.type === 'ConditionalExpression'
+      ) && parent.test === current;
     };
     return {
       BinaryExpression(node) {

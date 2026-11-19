@@ -32,6 +32,7 @@
 }
 
 .known-path select,
+.known-path-name,
 #known-path-add select,
 #known-path-add input {
   font: inherit;
@@ -41,15 +42,26 @@
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 4px 8px;
+  /* The selects and the name field keep their natural width: the base width:100% lets their flex
+     basis squeeze the path label of the row and the path input of the form into a sliver. */
+  width: auto;
 }
 
+/* The add form: one row where the path field grows, so the add button lands at the right edge. */
 #known-path-add {
   display: flex;
   gap: 8px;
   margin-top: 8px;
 }
 
-#known-path-add input {
+/* The name stays a narrow label field, in the row and in the add form. */
+.known-path-name,
+#known-path-name {
+  flex: none;
+  max-width: 160px;
+}
+
+#known-path-input {
   flex: 1;
   min-width: 0;
 }

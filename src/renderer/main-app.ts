@@ -903,7 +903,7 @@ export class MainApp implements McpSessionSink {
       if (entry?.role === 'assistant') {
         return;
       }
-      if (entry?.role === 'user' && entry.queued === false) {
+      if (entry?.role === 'user' && typeof entry.queued === 'boolean' && !entry.queued) {
         chat.entries.splice(position, 1);
         this.messages.render();
         await this.deliver(chat, entry.content, entry.images ?? []);
@@ -1331,7 +1331,7 @@ export class MainApp implements McpSessionSink {
     signal: AbortSignal,
   ): Promise<void> {
     let turn = 0;
-    while (limit === null || turn < limit) {
+    while (typeof limit !== 'number' || turn < limit) {
       turn += 1;
       const tools = this.agentTools(chat);
       const messages = this.agentMessages(chat, vision);
@@ -1379,7 +1379,7 @@ export class MainApp implements McpSessionSink {
     let args: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(call.arguments);
-      args = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {};
+      args = typeof parsed === 'object' && parsed ? (parsed as Record<string, unknown>) : {};
     } catch {
       args = { _raw: call.arguments };
     }
@@ -1398,7 +1398,7 @@ export class MainApp implements McpSessionSink {
     let json: unknown;
     try {
       const parsed: unknown = JSON.parse(output.text);
-      json = typeof parsed === 'object' && parsed !== null ? parsed : undefined;
+      json = typeof parsed === 'object' && parsed ? parsed : undefined;
     } catch {
       json = undefined;
     }

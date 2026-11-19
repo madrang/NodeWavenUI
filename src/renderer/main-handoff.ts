@@ -45,7 +45,7 @@ export const MAIN_HANDOFF_RECEIVER_NAME = '__nodewavenReceiveMainHandoff';
  * @returns True when the value carries the workspace directory, the settings, the password, and a frame mode.
  */
 export function isMainHandoffPayload(value: unknown): value is MainHandoffPayload {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;

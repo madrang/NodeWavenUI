@@ -216,7 +216,7 @@ class SessionService {
     await requirePermission(caller, 'open', address);
     const id = this.nextChildId;
     this.nextChildId += 1;
-    const frameTitle = title !== null && title.length > 0 ? title : address.split('/').filter((part) => part.length > 0).at(-1) ?? address;
+    const frameTitle = title ? title : address.split('/').filter((part) => part.length > 0).at(-1) ?? address;
     this.children.set(id, { id, contents: null, kind, url: address, title: frameTitle, shared: false, session: null });
     await callWorkspace('frames.build', { id, kind, url: address, title: frameTitle, side });
     return { id, kind, side };
@@ -231,13 +231,13 @@ class SessionService {
    */
   bindGuestContents(id: number, contents: WebContents): void {
     const record = this.children.get(id);
-    if (record === undefined || record.kind !== 'webview') {
+    if (!record || record.kind !== 'webview') {
       return;
     }
     record.contents = contents;
     contents.once('destroyed', () => {
       const current = this.children.get(id);
-      if (current !== undefined && current.contents === contents) {
+      if (current && current.contents === contents) {
         this.children.delete(id);
         pushWorkspace('frames.command', { id, command: 'close' });
       }

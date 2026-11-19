@@ -171,7 +171,3 @@ body {
   color: var(--muted);
   pointer-events: none;
 }
-
-[hidden] {
-  display: none !important;
-}

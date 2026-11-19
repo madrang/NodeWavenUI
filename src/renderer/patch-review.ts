@@ -25,7 +25,7 @@ function diffRow(className: string, marker: string, text: string | null, languag
   mark.textContent = marker;
   const line = document.createElement('span');
   line.className = 'review-line';
-  if (text === null || language === null) {
+  if (!text || !language) {
     line.textContent = text ?? '';
   } else {
     appendCodeRuns(line, text, language);

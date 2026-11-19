@@ -141,13 +141,23 @@ export class PatchStore {
     const { id, path, chatId, taskId, patch, state, comment, createdAt, resolvedAt } = record;
     if (
       typeof id !== 'number' || typeof path !== 'string' || typeof chatId !== 'number' ||
-      (taskId !== null && typeof taskId !== 'number') || typeof patch !== 'string' || !isPatchState(state) ||
-      (comment !== null && typeof comment !== 'string') || typeof createdAt !== 'string' ||
-      (resolvedAt !== null && typeof resolvedAt !== 'string')
+      (taskId && typeof taskId !== 'number') || typeof patch !== 'string' || !isPatchState(state) ||
+      (comment && typeof comment !== 'string') || typeof createdAt !== 'string' ||
+      (resolvedAt && typeof resolvedAt !== 'string')
     ) {
       return null;
     }
-    return { id, path, chatId, taskId, patch, state, comment, createdAt, resolvedAt };
+    return {
+      id,
+      path,
+      chatId,
+      taskId: typeof taskId === 'number' ? taskId : null,
+      patch,
+      state,
+      comment: typeof comment === 'string' ? comment : null,
+      createdAt,
+      resolvedAt: typeof resolvedAt === 'string' ? resolvedAt : null,
+    };
   }
 
   /** Reads one stored task record, or null on an invalid shape. */
@@ -155,12 +165,19 @@ export class PatchStore {
     const { id, chatId, title, description, createdAt, closedAt } = record;
     if (
       typeof id !== 'number' || typeof chatId !== 'number' || typeof title !== 'string' ||
-      (description !== null && typeof description !== 'string') || typeof createdAt !== 'string' ||
-      (closedAt !== null && typeof closedAt !== 'string')
+      (description && typeof description !== 'string') || typeof createdAt !== 'string' ||
+      (closedAt && typeof closedAt !== 'string')
     ) {
       return null;
     }
-    return { id, chatId, title, description, createdAt, closedAt };
+    return {
+      id,
+      chatId,
+      title,
+      description: typeof description === 'string' ? description : null,
+      createdAt,
+      closedAt: typeof closedAt === 'string' ? closedAt : null,
+    };
   }
 
   /** Subscribes to every record change. The listener holds no arguments: it re-reads the lists. */
@@ -212,10 +229,10 @@ export class PatchStore {
   openTask(chatId: number): TaskRecord | null {
     let newest: TaskRecord | null = null;
     for (const task of this.tasks.values()) {
-      if (task.chatId !== chatId || task.closedAt !== null) {
+      if (task.chatId !== chatId || task.closedAt) {
         continue;
       }
-      if (newest === null || task.id > newest.id) {
+      if (!newest || task.id > newest.id) {
         newest = task;
       }
     }
@@ -432,7 +449,7 @@ export class PatchStore {
       [...this.patches.values()].map((record) => record.taskId).filter((taskId): taskId is number => taskId !== null),
     );
     for (const task of this.tasks.values()) {
-      if (task.closedAt !== null && !stillReferenced.has(task.id)) {
+      if (task.closedAt && !stillReferenced.has(task.id)) {
         this.tasks.delete(task.id);
         await removePath(joinPath(this.root, `task-${task.id}.json`));
       }

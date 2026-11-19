@@ -30,6 +30,7 @@ import {
 } from './storage-shares.js';
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
+import { currentLanguage, LANGUAGES, LANGUAGE_MIRROR_KEY, translateMessage } from './locale/index.js';
 import type { PluginFolderController } from './plugin-folders.js';
 
 /** The settings label of each path rule mode. */
@@ -192,7 +193,7 @@ export class SettingsView {
    */
   async initialize(mcpHost: McpHostHandle | null): Promise<void> {
     this.mcpHost = mcpHost;
-    requireElement<HTMLElement>('#workspace-storage-mode').textContent = `Setting storage: ${this.storageLabel}`;
+    requireElement<HTMLElement>('#workspace-storage-mode').textContent = translateMessage('settings', 'storage', 'mode', { label: this.storageLabel });
     try {
       this.providerRegistry = await this.store.loadProviderRegistry();
     } catch (error) {
@@ -226,6 +227,7 @@ export class SettingsView {
     this.storageShares.applyRecord(this.sharedStorages);
     await this.initializeThemeControls();
     await this.initializeFrameControls();
+    await this.initializeLanguageControls();
     await this.initializeAgentTurnControls();
     this.initializeMcpHostSection();
     this.initializeMcpEndpointsSection();
@@ -276,6 +278,7 @@ export class SettingsView {
   private initializeKnownPathsSection(): void {
     const list = requireElement<HTMLDivElement>('#known-path-list');
     const form = requireElement<HTMLFormElement>('#known-path-add');
+    const nameInput = requireElement<HTMLInputElement>('#known-path-name');
     const input = requireElement<HTMLInputElement>('#known-path-input');
     const modeSelect = requireElement<HTMLSelectElement>('#known-path-mode');
     const render = (): void => {
@@ -297,13 +300,15 @@ export class SettingsView {
       if (path.length === 0 || path === '.') {
         return;
       }
+      const name = nameInput.value.trim();
       const mode = PATH_RULE_MODES.includes(modeSelect.value as PathRuleMode) ? (modeSelect.value as PathRuleMode) : 'ask';
-      // A second add of the same path changes its mode instead of stacking a duplicate.
+      // A second add of the same path changes its name and mode instead of stacking a duplicate.
       if (this.pathRuleList.some((rule) => rule.path === path)) {
-        this.pathRuleList = this.pathRuleList.map((rule) => (rule.path === path ? { path, mode } : rule));
+        this.pathRuleList = this.pathRuleList.map((rule) => (rule.path === path ? { path, name, mode } : rule));
       } else {
-        this.pathRuleList = [...this.pathRuleList, { path, mode }];
+        this.pathRuleList = [...this.pathRuleList, { path, name, mode }];
       }
+      nameInput.value = '';
       input.value = '';
       void this.savePathRules();
       render();
@@ -311,10 +316,23 @@ export class SettingsView {
     render();
   }
 
-  /** One known path row: the path, its mode select, and the remove action. */
+  /** One known path row: the editable name, the path, its mode select, and the remove action. */
   private buildKnownPathRow(rule: PathRule, render: () => void): HTMLElement {
     const row = document.createElement('div');
     row.className = 'known-path';
+    const name = document.createElement('input');
+    name.type = 'text';
+    name.className = 'known-path-name';
+    name.value = rule.name;
+    name.placeholder = 'Name';
+    name.title = 'The name of the path, shown to the agent beside its access';
+    name.addEventListener('change', () => {
+      const next = name.value.trim();
+      this.pathRuleList = this.pathRuleList.map((candidate) =>
+        candidate === rule ? { path: candidate.path, name: next, mode: candidate.mode } : candidate,
+      );
+      void this.savePathRules();
+    });
     const label = document.createElement('span');
     label.className = 'known-path-label';
     label.textContent = rule.path;
@@ -330,7 +348,7 @@ export class SettingsView {
     modeSelect.addEventListener('change', () => {
       const next = modeSelect.value as PathRuleMode;
       this.pathRuleList = this.pathRuleList.map((candidate) =>
-        candidate === rule ? { path: candidate.path, mode: next } : candidate,
+        candidate === rule ? { path: candidate.path, name: candidate.name, mode: next } : candidate,
       );
       void this.savePathRules();
     });
@@ -342,7 +360,7 @@ export class SettingsView {
       void this.savePathRules();
       render();
     });
-    row.append(label, modeSelect, remove);
+    row.append(name, label, modeSelect, remove);
     return row;
   }
 
@@ -941,7 +959,7 @@ export class SettingsView {
         let perfect = rule.actions.length > 0;
         for (const action of rule.actions) {
           const suffix = action.startsWith(`${oldPrefix}.`) ? action.slice(oldPrefix.length + 1) : null;
-          if (suffix !== null && toolNames.includes(suffix)) {
+          if (suffix && toolNames.includes(suffix)) {
             mapped.push(`${newPrefix}.${suffix}`);
           } else {
             perfect = false;
@@ -1014,6 +1032,35 @@ export class SettingsView {
       this.store.saveFrameModePreference(frameSelect.value).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         console.warn(`[NodeWavenUI] the window frame choice could not be saved: ${message}`);
+      });
+    });
+  }
+
+  /** Loads the language of the workspace and wires the language dropdown of the settings pane.
+   *  The pages read the language at boot, so the choice applies the next time the workspace window opens. */
+  private async initializeLanguageControls(): Promise<void> {
+    let stored: string | null = null;
+    try {
+      stored = await this.store.loadLanguagePreference();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[NodeWavenUI] the stored language could not be read, the navigator preference applies: ${message}`);
+    }
+    const languageSelect = requireElement<HTMLSelectElement>('#language-select');
+    languageSelect.replaceChildren();
+    for (const language of LANGUAGES) {
+      const option = document.createElement('option');
+      option.value = language.id;
+      option.textContent = language.label;
+      languageSelect.append(option);
+    }
+    const known = stored && LANGUAGES.some((language) => language.id === stored) ? stored : null;
+    languageSelect.value = known ?? currentLanguage();
+    languageSelect.addEventListener('change', () => {
+      localStorage.setItem(LANGUAGE_MIRROR_KEY, languageSelect.value);
+      this.store.saveLanguagePreference(languageSelect.value).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[NodeWavenUI] the language choice could not be saved: ${message}`);
       });
     });
   }

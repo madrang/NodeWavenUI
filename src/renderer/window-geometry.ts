@@ -28,7 +28,7 @@ let saveTimer: number | undefined;
  * @returns True when the value carries four numbers within the sane ranges.
  */
 function isWindowGeometry(value: unknown): value is WindowGeometry {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;

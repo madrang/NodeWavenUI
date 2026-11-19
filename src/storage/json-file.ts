@@ -171,7 +171,7 @@ export class JsonFileStorage implements StorageBackend {
     if (!this.password) {
       throw new StorageError('The settings file carries a password, but no password was given.');
     }
-    if (content.kdf === null || content.check === null || content.data === null) {
+    if (!content.kdf || !content.check || !content.data) {
       throw new StorageError('The encrypted settings file carries damaged key derivation parameters.');
     }
     const key = await deriveKey(this.password, content.kdf);
@@ -188,7 +188,7 @@ export class JsonFileStorage implements StorageBackend {
   }
 
   private parseContent(parsed: unknown): FileContent {
-    if (typeof parsed !== 'object' || parsed === null) {
+    if (typeof parsed !== 'object' || !parsed) {
       throw new StorageError('The settings file carries an invalid shape.');
     }
     const record = parsed as Record<string, unknown>;
@@ -214,7 +214,7 @@ export class JsonFileStorage implements StorageBackend {
 
   private parseValues(value: unknown): Map<string, string> {
     const values = new Map<string, string>();
-    if (typeof value !== 'object' || value === null) {
+    if (typeof value !== 'object' || !value) {
       return values;
     }
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {

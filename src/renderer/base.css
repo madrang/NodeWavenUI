@@ -30,6 +30,12 @@ body {
   flex-direction: column;
 }
 
+/* The screen display rules beat the user-agent [hidden] style, so the attribute needs its own
+   important rule. Every page carries this sheet, so every surface hides the same way. */
+[hidden] {
+  display: none !important;
+}
+
 button {
   font: inherit;
   color: var(--text);

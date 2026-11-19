@@ -57,7 +57,7 @@ function databaseNameFor(directoryPath: string): string {
  * @returns The suite id, or undefined when the config carries none.
  */
 export function suiteFromConfig(config: unknown): EncryptionSuiteId | undefined {
-  if (typeof config !== 'object' || config === null) {
+  if (typeof config !== 'object' || !config) {
     return undefined;
   }
   const suite = (config as Record<string, unknown>).suite;
@@ -90,7 +90,7 @@ function passwordFields(): readonly PluginFieldDefinition[] {
  */
 function readPasswordConfiguration(values: Readonly<Record<string, string>>): StorageConfiguration | string {
   const suite = listEncryptionSuites().find((candidate) => candidate.id === values.suite);
-  if (suite === undefined || !suite.available) {
+  if (!suite || !suite.available) {
     return 'This encryption suite is not available here.';
   }
   const password = values.password ?? '';

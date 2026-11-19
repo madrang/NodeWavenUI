@@ -112,7 +112,7 @@ function isSafeEntry(entry: string): boolean {
  * @returns True when the value carries the id, name, and a safe entry path.
  */
 export function isPluginFolderManifest(value: unknown): value is PluginFolderManifest {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -130,7 +130,7 @@ export function isPluginFolderManifest(value: unknown): value is PluginFolderMan
 
 /** Reads one stored plugin folder record. Returns disabled on an invalid shape. */
 function readStoredPluginFolder(value: unknown): StoredPluginFolder {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return { enabled: false };
   }
   const candidate = value as Record<string, unknown>;

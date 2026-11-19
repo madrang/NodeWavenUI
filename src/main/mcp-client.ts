@@ -90,7 +90,7 @@ function renderCallContent(result: unknown): McpCallResult {
       parts.push(readString(entry.text));
     } else if (entry.type === 'image') {
       const data = asString(entry.data);
-      if (data !== null && data.length > 0) {
+      if (data) {
         images.push({ data, mimeType: readString(entry.mimeType, 'image/png') });
       }
     } else if (entry.type === 'audio') {
@@ -153,7 +153,7 @@ export class McpServerClient {
       for (const entry of listPage.entries) {
         tools.push(entry as McpToolInfo);
       }
-      if (listPage.nextCursor === null || listPage.nextCursor.length === 0) {
+      if (!listPage.nextCursor) {
         break;
       }
       cursor = listPage.nextCursor;
@@ -163,7 +163,7 @@ export class McpServerClient {
 
   private static coerceTool(value: unknown): unknown {
     const record = asRecord(value);
-    if (record === null || typeof record.name !== 'string' || record.name.length === 0) {
+    if (!record || typeof record.name !== 'string' || record.name.length === 0) {
       return null;
     }
     return {
@@ -193,7 +193,7 @@ export class McpServerClient {
       for (const entry of listPage.entries) {
         resources.push(entry as McpResourceInfo);
       }
-      if (listPage.nextCursor === null || listPage.nextCursor.length === 0) {
+      if (!listPage.nextCursor) {
         break;
       }
       cursor = listPage.nextCursor;
@@ -215,7 +215,7 @@ export class McpServerClient {
       for (const entry of listPage.entries) {
         templates.push(entry as McpResourceInfo);
       }
-      if (listPage.nextCursor === null || listPage.nextCursor.length === 0) {
+      if (!listPage.nextCursor) {
         break;
       }
       cursor = listPage.nextCursor;
@@ -225,7 +225,7 @@ export class McpServerClient {
 
   private static coerceResource(value: unknown): unknown {
     const record = asRecord(value);
-    if (record === null || typeof record.uri !== 'string' || record.uri.length === 0) {
+    if (!record || typeof record.uri !== 'string' || record.uri.length === 0) {
       return null;
     }
     return {
@@ -239,7 +239,7 @@ export class McpServerClient {
 
   private static coerceTemplate(value: unknown): unknown {
     const record = asRecord(value);
-    if (record === null || typeof record.uriTemplate !== 'string' || record.uriTemplate.length === 0) {
+    if (!record || typeof record.uriTemplate !== 'string' || record.uriTemplate.length === 0) {
       return null;
     }
     return {
@@ -259,7 +259,7 @@ export class McpServerClient {
     const contents: McpResourceContent[] = [];
     for (const raw of rawContents) {
       const entry = asRecord(raw);
-      if (entry === null || typeof entry.uri !== 'string') {
+      if (!entry || typeof entry.uri !== 'string') {
         continue;
       }
       contents.push({

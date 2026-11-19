@@ -421,7 +421,7 @@ class AcpAgent {
   }
 
   private handleNotification(method: string, params: unknown): void {
-    if (method !== 'session/update' || this.updateListener === null || !isRecord(params)) {
+    if (method !== 'session/update' || !this.updateListener || !isRecord(params)) {
       return;
     }
     this.updateListener(params);

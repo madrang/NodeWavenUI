@@ -252,7 +252,7 @@ export class McpClientManager {
   /** Calls one tool of one endpoint by id or label. */
   async callTool(idOrLabel: string, toolName: string, args: Record<string, unknown>): Promise<McpCallResult> {
     const record = this.find(idOrLabel);
-    if (record === null || record.client === null) {
+    if (!record || !record.client) {
       throw new Error(`The MCP endpoint "${idOrLabel}" is not connected.`);
     }
     return record.client.callTool(toolName, args);
@@ -397,7 +397,7 @@ export class McpClientManager {
         }
         const id = this.sink.subscribe(name, (heard, params, source) => {
           const part = listener(heard, params, source);
-          if (part !== null && typeof part === 'object' && typeof (part as { then?: unknown }).then === 'function') {
+          if (part && typeof part === 'object' && typeof (part as { then?: unknown }).then === 'function') {
             void (part as Promise<unknown>).catch(() => {
               // A rejected listener callback is the listener's business. The dispatch goes on.
             });
@@ -419,5 +419,5 @@ function isServerRecord(value: ServerRecord | null): value is ServerRecord {
 }
 
 function asArgs(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+  return typeof value === 'object' && value ? (value as Record<string, unknown>) : {};
 }

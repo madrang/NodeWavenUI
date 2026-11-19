@@ -70,7 +70,7 @@ export interface JsonFileFs {
  */
 export function nodeCrypto(): NodeCrypto | null {
   const module = requireNodeModule('crypto');
-  if (typeof module !== 'object' || module === null) {
+  if (typeof module !== 'object' || !module) {
     return null;
   }
   return module as NodeCrypto;
