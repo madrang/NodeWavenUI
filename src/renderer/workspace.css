@@ -1103,15 +1103,6 @@ body.resizing-column {
   border-color: var(--accent-strong);
 }
 
-#provider-form {
-  max-width: 420px;
-}
-
-#provider-form h3 {
-  margin: 0 0 4px;
-  font-size: 13px;
-}
-
 /* Main screen: chat */
 .pane-chat {
   display: flex;
@@ -2041,6 +2032,11 @@ permission-request {
   resize: vertical;
 }
 
+/* The submit keeps its own width and sits at the right, not stretched across the form. */
+.task-board-create .task-board-button[type='submit'] {
+  align-self: flex-end;
+}
+
 .task-board-group {
   display: flex;
   flex-direction: column;
@@ -2098,8 +2094,42 @@ permission-request {
   word-break: break-word;
 }
 
+/* The rendered brief of one card: markdown with highlighted code fences. */
+.task-board-description {
+  font-size: 12px;
+  min-width: 0;
+}
+
 .task-board-goal {
   color: var(--text);
+}
+
+/* The edit form of one card: the same fields the create form carries. */
+.task-board-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.task-board-edit input,
+.task-board-edit textarea {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.task-board-edit textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+/* The Save and Cancel controls sit together at the right of the form. */
+.task-board-edit .task-board-row {
+  justify-content: flex-end;
 }
 
 .task-board-result {
@@ -2118,11 +2148,15 @@ permission-request {
   font: inherit;
   font-size: 12px;
   color: var(--text);
-  background: transparent;
+  background: var(--field);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 6px;
   max-width: 220px;
+}
+.task-board-label {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .task-board-button {
@@ -2138,6 +2172,11 @@ permission-request {
 
 .task-board-button:hover {
   background: var(--surface);
+}
+
+/* A pushed button sits at the right end of its actions row. */
+.task-board-button.push {
+  margin-left: auto;
 }
 
 .task-board-button.primary {

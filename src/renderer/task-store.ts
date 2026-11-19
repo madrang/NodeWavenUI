@@ -6,17 +6,25 @@
  */
 
 import { readTaskRecord, taskCanTransition, taskIsLive, type TaskDispatchMode, type TaskRecord } from '../shared/tasks.js';
-import { joinPath, listDirectoryNames, makeDirectory, readTextFile, writeTextFile } from './file-system.js';
+import { joinPath, listDirectoryNames, makeDirectory, readTextFile, removePath, writeTextFile } from './file-system.js';
 
 /** The input of one create call. */
 export interface TaskCreateInput {
   readonly title: string;
-  readonly description: string | null;
-  readonly goal: string | null;
+  readonly description: string;
+  readonly goal: string;
   readonly origin: 'user' | 'agent';
   readonly originChatId: number | null;
   readonly parentTaskId: string | null;
   readonly blockedBy: readonly string[];
+}
+
+/** The editable fields of one record. An absent field keeps its stored value, and an empty
+ * string clears it. */
+export interface TaskUpdateInput {
+  readonly title?: string;
+  readonly description?: string;
+  readonly goal?: string;
 }
 
 /** Owns the task records of the workspace. */
@@ -327,6 +335,45 @@ export class TaskStore {
     }
     record.sessionChatId = chatId;
     await this.write(record);
+  }
+
+  /**
+   * Updates the editable fields of one record. Every state accepts the edit: the fields carry
+   * the brief and the goal, not the run state. An absent input field keeps its stored value.
+   *
+   * @param id The record id.
+   * @param input The fields to change. A title must stay non-empty.
+   * @returns The record, or null when it is absent or the new title is empty.
+   */
+  async update(id: string, input: TaskUpdateInput): Promise<TaskRecord | null> {
+    const record = this.records.get(id);
+    if (!record) {
+      return null;
+    }
+    const { title = record.title, description = record.description, goal = record.goal } = input;
+    if (title.length === 0) {
+      return null;
+    }
+    record.title = title;
+    record.description = description;
+    record.goal = goal;
+    await this.write(record);
+    this.emit();
+    return record;
+  }
+
+  /**
+   * Removes one record from memory and from the workspace folder. Every state accepts the removal.
+   *
+   * @param id The record id.
+   */
+  async remove(id: string): Promise<void> {
+    if (!this.records.has(id)) {
+      return;
+    }
+    this.records.delete(id);
+    await removePath(joinPath(this.root, `task-${id}.json`));
+    this.emit();
   }
 
   /** Writes one record to its file. */

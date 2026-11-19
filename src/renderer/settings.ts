@@ -113,7 +113,6 @@ export class SettingsView {
   private readonly providerAddSubmit = requireElement<HTMLButtonElement>('#provider-add-submit');
   private readonly providerStatus = requireElement<HTMLElement>('#provider-status');
   private readonly mcpEndpointList = requireElement<HTMLElement>('#mcp-endpoint-list');
-  private readonly mcpEndpointAdd = requireElement<HTMLDetailsElement>('#mcp-endpoint-add');
   private readonly mcpEndpointAddForm = requireElement<HTMLFormElement>('#mcp-endpoint-add-form');
   private readonly mcpAddLabel = requireElement<HTMLInputElement>('#mcp-add-label');
   private readonly mcpAddKind = requireElement<HTMLSelectElement>('#mcp-add-kind');

@@ -133,8 +133,8 @@ async function runName(deps: TaskToolDeps, args: Record<string, unknown>): Promi
 async function runCreate(deps: TaskToolDeps, args: Record<string, unknown>): Promise<AgentToolOutput> {
   const record = await deps.store.create({
     title: requireString(args, 'title'),
-    description: optionalString(args, 'description'),
-    goal: optionalString(args, 'goal'),
+    description: optionalString(args, 'description') ?? '',
+    goal: optionalString(args, 'goal') ?? '',
     origin: 'agent',
     originChatId: deps.chatId,
     parentTaskId: optionalString(args, 'parentTaskId'),

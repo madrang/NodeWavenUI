@@ -528,20 +528,6 @@ class SessionService {
     }
   }
 
-  /** Opens the DevTools window of one child. */
-  async openDevTools(caller: WindowCaller, id: number): Promise<void> {
-    const record = this.requireRecord(id);
-    if (record.kind === 'iframe') {
-      throw new Error('An iframe frame shares the DevTools of the workspace window. Open DevTools on the workspace window instead.');
-    }
-    const contents = record.contents;
-    if (!contents) {
-      throw new Error(`Child window ${id} has no contents to open DevTools on.`);
-    }
-    await requirePermission(caller, 'devtools', contents.getURL());
-    contents.openDevTools({ mode: 'detach' });
-  }
-
   /** Reads the contents of one record, which every session operation needs. */
   private requireContents(record: ChildRecord): WebContents {
     if (!record.contents) {

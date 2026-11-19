@@ -275,7 +275,7 @@ export class MainApp implements McpSessionSink {
         void openEditorView(
           path,
           separateTab,
-          this.taskStore ? { store: this.taskStore, openBoard: () => this.openTaskBoard() } : null,
+          this.taskStore ? { store: this.taskStore, openBoard: (id) => this.openTaskBoard(id) } : null,
         );
       },
     });
@@ -1252,8 +1252,8 @@ export class MainApp implements McpSessionSink {
     return task.sessionChatId ? this.chats.find((chat) => chat.id === task.sessionChatId) ?? null : null;
   }
 
-  /** Opens the task board in the center workspace. */
-  private openTaskBoard(): void {
+  /** Opens the task board in the center workspace. A focus id opens that record in its edit form. */
+  private openTaskBoard(focusId?: string): void {
     const store = this.taskStore;
     if (!store) {
       return;
@@ -1271,7 +1271,7 @@ export class MainApp implements McpSessionSink {
       returnTask: (id, comment) => {
         void this.returnTask(id, comment);
       },
-    });
+    }, focusId ?? null);
   }
 
   /** Returns one review to its session: the record moves back to running and the comment of the

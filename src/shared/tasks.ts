@@ -17,10 +17,11 @@ export interface TaskRecord {
   /** The record id, a uuid string. It is also the file name. */
   readonly id: string;
   title: string;
-  /** The brief the session agent reads. It carries the prompt. */
-  description: string | null;
-  /** The completion test in prose. The agent verifies it before it completes the task. */
-  goal: string | null;
+  /** The brief the session agent reads. It carries the prompt. An empty string means none. */
+  description: string;
+  /** The completion test in prose. The agent verifies it before it completes the task. An empty
+   * string means the task carries no goal. */
+  goal: string;
   /** Who created the record: the user, or the agent of one chat. */
   readonly origin: 'user' | 'agent';
   /** The chat whose agent created the record, on agent origin. Null on user origin. */
@@ -130,8 +131,9 @@ export function readTaskRecord(value: unknown): TaskRecord | null {
   return {
     id: candidate.id,
     title: candidate.title,
-    description: candidate.description,
-    goal: candidate.goal,
+    // Older records stored null for an absent brief or goal: they read as empty strings.
+    description: candidate.description ?? '',
+    goal: candidate.goal ?? '',
     origin: candidate.origin,
     originChatId: candidate.originChatId,
     parentTaskId: candidate.parentTaskId,

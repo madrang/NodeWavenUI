@@ -92,8 +92,8 @@ describe('the task store', () => {
   it('refuses a create whose blockedBy list names an unknown task', async () => {
     const task = await store.create({
       title: 'Broken child',
-      description: null,
-      goal: null,
+      description: '',
+      goal: '',
       origin: 'agent',
       originChatId: 3,
       parentTaskId: null,
@@ -105,7 +105,7 @@ describe('the task store', () => {
   it('walks the happy path: dispatch, bind, complete, accept', async () => {
     const task = (await store.create({
       title: 'Write the note',
-      description: null,
+      description: '',
       goal: 'The note reads.',
       origin: 'user',
       originChatId: null,
@@ -130,8 +130,8 @@ describe('the task store', () => {
   it('returns a review to running and clears the old result', async () => {
     const task = (await store.create({
       title: 'Draft the plan',
-      description: null,
-      goal: null,
+      description: '',
+      goal: '',
       origin: 'agent',
       originChatId: 2,
       parentTaskId: null,
@@ -149,8 +149,8 @@ describe('the task store', () => {
   it('refuses a forbidden transition', async () => {
     const task = (await store.create({
       title: 'Idle',
-      description: null,
-      goal: null,
+      description: '',
+      goal: '',
       origin: 'user',
       originChatId: null,
       parentTaskId: null,
@@ -166,8 +166,8 @@ describe('the task store', () => {
   it('fails a running task on the agent word', async () => {
     const task = (await store.create({
       title: 'Impossible',
-      description: null,
-      goal: null,
+      description: '',
+      goal: '',
       origin: 'agent',
       originChatId: 1,
       parentTaskId: null,
@@ -184,8 +184,8 @@ describe('the task store', () => {
   it('holds a queued child until its blocker reaches done, then hands it to the session queue', async () => {
     const parent = (await store.create({
       title: 'First half',
-      description: null,
-      goal: null,
+      description: '',
+      goal: '',
       origin: 'user',
       originChatId: null,
       parentTaskId: null,
@@ -193,8 +193,8 @@ describe('the task store', () => {
     }))!;
     const child = (await store.create({
       title: 'Second half',
-      description: null,
-      goal: null,
+      description: '',
+      goal: '',
       origin: 'agent',
       originChatId: 4,
       parentTaskId: parent.id,
@@ -217,5 +217,51 @@ describe('the task store', () => {
     expect(readTaskRecord({ id: 'x', title: 5 })).to.equal(null);
     expect(readTaskRecord('text')).to.equal(null);
     expect(readTaskRecord(null)).to.equal(null);
+  });
+
+  it('updates the fields of one record, keeps absent fields, and refuses an empty title', async () => {
+    const task = (await store.create({
+      title: 'Draft words',
+      description: 'First brief.',
+      goal: '',
+      origin: 'user',
+      originChatId: null,
+      parentTaskId: null,
+      blockedBy: [],
+    }))!;
+    const updated = await store.update(task.id, { title: 'Settled words', description: 'Second brief.', goal: 'Reads well.' });
+    expect(updated?.title).to.equal('Settled words');
+    expect(updated?.description).to.equal('Second brief.');
+    expect(updated?.goal).to.equal('Reads well.');
+    // An absent field keeps its stored value, and an empty string clears it.
+    const partial = await store.update(task.id, { description: 'Third brief.' });
+    expect(partial?.title).to.equal('Settled words');
+    expect(partial?.description).to.equal('Third brief.');
+    expect(partial?.goal).to.equal('Reads well.');
+    const cleared = await store.update(task.id, { description: '' });
+    expect(cleared?.description).to.equal('');
+    expect(await store.update(task.id, { title: '' })).to.equal(null);
+    const reloaded = new TaskStore(root);
+    installBridge();
+    await reloaded.load();
+    expect(reloaded.get(task.id)?.title).to.equal('Settled words');
+  });
+
+  it('removes one record from memory and from the folder', async () => {
+    const task = (await store.create({
+      title: 'Gone soon',
+      description: '',
+      goal: '',
+      origin: 'user',
+      originChatId: null,
+      parentTaskId: null,
+      blockedBy: [],
+    }))!;
+    await store.remove(task.id);
+    expect(store.get(task.id)).to.equal(null);
+    const reloaded = new TaskStore(root);
+    installBridge();
+    await reloaded.load();
+    expect(reloaded.get(task.id)).to.equal(null);
   });
 });

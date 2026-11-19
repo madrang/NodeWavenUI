@@ -22,8 +22,8 @@ const SHARED_VIEW_ID = 'editor';
 export interface EditorViewDeps {
   /** The task store that holds the draft the selection becomes. */
   readonly store: TaskStore;
-  /** Opens the task board, so the user edits and dispatches the new draft. */
-  readonly openBoard: () => void;
+  /** Opens the task board on one record, straight into its edit form. */
+  readonly openBoard: (focusId: string) => void;
 }
 
 /** The editor page global the view drives. */
@@ -140,7 +140,7 @@ export async function openEditorView(
     const record = await deps.store.create({
       title: `${name}:${range}`,
       description: `File: ${path} lines ${range}\n\n\`\`\`${language}\n${snippet}\n\`\`\``,
-      goal: null,
+      goal: '',
       origin: 'user',
       originChatId: null,
       parentTaskId: null,
@@ -148,7 +148,7 @@ export async function openEditorView(
     });
     status.textContent = record ? `Task ${record.id.slice(0, 8)} drafted from the selection.` : 'The task could not be created.';
     if (record) {
-      deps.openBoard();
+      deps.openBoard(record.id);
     }
   };
 
