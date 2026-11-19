@@ -51,6 +51,8 @@ export const PATH_RULE_MODES: readonly PathRuleMode[] = ['allow', 'ask-write', '
 export interface PathRule {
   /** The workspace-relative folder or file path, normalized without leading or trailing slashes. */
   readonly path: string;
+  /** The name of the path, for the settings list and the agent resource. Empty means unnamed. */
+  readonly name: string;
   /** The access mode of the path. */
   readonly mode: PathRuleMode;
 }
@@ -107,14 +109,19 @@ export function readPathRules(value: unknown): readonly PathRule[] {
   }
   const rules: PathRule[] = [];
   for (const entry of value) {
-    if (typeof entry !== 'object' || entry === null) {
+    if (typeof entry !== 'object' || !entry) {
       continue;
     }
     const candidate = entry as Record<string, unknown>;
     if (typeof candidate['path'] !== 'string' || !isPathRuleMode(candidate['mode'])) {
       continue;
     }
-    rules.push({ path: candidate['path'], mode: candidate['mode'] });
+    // Older records carry no name: they read as unnamed.
+    rules.push({
+      path: candidate['path'],
+      name: typeof candidate['name'] === 'string' ? candidate['name'] : '',
+      mode: candidate['mode'],
+    });
   }
   return rules;
 }
@@ -188,7 +195,7 @@ export const WINDOW_READ_ACTIONS: ReadonlySet<string> = new Set(['attach', 'scre
  * @returns True when the value satisfies the rule shape.
  */
 export function isPermissionRule(value: unknown): value is PermissionRule {
-  if (typeof value !== 'object' || value === null) {
+  if (typeof value !== 'object' || !value) {
     return false;
   }
   const candidate = value as Record<string, unknown>;
@@ -311,7 +318,7 @@ export function decidePermission(
     if (rule.effect === 'deny') {
       return 'deny';
     }
-    if (rule.readOnly === true && isWriteAction(target, action)) {
+    if (rule.readOnly && isWriteAction(target, action)) {
       return 'deny';
     }
     return 'allow';

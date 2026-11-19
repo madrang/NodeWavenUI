@@ -4,6 +4,8 @@
  * with the `harness:` scheme.
  */
 
+import type { PathRule, PathRuleMode } from '../shared/permissions.js';
+
 /** One harness document. */
 export interface HarnessDoc {
   /** The resource URI both surfaces serve. */
@@ -74,6 +76,90 @@ const DOCS: readonly HarnessDoc[] = [
 
 /** The MIME type of every harness document. */
 export const HARNESS_DOC_MIME_TYPE = 'text/markdown';
+
+/** The URI of the known-paths document. It carries no file: the read tool renders it from the
+ * live path rules, so the list answers with the registered state of the moment. */
+export const KNOWN_PATHS_URI = 'harness:///nodewavenui/known-paths.md';
+
+/** The access meaning of each mode, for the document the agent reads. */
+const PATH_MODE_MEANING: Readonly<Record<PathRuleMode, string>> = {
+  allow: 'reads and writes need no request',
+  'ask-write': 'reads run free, a write asks one card before its patch proposes',
+  ask: 'every read and every write asks one card',
+  deny: 'the agent reaches nothing on this path',
+};
+
+/**
+ * Builds the known-paths document from the live rules.
+ *
+ * @param rules The registered path rules of the workspace.
+ * @returns The document text: the whole list of registered paths with name, mode, and meaning.
+ */
+export function knownPathsDocument(rules: readonly PathRule[]): string {
+  const lines = rules.map((rule) => {
+    const name = rule.name ? `**${rule.name}** — ` : '';
+    return `- ${name}\`${rule.path}\` — ${rule.mode}: ${PATH_MODE_MEANING[rule.mode]}`;
+  });
+  const list = lines.length > 0 ? lines.join('\n') : '- (no path is registered)';
+  return [
+    '# Known paths',
+    '',
+    'The registered paths of the workspace and the agent access each one grants. A folder covers everything below it, and the longest rule wins. A path without a rule asks one card on read, and every write proposes a patch for review whatever the path.',
+    '',
+    list,
+    '',
+  ].join('\n');
+}
+
+/** The root every built-in harness document lives under. */
+const HARNESS_ROOT = 'harness:///nodewavenui';
+
+/**
+ * Lists one harness folder: every document under it, and every subfolder of it, one line each.
+ * The built-in root answers with the shipped documents, the dynamic known-paths document, and
+ * the documents of the loaded plugins. A subfolder answers the same way, so a plugin tree stays
+ * walkable.
+ *
+ * @param uri The folder URI, with or without its trailing slash.
+ * @returns The listing text, or null when the URI names no folder of the harness tree.
+ */
+export function harnessFolderListing(uri: string): string | null {
+  if (!uri.startsWith(`${HARNESS_ROOT}/`) && uri !== HARNESS_ROOT) {
+    return null;
+  }
+  const folder = uri.endsWith('/') ? uri : `${uri}/`;
+  const under = folder.slice(HARNESS_ROOT.length + 1);
+  const entries = [
+    ...listHarnessDocs().map((doc) => ({ uri: doc.uri, description: doc.description })),
+    { uri: KNOWN_PATHS_URI, description: 'The registered path rules with their names and modes, rendered live' },
+  ];
+  const files: string[] = [];
+  const folders = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.uri.startsWith(`${HARNESS_ROOT}/`)) {
+      continue;
+    }
+    const rest = entry.uri.slice(HARNESS_ROOT.length + 1);
+    if (!rest.startsWith(under)) {
+      continue;
+    }
+    const tail = rest.slice(under.length);
+    const slash = tail.indexOf('/');
+    if (slash >= 0) {
+      folders.add(`${tail.slice(0, slash)}/`);
+    } else if (tail.length > 0) {
+      files.push(`- ${tail} — ${entry.description}`);
+    }
+  }
+  if (under.length > 0 && files.length === 0 && folders.size === 0) {
+    return null;
+  }
+  const lines = [`# ${folder}`, '', ...files, ...[...folders].sort().map((name) => `- ${name}`)];
+  if (folders.size > 0) {
+    lines.push('', 'A subfolder lists the same way: read its URI with the trailing slash.');
+  }
+  return `${lines.join('\n')}\n`;
+}
 
 /** The uris the built-in documents claim. A plugin harness document must not take one of them. */
 export const BUILT_IN_HARNESS_DOC_URIS: readonly string[] = DOCS.map((doc) => doc.uri);

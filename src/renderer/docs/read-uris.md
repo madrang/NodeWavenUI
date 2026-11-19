@@ -4,17 +4,22 @@ The `read` tool dispatches on the URI scheme. The scheme names the provider, per
 
 ## harness:
 
-`harness:///nodewavenui/<document>.md` reads the documentation of the app itself.
+`harness:///nodewavenui/<document>.md` reads the documentation of the app itself. A folder URI with its trailing slash, like `harness:///nodewavenui/`, lists the documents and subfolders under it the same way.
 
 - `harness:///nodewavenui/overview.md`
 - `harness:///nodewavenui/mcp-host-tools.md`
 - `harness:///nodewavenui/chat-agent-tools.md`
 - `harness:///nodewavenui/read-uris.md`
 - `harness:///nodewavenui/nodewavenmcp-api.md`
+- `harness:///nodewavenui/graphs.md`
+- `harness:///nodewavenui/editor.md`
+- `harness:///nodewavenui/project-layout.md`
+
+`harness:///nodewavenui/known-paths.md` carries no file: it lists the registered path rules with their names, modes, and meanings, rendered from the live settings.
 
 ## file:
 
-`file:///absolute/path` reads one file inside the workspace directory. Paths outside the workspace are refused. The first read of a path asks for approval; the always choice persists a rule.
+`file:///absolute/path` reads one file. A path inside the workspace follows the Known paths rules: an unregistered path asks one card on first read, and a deny rule refuses it. A path outside the workspace asks one card on every read.
 
 ## storage:
 

@@ -13,7 +13,7 @@ import { readBridge } from '../shared/bridge.js';
 import type { PathRule } from '../shared/permissions.js';
 import { COMMAND_TOOL_DEFINITIONS } from '../shared/command-tool.js';
 import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
-import { readHarnessDoc } from './doc-resources.js';
+import { harnessFolderListing, KNOWN_PATHS_URI, knownPathsDocument, readHarnessDoc } from './doc-resources.js';
 import { readTextFile } from './file-system.js';
 import { createFileTools, type FileToolDeps } from './file-tools.js';
 import { createTasksTool, type TaskToolDeps } from './task-tools.js';
@@ -148,11 +148,12 @@ async function readStorageUri(uri: string, deps: AgentToolDeps): Promise<string>
   return value ?? `(the record "${key}" is empty)`;
 }
 
-function createReadTool(deps: AgentToolDeps): AgentTool {
+/** Builds the `read` tool. Exported for the specs. */
+export function createReadTool(deps: AgentToolDeps): AgentTool {
   return {
     name: 'read',
     description:
-      'Reads one URI. harness:///nodewavenui/overview.md starts the app documentation, file:// reads a workspace file and asks on first use, storage://<storageId>/<key> reads a storage the user shared read-only, and any other scheme goes to the MCP server that lists the resource. See harness:///nodewavenui/read-uris.md.',
+      'Reads one URI. harness:///nodewavenui/overview.md starts the app documentation, harness:///nodewavenui/known-paths.md lists the registered path rules, and a harness folder URI with its trailing slash lists its documents and subfolders, file:// reads a workspace file and asks on first use, storage://<storageId>/<key> reads a storage the user shared read-only, and any other scheme goes to the MCP server that lists the resource. See harness:///nodewavenui/read-uris.md.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -167,6 +168,15 @@ function createReadTool(deps: AgentToolDeps): AgentTool {
         throw new Error('The read tool needs a uri string.');
       }
       if (uri.startsWith('harness:')) {
+        // The known-paths document renders from the live rules, so it answers with the registered
+        // state of the moment instead of a shipped file.
+        if (uri === KNOWN_PATHS_URI) {
+          return { text: knownPathsDocument(deps.pathRules()) };
+        }
+        const folder = harnessFolderListing(uri);
+        if (folder) {
+          return { text: folder };
+        }
         return { text: await readHarnessDoc(uri) };
       }
       if (uri.startsWith('file:')) {
@@ -201,7 +211,7 @@ function createWindowTool(
         throw new Error('The window tools need the nodewavenui bridge of an app window.');
       }
       const result = (await bridge.workspace.runWindowTool(definition.name, args, source)) as McpToolResult | null;
-      if (result === null || typeof result !== 'object') {
+      if (!result || typeof result !== 'object') {
         throw new Error(`The tool "${definition.name}" returned no result.`);
       }
       if (result.isError) {

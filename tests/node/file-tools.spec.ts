@@ -119,7 +119,7 @@ describe('the file tool permissions', () => {
   });
 
   it('refuses a write and a read under a deny rule', async () => {
-    rules = [{ path: 'secrets', mode: 'deny' }];
+    rules = [{ path: 'secrets', name: '', mode: 'deny' }];
     writeFileSync(join(root, 'secrets'), 'key');
     const writeError = await errorOf(() => write.run({ action: 'write', path: 'secrets', text: 'leak' }));
     const readError = await errorOf(() => files.run({ action: 'read', path: 'secrets' }));
@@ -129,7 +129,7 @@ describe('the file tool permissions', () => {
   });
 
   it('reads free under an allow rule', async () => {
-    rules = [{ path: 'docs', mode: 'allow' }];
+    rules = [{ path: 'docs', name: '', mode: 'allow' }];
     writeFileSync(join(root, 'docs'), 'open data');
     const output = await files.run({ action: 'read', path: 'docs' });
     expect(output.text).to.equal('open data');
