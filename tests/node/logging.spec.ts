@@ -102,9 +102,9 @@ describe('logging', () => {
     it('elides the System root from child names', () => {
       const events: unknown[][] = [];
       const log = createLogger(null, 'System', recordingHandler(events));
-      log.mcp!.host!.warning('down');
+      log.mcp.host!.warning('down');
       expect(events).to.deep.equal([[EventLevels.WARNING, 'down']]);
-      expect(log.mcp!.host!.name).to.equal('mcp->host');
+      expect(log.mcp.host!.name).to.equal('mcp->host');
     });
 
     it('keeps the name of a non-System root on its children', () => {
@@ -115,8 +115,8 @@ describe('logging', () => {
 
     it('builds a fresh child for every string property', () => {
       const log = createLogger(null, 'System', recordingHandler([]));
-      expect(log.a!.name).to.equal('a');
-      expect(log.a!.b!.c!.name).to.equal('a->b->c');
+      expect(log.a.name).to.equal('a');
+      expect(log.a.b!.c!.name).to.equal('a->b->c');
     });
 
     it('reads one object key through Reflect as its converted string name', () => {

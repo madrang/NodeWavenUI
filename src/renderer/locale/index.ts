@@ -13,7 +13,7 @@ import { log } from '../logger.js';
 import { EN } from './en.js';
 import { FR } from './fr.js';
 
-configureLocaleDiagnostics((message) => log.locale!.warning(message));
+configureLocaleDiagnostics((message) => log.locale.warning(message));
 
 /** One language id of the app. */
 export type LanguageId = 'en' | 'fr';
@@ -96,7 +96,7 @@ export function resolveMessage(message: string): string {
   if (typeof resolved === 'string') {
     const unresolved = resolved.match(LOCALE_TOKEN_EXPRESSION);
     if (unresolved) {
-      log.locale!.error(`Unresolved tokens in message: ${unresolved.join(', ')}`);
+      log.locale.error(`Unresolved tokens in message: ${unresolved.join(', ')}`);
     }
     return resolved;
   }
@@ -123,7 +123,7 @@ export function translateMessage(...propNames: unknown[]): string {
  */
 export function localizeHTML(element: Node): void {
   if (!(element instanceof Node)) {
-    log.localizeHTML!.warning('Unknown instance type "%o" is unsupported.', element);
+    log.localizeHTML.warning('Unknown instance type "%o" is unsupported.', element);
     return;
   }
   if (element.nodeName === 'TEMPLATE') {
@@ -145,9 +145,9 @@ export function localizeHTML(element: Node): void {
       }
     } else if (element instanceof SVGElement) {
       // Icons are the expected SVG case, so the skip stays at debug level.
-      log.localizeHTML!.debug('SVG elements are unsupported. Returning unmodified element');
+      log.localizeHTML.debug('SVG elements are unsupported. Returning unmodified element');
     } else {
-      log.localizeHTML!.warning(`Unknown element "${element.id}" Returning unmodified element %o`, element);
+      log.localizeHTML.warning(`Unknown element "${element.id}" Returning unmodified element %o`, element);
     }
   } else if (
     // Text based nodes.
@@ -159,7 +159,7 @@ export function localizeHTML(element: Node): void {
   ) {
     element.nodeValue = resolveMessage(element.nodeValue ?? '');
   } else if (element.nodeType !== Node.DOCUMENT_FRAGMENT_NODE) {
-    log.localizeHTML!.warning(`Unknown node type "${element.nodeName}.nodeType: ${element.nodeType}`);
+    log.localizeHTML.warning(`Unknown node type "${element.nodeName}.nodeType: ${element.nodeType}`);
   }
   if (hasChildNodes) {
     for (const node of Array.from(element.childNodes)) {

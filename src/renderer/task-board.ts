@@ -1,11 +1,12 @@
 /**
- * The task board: the workarea view over the dispatchable task records. The board lists the
- * records by state group, carries the create form, and holds the review actions. Every control
- * calls the store or the session callbacks of the app, so the board keeps no task state of its own.
+ * The task board building blocks: the record cards, their edit and dispatch forms, and the
+ * state groups. The view folder (`views/task-board/`) owns the static skeleton — the create
+ * form and the groups container — and mounts these builders over it. Every control calls the
+ * store or the session callbacks of the app, so the board keeps no task state of its own.
  */
 
-import { getWorkarea, type WorkareaView } from './workarea.js';
 import { renderMarkdown } from './text/render.js';
+import { translateMessage } from './locale/index.js';
 import type { TaskDispatchMode, TaskRecord } from '../shared/tasks.js';
 import type { TaskStore } from './task-store.js';
 
@@ -24,21 +25,18 @@ export interface TaskBoardDeps {
 
 /** The edit state of the board: which card sits in its edit form, and the unsaved drafts that
  * survive a re-render, so a settle elsewhere never eats a typed change. */
-interface BoardEditState {
+export interface BoardEditState {
   readonly store: TaskStore;
   editingId: string | null;
   readonly drafts: Map<string, { title: string; description: string; goal: string }>;
   readonly requestRender: () => void;
 }
 
-/** The id of the one board view: a second open call only activates it again. */
-const VIEW_ID = 'task-board';
-
-/** The state groups of the board, in display order. */
-const GROUPS: readonly { readonly label: string; readonly states: readonly string[] }[] = [
-  { label: 'Waiting for review', states: ['review'] },
-  { label: 'Live', states: ['draft', 'queued', 'running'] },
-  { label: 'Settled', states: ['done', 'failed', 'cancelled'] },
+/** The state groups of the board, in display order, with their dictionary keys. */
+const GROUPS: readonly { readonly labelKey: 'groupReview' | 'groupLive' | 'groupSettled'; readonly states: readonly string[] }[] = [
+  { labelKey: 'groupReview', states: ['review'] },
+  { labelKey: 'groupLive', states: ['draft', 'queued', 'running'] },
+  { labelKey: 'groupSettled', states: ['done', 'failed', 'cancelled'] },
 ];
 
 /** The button variants of the board cards. A push button sits at the right end of its row. */
@@ -69,41 +67,6 @@ function button(label: string, run: () => void, options: ButtonOptions = {}): HT
   return element;
 }
 
-/** Builds the create form of the board. */
-function buildCreate(deps: TaskBoardDeps): HTMLElement {
-  const form = document.createElement('form');
-  form.className = 'task-board-create';
-  const title = document.createElement('input');
-  title.type = 'text';
-  title.placeholder = 'New task title';
-  title.required = true;
-  const description = document.createElement('textarea');
-  description.placeholder = 'The brief the session agent reads (optional)';
-  const goal = document.createElement('input');
-  goal.type = 'text';
-  goal.placeholder = 'Goal: the completion test (optional)';
-  const submit = button('Create draft', () => undefined, { primary: true });
-  submit.type = 'submit';
-  form.append(title, description, goal, submit);
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const trimmed = title.value.trim();
-    if (!trimmed) {
-      return;
-    }
-    void deps.store.create({
-      title: trimmed,
-      description: description.value.trim(),
-      goal: goal.value.trim(),
-      origin: 'user',
-      originChatId: null,
-      parentTaskId: null,
-      blockedBy: [],
-    });
-  });
-  return form;
-}
-
 /** Appends the session picker of one draft to the given actions row and answers its Dispatch
  * button, so the caller places the button after its neighbors. Null on a non-draft record. */
 function buildDispatch(deps: TaskBoardDeps, task: TaskRecord, actions: HTMLElement): HTMLButtonElement | null {
@@ -113,12 +76,12 @@ function buildDispatch(deps: TaskBoardDeps, task: TaskRecord, actions: HTMLEleme
   const sessions = deps.sessions();
   const label = document.createElement('span');
   label.className = 'task-board-label';
-  label.textContent = 'Session';
+  label.textContent = translateMessage('tasks', 'sessionLabel');
   const select = document.createElement('select');
-  select.title = 'The chat session the dispatch binds to. New session opens a fresh chat tab.';
+  select.title = translateMessage('tasks', 'sessionTitle');
   const fresh = document.createElement('option');
   fresh.value = '';
-  fresh.textContent = 'New session';
+  fresh.textContent = translateMessage('tasks', 'sessionNew');
   select.append(fresh);
   for (const session of sessions) {
     const option = document.createElement('option');
@@ -131,7 +94,7 @@ function buildDispatch(deps: TaskBoardDeps, task: TaskRecord, actions: HTMLEleme
     await deps.dispatch(task.id, mode, select.value || null);
   };
   actions.append(label, select);
-  return button('Dispatch', () => {
+  return button(translateMessage('tasks', 'dispatch'), () => {
     void run();
   }, { primary: true });
 }
@@ -151,20 +114,20 @@ function buildEditForm(task: TaskRecord, edit: BoardEditState): HTMLElement {
   const title = document.createElement('input');
   title.type = 'text';
   title.value = draft.title;
-  title.placeholder = 'Task title';
+  title.placeholder = translateMessage('tasks', 'editTitlePlaceholder');
   const description = document.createElement('textarea');
   description.value = draft.description;
-  description.placeholder = 'The brief the session agent reads. Fenced code blocks render highlighted.';
+  description.placeholder = translateMessage('tasks', 'editBriefPlaceholder');
   const goal = document.createElement('input');
   goal.type = 'text';
   goal.value = draft.goal;
-  goal.placeholder = 'Goal: the completion test (optional)';
+  goal.placeholder = translateMessage('tasks', 'editGoalPlaceholder');
   for (const [input, key] of [[title, 'title'], [description, 'description'], [goal, 'goal']] as const) {
     input.addEventListener('input', () => {
       (draft as unknown as Record<string, string>)[key] = input.value;
     });
   }
-  const save = button('Save', () => undefined, { primary: true });
+  const save = button(translateMessage('tasks', 'save'), () => undefined, { primary: true });
   save.type = 'submit';
   // The submit runs the save for the click and the Enter key alike, and the prevented default
   // keeps the form from navigating the workspace page.
@@ -185,7 +148,7 @@ function buildEditForm(task: TaskRecord, edit: BoardEditState): HTMLElement {
   controls.className = 'task-board-row';
   controls.append(
     save,
-    button('Cancel', () => {
+    button(translateMessage('tasks', 'cancel'), () => {
       edit.drafts.delete(task.id);
       edit.editingId = null;
       edit.requestRender();
@@ -221,19 +184,19 @@ function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState):
   if (task.goal) {
     const goal = document.createElement('p');
     goal.className = 'task-board-goal';
-    goal.textContent = `Goal: ${task.goal}`;
+    goal.textContent = translateMessage('tasks', 'goalPrefix', { goal: task.goal });
     card.append(goal);
   }
   if (task.result) {
     const result = document.createElement('p');
     result.className = 'task-board-result';
-    result.textContent = `Result: ${task.result}`;
+    result.textContent = translateMessage('tasks', 'resultPrefix', { result: task.result });
     card.append(result);
   }
   const actions = document.createElement('div');
   actions.className = 'task-board-row';
   actions.append(
-    button('Edit', () => {
+    button(translateMessage('tasks', 'edit'), () => {
       edit.editingId = task.id;
       edit.requestRender();
     }),
@@ -241,7 +204,7 @@ function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState):
   if (task.status === 'draft' || task.status === 'queued' || task.status === 'running') {
     const dispatch = buildDispatch(deps, task, actions);
     actions.append(
-      button('Cancel', () => {
+      button(translateMessage('tasks', 'cancel'), () => {
         void deps.store.cancel(task.id, null);
       }, { danger: true, push: true }),
     );
@@ -252,7 +215,7 @@ function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState):
   if (task.status === 'running' && typeof task.sessionChatId === 'number') {
     const chatId = task.sessionChatId;
     actions.append(
-      button('Open session', () => {
+      button(translateMessage('tasks', 'openSession'), () => {
         deps.openSession(chatId);
       }),
     );
@@ -260,30 +223,30 @@ function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState):
   if (task.status === 'review') {
     const comment = document.createElement('input');
     comment.type = 'text';
-    comment.placeholder = 'Return comment (optional)';
+    comment.placeholder = translateMessage('tasks', 'returnCommentPlaceholder');
     actions.append(
       comment,
-      button('Return', () => {
+      button(translateMessage('tasks', 'returnAction'), () => {
         deps.returnTask(task.id, comment.value.trim() || null);
       }),
     );
     if (task.sessionChatId) {
       const chatId = task.sessionChatId;
       actions.append(
-        button('Open session', () => {
+        button(translateMessage('tasks', 'openSession'), () => {
           deps.openSession(chatId);
         }),
       );
     }
     actions.append(
-      button('Accept', () => {
+      button(translateMessage('tasks', 'accept'), () => {
         void deps.store.accept(task.id);
       }, { primary: true, push: true }),
     );
   }
   if (task.status === 'done' || task.status === 'failed' || task.status === 'cancelled') {
     actions.append(
-      button('Remove', () => {
+      button(translateMessage('tasks', 'remove'), () => {
         void deps.store.remove(task.id);
       }, { danger: true, push: true }),
     );
@@ -293,67 +256,39 @@ function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState):
 }
 
 /**
- * Opens the task board in the center workspace, or activates the open view again.
+ * Builds the state group sections of the board over the current records: one section per group
+ * that holds members, and the empty note alone when no task exists.
  *
  * @param deps The store, the dispatch and session callbacks, and the return action.
- * @param focusId The id of one record that opens straight into its edit form, focused on the
- * description, so a task drafted from a code selection takes its purpose at once.
+ * @param edit The edit state of the board, shared with the view that mounts the sections.
+ * @returns The sections of one board render.
  */
-export function openTaskBoardView(deps: TaskBoardDeps, focusId: string | null = null): void {
-  getWorkarea().unregister(VIEW_ID);
-  const content = document.createElement('div');
-  content.className = 'task-board';
-  /** Drops the store subscription of this view. */
-  let dispose = (): void => {};
-  const edit: BoardEditState = {
-    store: deps.store,
-    editingId: focusId,
-    drafts: new Map(),
-    requestRender: (): void => {
-      rerender();
-    },
-  };
-  const view: WorkareaView = {
-    label: 'Tasks',
-    badge: 'task',
-    title: 'The dispatchable task records of the workspace',
-    content,
-    onClose: () => {
-      dispose();
-      getWorkarea().unregister(VIEW_ID);
-      content.remove();
-    },
-  };
-  const rerender = (): void => {
-    const records = deps.store.list();
-    const sections: HTMLElement[] = [buildCreate(deps)];
-    for (const group of GROUPS) {
-      const members = records.filter((task) => group.states.includes(task.status));
-      if (members.length === 0) {
-        continue;
-      }
-      const section = document.createElement('section');
-      section.className = 'task-board-group';
-      const head = document.createElement('h2');
-      head.textContent = `${group.label} (${members.length})`;
-      section.append(head);
-      for (const task of members) {
-        section.append(buildCard(deps, task, edit));
-      }
-      sections.push(section);
+export function buildBoardSections(deps: TaskBoardDeps, edit: BoardEditState): HTMLElement[] {
+  const records = deps.store.list();
+  const sections: HTMLElement[] = [];
+  for (const group of GROUPS) {
+    const members = records.filter((task) => group.states.includes(task.status));
+    if (members.length === 0) {
+      continue;
     }
-    if (sections.length === 1) {
-      const empty = document.createElement('p');
-      empty.className = 'task-board-empty';
-      empty.textContent = 'No task exists yet. Create one above, or let an agent call the tasks tool.';
-      sections.push(empty);
+    const section = document.createElement('section');
+    section.className = 'task-board-group';
+    const head = document.createElement('h2');
+    head.textContent = translateMessage('tasks', 'groupHeading', {
+      label: translateMessage('tasks', group.labelKey),
+      count: String(members.length),
+    });
+    section.append(head);
+    for (const task of members) {
+      section.append(buildCard(deps, task, edit));
     }
-    content.replaceChildren(...sections);
-  };
-  dispose = deps.store.subscribe(rerender);
-  rerender();
-  getWorkarea().register(VIEW_ID, view);
-  if (focusId) {
-    content.querySelector<HTMLElement>('.task-board-edit textarea')?.focus();
+    sections.push(section);
   }
+  if (sections.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'task-board-empty';
+    empty.textContent = translateMessage('tasks', 'empty');
+    sections.push(empty);
+  }
+  return sections;
 }

@@ -66,18 +66,18 @@ function runSmokeProbe(win: BrowserWindow): void {
   const expression = expressions[probe];
   if (!expression) {
     // Another probe of the app owns this name, for example the workspace probe of the window service.
-    log.smoke!.informative(`the launcher knows no probe "${probe}", it stays for another handler.`);
+    log.smoke.informative(`the launcher knows no probe "${probe}", it stays for another handler.`);
     return;
   }
   win.webContents.once('did-finish-load', () => {
     void win.webContents
       .executeJavaScript(expression)
       .then((value) => {
-        log.smoke!.informative(`${probe}: ${JSON.stringify(value)}`);
+        log.smoke.informative(`${probe}: ${JSON.stringify(value)}`);
         app.quit();
       })
       .catch((error: unknown) => {
-        log.smoke!.error(`smoke ${probe} failed: ${String(error)}`);
+        log.smoke.error(`smoke ${probe} failed: ${String(error)}`);
         app.quit();
       });
   });
@@ -97,7 +97,7 @@ void app.whenReady().then(() => {
   registerWorkspaceLink();
   registerToolService();
   createLauncherWindow();
-  log.main!.informative('main ready: electron %s, node %s', process.versions.electron, process.versions.node);
+  log.main.informative('main ready: electron %s, node %s', process.versions.electron, process.versions.node);
 });
 
 /**
@@ -198,7 +198,7 @@ function registerToolService(): void {
       return host.readEndpoint();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log.main!.warning(`the MCP host could not start: ${message}`);
+      log.main.warning(`the MCP host could not start: ${message}`);
       return null;
     }
   });

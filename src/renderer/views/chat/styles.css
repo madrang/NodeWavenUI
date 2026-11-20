@@ -1,0 +1,919 @@
+/* The chat view: the tab strip header, the column box, and the message area with its composer.
+   The shell sheet keeps the shared pieces the column leans on: the tab vocabulary, the pane
+   frame, the column resizer, and the markdown body rules. */
+
+
+/* The chat tab strip: the header of the right column. The tabs stand on its bottom edge, and the
+   active one covers the border of the chat pane below. */
+#chat-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 6px 6px 0;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+#chat-tab-list {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  /* The strip scrolls instead of growing past the column, with the scrollbar hidden like a browser tab strip. */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+#chat-tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+
+/* The right column: the chat tab strip over the chat pane. The resizer handle at its left edge
+   moves its width; the width persists across window restarts. */
+#chat-column {
+  flex: none;
+  width: 400px;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+
+/* Main screen: chat */
+.pane-chat {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+/* The scroll area of the messages. It also anchors the jump-down arrow, which floats over
+   the bottom right of the list instead of reserving a band above the composer. */
+.chat-scroll {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+#chat-messages {
+  height: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  list-style: none;
+  margin: 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message {
+  max-width: 80%;
+  padding: 7px 11px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+.message.assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.message.notice {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  background: none;
+}
+
+.message.error {
+  align-self: center;
+  color: var(--error);
+  font-size: 12px;
+  background: none;
+}
+
+/* The status line of a streaming reply that received nothing yet: the pulsing accent arc of the
+   open connection. */
+.message.stream-status {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  background: none;
+}
+
+.message.stream-status svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.message.stream-status.connecting svg {
+  stroke: var(--accent);
+  animation: stream-status-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes stream-status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* The bubble of a turn that died before its first streamed piece: the error icon and a short
+   label title it, the provider message fills it, and the error tint marks the status. */
+.message.error-bubble {
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: color-mix(in srgb, var(--error) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--error) 60%, var(--border));
+}
+
+.error-bubble-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--error);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.error-bubble-head svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.error-bubble-body {
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* The action zone of one message: the icon row at the bottom right of the bubble. It appears on
+   hover. */
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease-in;
+}
+
+li:hover > .message-actions,
+li:focus-within > .message-actions {
+  opacity: 1;
+}
+
+/* One icon button of the zone. It inherits the bubble color, so the same button reads on the
+   accent fill of a user message and the quiet surface of a reply. */
+.message-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  opacity: 0.72;
+  cursor: pointer;
+}
+
+.message-action:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.message-action svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The open message editor: one framed card that replaces the edited bubble, or that sits at the
+   end of a fork. The text area carries the base input styles; only its sizing lives here. */
+.message-edit {
+  align-self: stretch;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.message-editor {
+  resize: none;
+  overflow-y: auto;
+  min-height: 60px;
+  max-height: 40vh;
+  line-height: 1.4;
+}
+
+.message-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* The system prompt element sits first in the message list, in one message card on the assistant
+   side: the source menu before the first send, the collapsed bound prompt after it. */
+.system-prompt-item {
+  align-self: flex-start;
+  max-width: 80%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.system-prompt-menu-label {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.system-prompt-select {
+  width: auto;
+  max-width: 60%;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+/* The source menu before the first send: centered and accented, so the choice leads the window.
+   The auto margins center it in the empty list, mid-window between the tabs and the input. */
+.system-prompt-item.system-prompt-menu {
+  align-self: center;
+  max-width: 90%;
+  margin-top: auto;
+  margin-bottom: auto;
+  gap: 10px;
+  padding: 10px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.system-prompt-item.system-prompt-menu .system-prompt-menu-label {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.system-prompt-item.system-prompt-menu .system-prompt-select {
+  font-size: 13px;
+  padding: 5px 10px;
+}
+
+/* The collapsed prompt inside the card: the source title as the summary, the text under a rule. */
+.system-prompt {
+  min-width: 0;
+  flex: 1;
+}
+
+.system-prompt > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.system-prompt > summary:hover {
+  color: var(--text);
+}
+
+.system-prompt > summary::-webkit-details-marker {
+  display: none;
+}
+
+.system-prompt > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.system-prompt[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.system-prompt-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-prompt-body {
+  margin: 4px 0 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
+}
+
+/* The reasoning disclosure of an assistant reply: collapsed until the user opens it.
+   The summary spans the full row, so the click target stays comfortable. */
+.reasoning {
+  margin: 0 0 4px;
+}
+
+.reasoning > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px 4px 2px;
+  margin-left: -8px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.reasoning > summary:hover {
+  color: var(--text);
+}
+
+/* The collapsed activity tail: the latest reasoning words, faded, clipped to one line. */
+.reasoning-tail {
+  flex: 1;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--muted) 85%, transparent);
+}
+
+/* An open disclosure shows the full reasoning, so the tail hides. */
+.reasoning[open] > summary .reasoning-tail {
+  display: none;
+}
+
+.reasoning > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The disclosure chevron turns from the closed to the open direction. */
+.reasoning > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.reasoning[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.reasoning-body {
+  margin: 2px 0 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* One request/response pair: one framed group card holds the labeled request section and the
+   labeled reply section, so the two never read as loose messages. */
+.tool-pair {
+  align-self: stretch;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+/* The session chip of one MCP request card: the short id of the connection that made the call. */
+.tool-pair-session {
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* The page a tool call targets: the tracked title of its pageId, after the tool name. */
+.tool-pair-target {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tool-pair-target::before {
+  content: '·';
+  margin-right: 6px;
+}
+
+.tool-pair-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+}
+
+.tool-pair-tool {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.tool-badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+/* The filled badge marks the request; the outlined one marks the reply. */
+.tool-badge.request {
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+.tool-badge.reply {
+  background: none;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.tool-badge.reply.error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* The payload sections sit on the dark field inside the group card. */
+.tool-pair-section {
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--field);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tool-pair-section.error {
+  color: var(--error);
+}
+
+/* The text body of a tool reply. A pre keeps the new lines and spacing of the reply, and the wrap
+   keeps overlong lines inside the card. */
+.tool-reply-text {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+/* The group card is the frame, so the viewer drops its own. */
+.tool-pair-section json-viewer {
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+}
+
+.tool-pair-pending {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* One tool reply, of the chat agent or of an MCP session tab: the tool name head over the result
+   text, or over the json-viewer when the reply carries a JSON object. The dim accent edge keeps the
+   reply in the pair family under the full accent of the request. */
+.message.tool-result {
+  align-self: flex-start;
+  max-width: 80%;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.tool-result-name {
+  margin: 0 0 6px;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* A failed reply carries the error tint on its frame and head. */
+.message.tool-result.tool-error {
+  border: 1px solid color-mix(in srgb, var(--error) 60%, var(--border));
+}
+
+.message.tool-result.tool-error .tool-result-name {
+  color: var(--error);
+}
+
+/* A standalone tool reply keeps its own frame and the quiet ← marker in its head. */
+.tool-result-name::before {
+  content: '← ';
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/* The json-viewer custom element: one collapsible JSON display.
+   The token colors derive from the theme palette, so every theme carries the viewer. */
+json-viewer {
+  display: block;
+  font: 12px/1.5 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.json-node > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.json-node > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The disclosure chevron turns from the closed to the open direction. */
+.json-node > summary::before {
+  content: '▸';
+  display: inline-block;
+  color: var(--muted);
+  font-size: 10px;
+  margin-right: 4px;
+}
+
+.json-node[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* The open brace of the summary keeps its closing partner only while the node stays collapsed. */
+.json-node[open] > summary .json-closed {
+  display: none;
+}
+
+.json-children {
+  padding-left: 14px;
+}
+
+/* Every child except the last carries the separator comma of formatted JSON. */
+.json-children > :not(:last-child)::after {
+  content: ',';
+  color: var(--muted);
+}
+
+.json-key {
+  color: var(--accent);
+}
+
+.json-string {
+  color: color-mix(in srgb, var(--accent) 30%, var(--text));
+  /* String values keep their inner spacing and still wrap inside a narrow pane. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.json-number {
+  color: color-mix(in srgb, var(--error) 50%, var(--text));
+}
+
+.json-boolean,
+.json-null {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.json-punct,
+.json-count {
+  color: var(--muted);
+}
+
+.json-count {
+  margin: 0 4px;
+}
+
+#permission-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+/* One pending permission request card, from the permission-request custom element. */
+permission-request {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--field);
+}
+
+.permission-request-line {
+  margin: 0 0 2px;
+  font-weight: 600;
+}
+
+.permission-request-detail {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The parsed command of a run card: one row per stage, the operator between stages, and the raw
+   command one muted line below. The shell stays the authority: the parse only shows. */
+.permission-request-command {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.permission-command-stage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.permission-command-program {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.permission-command-arg {
+  color: var(--muted);
+}
+
+.permission-command-arg.expansion {
+  color: var(--chart-3);
+}
+
+.permission-command-redirect {
+  color: var(--chart-6);
+}
+
+.permission-command-operator {
+  color: var(--accent);
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 11px;
+  padding-left: 8px;
+}
+
+.permission-command-raw {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  color: var(--muted);
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.permission-request-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.permission-request-remember {
+  flex: 1;
+  color: var(--muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The global checkbox width rule keeps the box inline with its text; flex none stops the row from squeezing it. */
+.permission-request-remember input {
+  flex: none;
+}
+
+/* The jump-down arrow floats over the bottom center of the messages: visible only while the chat
+   sits above its latest message. It reserves no space in the column. */
+#chat-jump-down {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 16px;
+  z-index: 1;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+#chat-jump-down:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The stop button beside Send: visible while the agent runs, tinted with the error color. */
+#chat-stop {
+  border: 1px solid var(--error);
+  background: none;
+  color: var(--error);
+}
+
+#chat-stop:hover {
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+}
+
+/* A queued user message waits for the running turn, so it reads dimmed until it delivers. */
+.message.user.queued {
+  opacity: 0.55;
+}
+
+.queued-marker {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* The send-now control of a queued message: quiet until hovered, like the message actions. */
+.queued-send-now {
+  margin-left: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px 7px;
+}
+
+.queued-send-now:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* The pending image attachments between the permission cards and the composer. */
+#chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.attachment-chip img {
+  display: block;
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.attachment-chip button {
+  padding: 0 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.attachment-chip button:hover {
+  color: var(--text);
+}
+
+/* The image thumbnails of a message bubble or a tool card. */
+.image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.image-strip img {
+  display: block;
+  max-width: 180px;
+  max-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+#chat-form {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+}
+
+/* The composer text area: one line tall, growing with the written lines up to the cap. */
+#chat-input {
+  flex: 1;
+  resize: none;
+  overflow-y: auto;
+  min-height: 32px;
+  max-height: 132px;
+  line-height: 1.4;
+}
+
+/* The chat status bar: the provider and model of the tab, and the token usage.
+   The provider and model stand as selects until the first send binds the chat, then as labels. */
+#chat-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chat-status-label {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+#chat-status select {
+  width: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.chat-status-usage {
+  margin-left: auto;
+  white-space: nowrap;
+}

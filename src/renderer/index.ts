@@ -61,7 +61,7 @@ async function loadWorkspaceFromArgument(): Promise<void> {
   const marker = await readWorkspaceMarker(candidate);
   if (!marker) {
     const message = `"${candidate}" holds no NodeWavenUI workspace.`;
-    log.launcher!.error(message);
+    log.launcher.error(message);
     showLauncherStatus(message);
     window.setTimeout(() => {
       void closeWindow();
@@ -317,32 +317,32 @@ unlockForm.addEventListener('submit', async (event) => {
 // One global catch for rejected promises, so the stderr log carries every unhandled failure.
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason;
-  log.launcher!.error(`unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
+  log.launcher.error(`unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
 });
 
 /** Boots the launcher: the theme, the language, the screens, then the argument flow. */
 async function boot(): Promise<void> {
-  log.launcher!.informative('launcher boot: theme');
+  log.launcher.informative('launcher boot: theme');
   await initializeTheme();
   initLanguage(localStorage.getItem(LANGUAGE_MIRROR_KEY));
   localizeHTML(document.documentElement);
   showScreen('launcher');
-  log.launcher!.informative('launcher boot: arguments');
+  log.launcher.informative('launcher boot: arguments');
   const appArguments = await readAppArguments();
   // The print-and-quit arguments run before anything else opens.
   if (appArguments.version) {
-    log.launcher!.notice('NodeWavenUI %s', await readAppVersion());
+    log.launcher.notice('NodeWavenUI %s', await readAppVersion());
   }
   if (appArguments.help) {
-    log.launcher!.notice(HELP_TEXT);
+    log.launcher.notice(HELP_TEXT);
   }
   if (appArguments.version || appArguments.help) {
     void closeWindow();
     return;
   }
-  log.launcher!.informative('launcher boot: workspace argument');
+  log.launcher.informative('launcher boot: workspace argument');
   await loadWorkspaceFromArgument();
-  log.launcher!.informative('renderer ready');
+  log.launcher.informative('renderer ready');
 }
 
 void boot();

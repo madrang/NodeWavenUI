@@ -71,12 +71,8 @@ export type PrintEvent = (logger: LoggerInstance, logLevel: number, args: unknow
 /** Returns false to suppress one event before it prints. */
 export type PrintFilter = (logger: LoggerInstance, logLevel: number, args: unknown[]) => boolean;
 
-/**
- * A logger of the hierarchy. The core methods print at one level; every other property access
- * returns a child logger, so any path of names builds the hierarchy without setup.
- */
-export type Logger = {
-  readonly name: string;
+/** The level methods every logger of the hierarchy answers, with their aliases. */
+export interface EventLogger {
   emergency(...args: unknown[]): void;
   fatal(...args: unknown[]): void;
   critical(...args: unknown[]): void;
@@ -90,10 +86,28 @@ export type Logger = {
   info(...args: unknown[]): void;
   /** Alias of `warning`. */
   warn(...args: unknown[]): void;
+}
+
+/**
+ * The child access of the hierarchy: every property read answers a child logger, so any path
+ * of names builds the hierarchy without setup. The index value stays any, because the proxy
+ * answers every name and `noUncheckedIndexedAccess` cannot widen any — child reads then need
+ * no non-null assertion. Only the root methods carry compile-time checking.
+ */
+export interface LogProxyType {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the proxy answers every child name with a logger, so the read is never undefined.
+  readonly [key: string]: any;
+}
+
+/**
+ * A logger of the hierarchy: the name, the level methods, the raw print, and the child access.
+ */
+export type Logger = LogProxyType & EventLogger & {
+  readonly name: string;
   /** Prints one event at an explicit level or mask bit, bypassing the filter. */
   print(logLevel: number, args: unknown[]): void;
   getCtor(): LogConstructor;
-} & { [key in string & {}]: Logger };
+};
 
 /**
  * Builds the logger constructor of one print pair: `printFilter` gates every event, then

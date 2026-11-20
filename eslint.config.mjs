@@ -58,15 +58,67 @@ const preferTruthiness = {
   },
 };
 
+/**
+ * The local logger-call rule: a call on the log hierarchy must end in one of the logger
+ * methods. The child names of the chain stay free — the hierarchy proxy answers every name —
+ * because the LogProxyType index is any-typed, only the final method name is checked. The
+ * method list mirrors EventLogger of src/shared/logging.ts plus the raw print.
+ */
+const loggerCall = {
+  meta: {
+    type: 'problem',
+    docs: { description: 'Checks that a call on the log hierarchy ends in one of the logger methods.' },
+    schema: [],
+    messages: {
+      method:
+        'The logger call ends in "{{name}}", which is no logger method. The level methods are: emergency, fatal, critical, error, warning, warn, notice, informative, info, debug, and trace.',
+    },
+  },
+  create(context) {
+    const methods = new Set([
+      'emergency', 'fatal', 'critical', 'error', 'warning', 'warn',
+      'notice', 'informative', 'info', 'debug', 'trace', 'print',
+    ]);
+    return {
+      CallExpression(node) {
+        const callee = node.callee;
+        if (callee.type !== 'MemberExpression') {
+          return;
+        }
+        // Walk down the chain: only plain member chains rooted at `log` belong to the rule.
+        // A call inside the chain stops the walk, because its answer is unknown.
+        let current = callee.object;
+        while (current.type === 'MemberExpression') {
+          current = current.object;
+        }
+        if (current.type !== 'Identifier' || current.name !== 'log') {
+          return;
+        }
+        let name = null;
+        if (!callee.computed && callee.property.type === 'Identifier') {
+          name = callee.property.name;
+        } else if (callee.computed && callee.property.type === 'Literal' && typeof callee.property.value === 'string') {
+          // A string-literal key counts as a name; any other computed key stays unchecked.
+          name = callee.property.value;
+        }
+        if (name !== null && !methods.has(name)) {
+          context.report({ node: callee.property, messageId: 'method', data: { name } });
+        }
+      },
+    };
+  },
+};
+
 export default tseslint.config(
   { ignores: ['dist/**', 'node_modules/**', 'plugins/**', 'coverage/**'] },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
     files: ['**/*.ts', '**/*.mts'],
-    plugins: { '@stylistic': stylistic, local: { rules: { 'prefer-truthiness': preferTruthiness } } },
+    plugins: { '@stylistic': stylistic, local: { rules: { 'prefer-truthiness': preferTruthiness, 'logger-call': loggerCall } } },
     rules: {
       'local/prefer-truthiness': 'error',
+      'local/logger-call': 'error',
 
       // Correctness guards that match the project conventions.
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],

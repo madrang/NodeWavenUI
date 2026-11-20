@@ -5,7 +5,6 @@
  */
 
 import { type BrowserWindow } from 'electron';
-import type { Logger } from '../shared/logging.js';
 import { log } from './logger.js';
 
 /** True when the app started with `--verbose`, which mirrors every renderer console line. */
@@ -13,7 +12,7 @@ const verbose = process.argv.includes('--verbose');
 
 /** Logs the renderer console of one window: warnings and errors always, every line under `--verbose`. */
 export function relayRendererConsole(win: BrowserWindow, label: string): void {
-  const relay = log.renderer![label] as Logger;
+  const relay = log.renderer[label];
   win.webContents.on('console-message', (event) => {
     if (event.level === 'error') {
       relay.error(event.message);

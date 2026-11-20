@@ -34,7 +34,7 @@ import type { PermissionGate } from './permission-gate.js';
 import { PatchStore, type PatchNotice } from './patch-store.js';
 import { TaskStore } from './task-store.js';
 import type { TaskToolDeps } from './task-tools.js';
-import { openTaskBoardView } from './task-board.js';
+import { openTaskBoardView } from './views/task-board/view.js';
 import { openEditorView } from './editor-view.js';
 import type { TaskRecord } from '../shared/tasks.js';
 import { openPatchReviewView } from './patch-review.js';
@@ -1258,7 +1258,7 @@ export class MainApp implements McpSessionSink {
     if (!store) {
       return;
     }
-    openTaskBoardView({
+    void openTaskBoardView({
       store,
       dispatch: (id, mode, sessionFileId) => this.dispatchTask(id, mode, sessionFileId),
       openSession: (chatId) => {

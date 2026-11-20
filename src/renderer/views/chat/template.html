@@ -1,0 +1,18 @@
+<header id="chat-tabs">
+  <span id="chat-tab-list"></span>
+  <button id="new-chat" class="tab tab-icon" type="button" title="${chat.newChat}">+</button>
+</header>
+<div id="pane-chat" class="pane pane-chat">
+  <div class="chat-scroll">
+    <ol id="chat-messages"></ol>
+    <button id="chat-jump-down" type="button" title="${chat.jumpTitle}" hidden>↓</button>
+  </div>
+  <div id="permission-requests" hidden></div>
+  <div id="chat-attachments" hidden></div>
+  <form id="chat-form">
+    <textarea id="chat-input" rows="1" placeholder="${chat.placeholder}"></textarea>
+    <button id="chat-send" type="submit" class="primary">${chat.send}</button>
+    <button id="chat-stop" type="button" hidden>${chat.stop}</button>
+  </form>
+  <footer id="chat-status"></footer>
+</div>

@@ -31,6 +31,7 @@ import { WorkspaceSettingsStore } from './settings-store.js';
 import { initializeTheme } from './theme.js';
 import { rememberMainWindowGeometry, restoreMainWindowGeometry } from './window-geometry.js';
 import { forceCloseWindow, onWindowEvent, resizeWindowResizable } from './window-ops.js';
+import { mountChatView } from './views/chat/view.js';
 import { mountSettingsView } from './views/settings/view.js';
 
 /** The size the workspace window takes when no stored geometry restores. */
@@ -130,7 +131,7 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   // The main services ask this page for permission decisions: the same gate the chat uses,
   // with the same cards and rules.
   bridge.workspace.onPermissionRequest(async (check: BridgePermissionCheck) => {
-    log.permission!.informative(`check: ${check.principal} ${check.action}`);
+    log.permission.informative(`check: ${check.principal} ${check.action}`);
     try {
       await permissionGate.check(
         check.principal as Parameters<typeof permissionGate.check>[0],
@@ -140,11 +141,11 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
         check.source,
         check.preauthorized,
       );
-      log.permission!.informative(`check: ${check.principal} ${check.action} allowed`);
+      log.permission.informative(`check: ${check.principal} ${check.action} allowed`);
       return { ok: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log.permission!.warning(`check: ${check.principal} ${check.action} refused: ${message}`);
+      log.permission.warning(`check: ${check.principal} ${check.action} refused: ${message}`);
       return { ok: false, error: message };
     }
   });
@@ -200,7 +201,7 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     });
   }
   await app.start(mcpHost);
-  log.main!.informative('main app ready');
+  log.main.informative('main app ready');
 }
 
 /** Routes one MCP host sink event of the main process into the host tab of the app. */
@@ -227,13 +228,13 @@ function dispatchSinkEvent(app: MainApp, event: BridgeMcpSinkEvent): void {
  */
 function receiveHandoff(payload: unknown): void {
   if (!isMainHandoffPayload(payload)) {
-    log.main!.error('the workspace window received an invalid startup payload.');
+    log.main.error('the workspace window received an invalid startup payload.');
     void forceCloseWindow();
     return;
   }
   void startWorkspaceApp(payload).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
-    log.main!.error(`the workspace window failed to start: ${message}`);
+    log.main.error(`the workspace window failed to start: ${message}`);
     void forceCloseWindow();
   });
 }
@@ -241,21 +242,21 @@ function receiveHandoff(payload: unknown): void {
 // One global catch for rejected promises, so the stderr log carries every unhandled failure.
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason;
-  log.main!.error(`unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
+  log.main.error(`unhandled rejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`);
 });
 
-/** Boots the workspace window: the theme, the language, the settings view, then the handoff payload. */
+/** Boots the workspace window: the theme, the language, the views, then the handoff payload. */
 async function boot(): Promise<void> {
   await initializeTheme();
   initLanguage(localStorage.getItem(LANGUAGE_MIRROR_KEY));
-  await mountSettingsView();
+  await Promise.all([mountSettingsView(), mountChatView()]);
   localizeHTML(document.documentElement);
   const bridge = readBridge();
   if (!bridge) {
-    log.main!.error('the workspace window runs outside the app, so no handoff can arrive.');
+    log.main.error('the workspace window runs outside the app, so no handoff can arrive.');
     return;
   }
-  log.main!.informative('workspace window ready for handoff');
+  log.main.informative('workspace window ready for handoff');
   receiveHandoff(await bridge.windows.takeHandoff());
 }
 
