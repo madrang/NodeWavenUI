@@ -1,6 +1,6 @@
 {
   "name": "nodewavenui",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "An Electron AI workspace UI",
   "license": "MIT",
   "author": "Marc-Andre Ferland",
@@ -25,6 +25,7 @@
     "@types/chai": "^5.2.3",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.6.5",
+    "@types/qrcode": "^1.5.6",
     "chai": "^6.3.0",
     "electron": "^45.2.3",
     "eslint": "^10.14.0",
@@ -36,6 +37,8 @@
   },
   "dependencies": {
     "diff": "^9.0.0",
-    "prismjs": "^1.30.0"
+    "prismjs": "^1.30.0",
+    "qrcode": "^1.5.4",
+    "selfsigned": "^5.5.0"
   }
 }

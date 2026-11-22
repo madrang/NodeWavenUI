@@ -12,6 +12,8 @@ import { rendererUrl } from './protocol.js';
 import { startMcpClientService } from './mcp-client-service.js';
 import { sessions } from './session-service.js';
 import { setWorkspaceContents } from './workspace-link.js';
+import { startWorkspaceWorker, stopWorkspaceWorker, coreRequest } from './worker-service.js';
+import { ensureTray, removeTray, trayActive } from './tray.js';
 
 /** The ipc channel prefix every bridge call shares. */
 const CHANNEL = 'nodewavenui';
@@ -221,8 +223,24 @@ export function registerWindowService(): void {
     relayRendererConsole(win, 'workspace');
     setWorkspaceContents(win.webContents);
     void startMcpClientService();
+    // The background core opens the workspace storage while the window loads: the renderers of
+    // this workspace reach it through the core slice of the bridge, never through a local backend.
+    const launch = handoff as {
+      directory: { path: string };
+      settings?: { storageId?: unknown; storageConfig?: unknown };
+      password?: unknown;
+    };
+    startWorkspaceWorker({
+      directoryPath: launch.directory.path,
+      storageId: typeof launch.settings?.storageId === 'string' ? launch.settings.storageId : '',
+      storageConfig: launch.settings?.storageConfig,
+      password: typeof launch.password === 'string' ? launch.password : null,
+      appRoot: APP_ROOT,
+    });
     // The workspace window closes only after every child closed: a surviving child would hold
-    // the process alive and stall the launch loop. The close event is held once for the drain.
+    // the process alive and stall the launch loop. The close event is held once for the drain,
+    // then the close behavior decides: quit destroys the window, tray hides it and keeps the
+    // worker core, the MCP host, and the remote control alive.
     let drainingChildren = false;
     win.on('close', (closeEvent) => {
       if (drainingChildren) {
@@ -236,7 +254,28 @@ export function registerWindowService(): void {
           const message = error instanceof Error ? error.message : String(error);
           console.warn(`[NodeWavenUI] the child windows did not all close: ${message}`);
         })
-        .then(() => {
+        .then(async () => {
+          let behavior: 'quit' | 'tray' = 'quit';
+          try {
+            const stored = await coreRequest('settings.get', { key: 'close-behavior' });
+            behavior = stored === 'tray' ? 'tray' : 'quit';
+          } catch {
+            // No worker, no record: quit stays the default.
+          }
+          if (behavior === 'tray') {
+            ensureTray(() => {
+              win.show();
+              win.focus();
+            });
+            win.hide();
+            // The window stays alive hidden, so its next close drains the children again.
+            drainingChildren = false;
+            return;
+          }
+          if (trayActive()) {
+            // A headless start owns the tray; a quitting window leaves it in place.
+            return;
+          }
           win.destroy();
         });
     });
@@ -269,6 +308,11 @@ export function registerWindowService(): void {
     });
     win.on('closed', () => {
       pendingHandoffs.delete(win.id);
+      stopWorkspaceWorker();
+      // A real close quits the window path, so its tray goes with it. A headless start keeps its own.
+      if (!process.argv.includes('--headless')) {
+        removeTray();
+      }
     });
     void win.loadURL(rendererUrl('main.html'));
   });

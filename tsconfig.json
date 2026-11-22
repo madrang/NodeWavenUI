@@ -6,6 +6,7 @@
     { "path": "./tsconfig.renderer.json" },
     { "path": "./tsconfig.providers.json" },
     { "path": "./tsconfig.storage.json" },
+    { "path": "./tsconfig.worker.json" },
     { "path": "./tsconfig.tests.json" }
   ]
 }

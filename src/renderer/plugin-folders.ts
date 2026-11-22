@@ -7,6 +7,10 @@
 
 import type { PluginManager } from './plugins.js';
 import { listDirectoryNames, readDataFile, readTextFile, statPath } from './file-system.js';
+import type { StoredPluginFolder, StoredPluginFolders } from '../shared/workspace.js';
+
+/** The stored state of one plugin folder and its record live in the shared workspace contract. */
+export type { StoredPluginFolder, StoredPluginFolders };
 
 /** The fs slice the plugin folder system reads through. */
 export interface PluginFolderFs {
@@ -59,16 +63,6 @@ export interface PluginFolderManifest {
   /** One sentence on what the plugin adds. */
   readonly description?: string;
 }
-
-/** The stored state of one plugin folder, kept in the `plugin-folders` record. */
-export interface StoredPluginFolder {
-  readonly enabled: boolean;
-  /** The SHA-256 digest of the folder content at enable time. */
-  readonly digest?: string;
-}
-
-/** The record the workspace settings hold, keyed by plugin folder name. */
-export type StoredPluginFolders = Record<string, StoredPluginFolder>;
 
 /** The store IO the controller reads and writes through. */
 export interface PluginFolderStore {

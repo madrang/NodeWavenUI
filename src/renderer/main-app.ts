@@ -41,7 +41,7 @@ import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
 import { requireElement } from './dom.js';
 import { ChatRenderer, type Chat, type ChatEditState } from './chat-render.js';
-import type { WorkspaceSettingsStore } from './settings-store.js';
+import type { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import type { StorageShareRegistry } from './storage-shares.js';
 import type { PluginFolderController } from './plugin-folders.js';
 import { defaultSystemPromptSetup, NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
@@ -238,14 +238,14 @@ export class MainApp implements McpSessionSink {
     // The gate loads its rules lazily on the first check. The rule-reading UI renders before any
     // check runs, so it must await the load or it reads an empty list and shows every tool on ask.
     await this.permissionGate?.ready();
-    this.patchStore = new PatchStore(this.workspacePath);
+    this.patchStore = new PatchStore();
     await this.patchStore.load();
     // Denials and returns leave for the agent of their chat at once. A running turn reads the
     // entry at its next loop step, and an idle chat starts a turn to process it.
     this.patchStore.onNotice((notice) => {
       void this.deliverPatchNotice(notice);
     });
-    this.taskStore = new TaskStore(this.workspacePath);
+    this.taskStore = new TaskStore();
     await this.taskStore.load();
     // Every record change pumps the queue: a ready queued task opens its session or enters an
     // idle bound one, and the tabs redraw with their task badges.
@@ -694,8 +694,29 @@ export class MainApp implements McpSessionSink {
     return true;
   }
 
+  /** Lands one remote send: the chat of the named session file takes the message, the active chat
+   * when the sender named none. A running turn queues the message like a local send does. */
+  remoteDeliver(fileId: string | null, text: string): void {
+    const chat = (fileId ? this.chatByFileId(fileId) : null) ?? this.activeChat() ?? this.chats.at(-1) ?? null;
+    if (!chat || chat.isMcpHostLog || text.trim().length === 0) {
+      return;
+    }
+    if (this.isTurnRunning(chat.id)) {
+      chat.entries.push({ role: 'user', content: text, queued: true });
+      this.messages.render();
+      this.renderTabs();
+      return;
+    }
+    void this.deliver(chat, text.trim(), [], { keepInput: true });
+  }
+
   /** Delivers one message: resolves the connection, binds the system prompt, pushes the entry, and runs the agent turn. */
-  private async deliver(chat: Chat, text: string, images: readonly ChatImage[]): Promise<void> {
+  private async deliver(
+    chat: Chat,
+    text: string,
+    images: readonly ChatImage[],
+    options?: { keepInput?: boolean },
+  ): Promise<void> {
     const connection = this.resolveChatConnection(chat);
     if (connection && images.length > 0 && !connection.vision) {
       // Nothing is consumed: the text stays typed and the chips stay pending, so the user can switch model or remove the images.
@@ -715,10 +736,12 @@ export class MainApp implements McpSessionSink {
         return;
       }
     }
-    this.chatInput.value = '';
-    this.fitChatInput();
-    this.pendingImages = [];
-    this.renderAttachments();
+    if (!options?.keepInput) {
+      this.chatInput.value = '';
+      this.fitChatInput();
+      this.pendingImages = [];
+      this.renderAttachments();
+    }
     chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
     await this.runChatTurn(chat);
   }
@@ -1028,7 +1051,8 @@ export class MainApp implements McpSessionSink {
       toolRules: () => this.permissionGate?.listRules() ?? [],
       source: chat ? chatAgentSource(chat.id) : CHAT_AGENT_SOURCE,
       chatId: chat?.id ?? this.activeChatId ?? 0,
-      patchStore: this.patchStore ?? new PatchStore(this.workspacePath),
+      sessionFileId: chat?.fileId ?? null,
+      patchStore: this.patchStore ?? new PatchStore(),
       pathRules: () => this.settingsView.pathRules,
       ...(this.taskStore ? { tasks: this.taskToolDeps(gate, chat) } : {}),
     };

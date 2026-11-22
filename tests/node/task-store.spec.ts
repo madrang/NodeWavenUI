@@ -5,51 +5,15 @@
  */
 
 import { expect } from 'chai';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { TaskStore } from '../../dist/renderer/task-store.js';
+import { TaskStore } from '../../dist/worker/task-store.js';
 import { readTaskRecord, type TaskRecord } from '../../dist/shared/tasks.js';
-import type { NodeWavenBridge } from '../../dist/shared/bridge.js';
 
-/** Installs the bridge fs slice of the workspace page over real files. */
-function installBridge(): void {
-  globalThis.nodewavenui = {
-    fs: {
-      list: async (directory: string) => readdirSync(directory),
-      readText: async (path: string) => readFileSync(path, 'utf8'),
-      readData: async () => {
-        throw new Error('not used');
-      },
-      writeText: async (path: string, text: string) => {
-        writeFileSync(path, text);
-      },
-      writeData: async () => {
-        throw new Error('not used');
-      },
-      makeDirectory: async (path: string) => {
-        mkdirSync(path, { recursive: true });
-      },
-      remove: async (path: string) => {
-        rmSync(path, { recursive: true, force: true });
-      },
-      rename: async () => {
-        throw new Error('not used');
-      },
-      stat: async (path: string) => {
-        if (!existsSync(path)) {
-          return null;
-        }
-        return { exists: true, directory: statSync(path).isDirectory() };
-      },
-    },
-  } as unknown as NodeWavenBridge;
-}
-
-/** One store over a fresh temp workspace, with the bridge installed. */
+/** One store over a fresh temp workspace. */
 function freshStore(): { store: TaskStore; root: string } {
   const root = mkdtempSync(join(tmpdir(), 'nvtask-'));
-  installBridge();
   return { store: new TaskStore(root), root };
 }
 
@@ -81,7 +45,6 @@ describe('the task store', () => {
     }))!;
     expect(task.status).to.equal('draft');
     const reloaded = new TaskStore(root);
-    installBridge();
     await reloaded.load();
     const restored = reloaded.get(task.id);
     expect(restored?.title).to.equal('Port the launcher');
@@ -242,7 +205,6 @@ describe('the task store', () => {
     expect(cleared?.description).to.equal('');
     expect(await store.update(task.id, { title: '' })).to.equal(null);
     const reloaded = new TaskStore(root);
-    installBridge();
     await reloaded.load();
     expect(reloaded.get(task.id)?.title).to.equal('Settled words');
   });
@@ -260,7 +222,6 @@ describe('the task store', () => {
     await store.remove(task.id);
     expect(store.get(task.id)).to.equal(null);
     const reloaded = new TaskStore(root);
-    installBridge();
     await reloaded.load();
     expect(reloaded.get(task.id)).to.equal(null);
   });

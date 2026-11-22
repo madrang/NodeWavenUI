@@ -31,6 +31,12 @@
   <label class="field">${settings.workspaceSection.frame}
     <select id="frame-mode-select"></select>
   </label>
+  <label class="field">${settings.workspaceSection.close}
+    <select id="close-behavior">
+      <option value="quit">${settings.workspaceSection.closeQuit}</option>
+      <option value="tray">${settings.workspaceSection.closeTray}</option>
+    </select>
+  </label>
   <label class="field">${settings.workspaceSection.rounds}
     <select id="agent-turns-select">
       <option value="">${settings.workspaceSection.roundsNone}</option>
@@ -147,6 +153,30 @@
     </select>
     <button type="submit">${settings.knownPaths.add}</button>
   </form>
+</fieldset>
+<fieldset class="field" id="remote-control-section">
+  <legend>${settings.remoteControl.legend}</legend>
+  <p class="status">${settings.remoteControl.status}</p>
+  <div class="token-row">
+    <label class="check-row"><input id="remote-enabled" type="checkbox"> ${settings.remoteControl.enabled}</label>
+    <label>${settings.remoteControl.port} <input id="remote-port" type="number" min="1" max="65535" value="9777"></label>
+    <label>${settings.remoteControl.bind} <select id="remote-bind"></select></label>
+    <label class="check-row"><input id="remote-plain-http" type="checkbox"> ${settings.remoteControl.plainHttp}</label>
+  </div>
+  <p id="remote-origin" class="status"></p>
+  <div class="token-row">
+    <input id="remote-token" type="text" readonly placeholder="${settings.remoteControl.tokenPlaceholder}" autocomplete="off" spellcheck="false">
+    <button id="remote-token-show" type="button">${settings.remoteControl.show}</button>
+    <button id="remote-token-copy" type="button">${settings.remoteControl.copy}</button>
+    <button id="remote-token-renew" type="button">${settings.remoteControl.renew}</button>
+    <button id="remote-qr" type="button">${settings.remoteControl.qr}</button>
+  </div>
+  <img id="remote-qr-image" alt="${settings.remoteControl.qrAlt}" hidden>
+  <div class="token-row">
+    <input id="remote-password" type="password" placeholder="${settings.remoteControl.passwordPlaceholder}" autocomplete="new-password">
+    <button id="remote-password-set" type="button">${settings.remoteControl.setPassword}</button>
+    <button id="remote-password-clear" type="button">${settings.remoteControl.clearPassword}</button>
+  </div>
 </fieldset>
 <fieldset class="field" id="agent-tools-section">
   <legend>${settings.agentTools.legend}</legend>

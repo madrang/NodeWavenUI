@@ -94,6 +94,8 @@ export interface AgentToolDeps {
   readonly source: string;
   /** The numeric id of the chat whose turn builds the tools, for the file tools. */
   readonly chatId: number;
+  /** The session file id of that chat, the patch identity that survives restores. */
+  readonly sessionFileId: string | null;
   /** The patch store that holds every write proposal of the agent. */
   readonly patchStore: PatchStore;
   /** Reads the known paths of the workspace, which grant or refuse agent access per path. */
@@ -258,6 +260,7 @@ export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
     check: deps.gate,
     workspacePath: deps.workspacePath,
     chatId: deps.chatId,
+    sessionFileId: deps.sessionFileId,
     source: deps.source,
     store: deps.patchStore,
     pathRules: deps.pathRules,

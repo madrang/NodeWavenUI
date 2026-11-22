@@ -108,6 +108,11 @@ export interface StorageSetup {
   readonly readConfiguration: (values: Readonly<Record<string, string>>) => StorageConfiguration | string;
   /** Opens the backend for a workspace. */
   readonly open: (options: StorageOpenOptions) => StorageBackend;
+  /**
+   * True when the setup only serves the one-shot migration of an old workspace. The wizard and
+   * the settings pane hide a legacy setup, and no new workspace picks it.
+   */
+  readonly legacy?: boolean;
 }
 
 /** The context one system prompt source builds its text from. */
@@ -198,6 +203,7 @@ function isStorageSetup(value: unknown): value is StorageSetup {
     typeof value.needsPassword === 'boolean' &&
     typeof value.readConfiguration === 'function' &&
     typeof value.open === 'function' &&
+    (value.legacy === undefined || typeof value.legacy === 'boolean') &&
     fieldsValid
   );
 }
@@ -457,9 +463,9 @@ export class PluginManager implements PluginRegistry {
     return [...this.storages.values()];
   }
 
-  /** Lists every registered storage setup, in registration order. */
+  /** Lists every registered storage setup that a new workspace may pick, in registration order. */
   listStorageSetups(): readonly StorageSetup[] {
-    return [...this.storageSetups.values()];
+    return [...this.storageSetups.values()].filter((setup) => setup.legacy !== true);
   }
 
   /**

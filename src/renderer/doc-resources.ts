@@ -104,7 +104,7 @@ export function knownPathsDocument(rules: readonly PathRule[]): string {
   return [
     '# Known paths',
     '',
-    'The registered paths of the workspace and the agent access each one grants. A folder covers everything below it, and the longest rule wins. A path without a rule asks one card on read, and every write proposes a patch for review whatever the path.',
+    'The registered paths of the workspace and the agent access each one grants. A folder covers everything below it, and the longest rule wins. A path without a rule asks one card on read, and every write proposes a patch for review whatever the path. The workspace config files (the marker, the settings file, the remote certificate folder) refuse every access until a rule opens them.',
     '',
     list,
     '',

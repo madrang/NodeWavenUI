@@ -13,7 +13,7 @@ import { app } from 'electron';
 import { COMMAND_TOOL_DEFINITIONS } from '../shared/command-tool.js';
 import type { McpToolResult } from '../shared/window-tools.js';
 import type { McpToolDescriptor } from './mcp-host.js';
-import { callWorkspace } from './workspace-link.js';
+import { coreRequest } from './worker-service.js';
 
 /** The caller a tool call carries, mirroring the session service shape. */
 interface Caller {
@@ -57,18 +57,19 @@ function shellPath(): string {
   return existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh';
 }
 
-/** Runs one permission check through the workspace page, like the session service does. */
+/** Runs one permission check through the worker core, like the session service does. */
 async function requirePermission(caller: Caller, command: string): Promise<void> {
-  const answer = await callWorkspace<{ ok: boolean; error?: string }>('permission.check', {
-    principal: caller.principal,
-    action: 'run',
-    target: { kind: 'command', command },
-    description: `command ${command}`,
-    source: caller.source ?? null,
-    preauthorized: caller.preauthorized === true,
-  });
-  if (!answer?.ok) {
-    throw new Error(answer?.error ?? `Permission denied: "${caller.principal}" may not run commands.`);
+  try {
+    await coreRequest('permission.check', {
+      principal: caller.principal,
+      action: 'run',
+      target: { kind: 'command', command },
+      description: `command ${command}`,
+      source: caller.source ?? null,
+      preauthorized: caller.preauthorized === true,
+    });
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(`Permission denied: "${caller.principal}" may not run commands.`);
   }
 }
 

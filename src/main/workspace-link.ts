@@ -1,8 +1,7 @@
 /**
  * The link between the main process and the workspace window. The main services call into the
- * workspace page — permission checks, storage reads — and push events back — MCP session
- * traffic. A request carries one id; the reply closes the wait. No timeout applies, because a
- * permission check can wait for a user answer on a card.
+ * workspace page — storage reads, MCP traffic — and push events back. A request carries one id;
+ * the reply closes the wait.
  */
 
 import { ipcMain, webContents, type WebContents } from 'electron';

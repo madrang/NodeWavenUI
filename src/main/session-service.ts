@@ -10,6 +10,7 @@ import { BrowserWindow, type WebContents } from 'electron';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { callWorkspace, pushWorkspace, setWorkspaceContents } from './workspace-link.js';
+import { coreRequest } from './worker-service.js';
 
 /** The app root, one level above the compiled main directory. */
 const APP_ROOT = join(fileURLToPath(new URL('../..', import.meta.url)).replace(/\/$/, ''));
@@ -82,18 +83,21 @@ export interface FrameBuildRequest {
 /** The frame command the workspace page serves for one tracked frame. */
 export type FrameCommand = { readonly id: number; readonly command: 'close' } | { readonly id: number; readonly command: 'navigate'; readonly url: string };
 
-/** Runs one permission check through the workspace page. */
+/** Runs one permission check through the worker core. */
 async function requirePermission(caller: WindowCaller, action: string, url: string): Promise<void> {
-  const answer = await callWorkspace<{ ok: boolean; error?: string }>('permission.check', {
-    principal: caller.principal,
-    action,
-    target: { kind: 'window', url },
-    description: `window ${url}`,
-    source: caller.source ?? null,
-    preauthorized: caller.preauthorized === true,
-  });
-  if (!answer?.ok) {
-    throw new Error(answer?.error ?? `Permission denied: "${caller.principal}" may not run "${action}" on window ${url}.`);
+  try {
+    await coreRequest('permission.check', {
+      principal: caller.principal,
+      action,
+      target: { kind: 'window', url },
+      description: `window ${url}`,
+      source: caller.source ?? null,
+      preauthorized: caller.preauthorized === true,
+    });
+  } catch (error) {
+    throw error instanceof Error ?
+      error :
+      new Error(`Permission denied: "${caller.principal}" may not run "${action}" on window ${url}.`);
   }
 }
 

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NodeWavenUI remote</title>
+  <link rel="stylesheet" href="remote.css">
+</head>
+<body>
+  <header><h1>NodeWavenUI</h1><span id="connection" class="status">offline</span></header>
+  <main id="login" hidden>
+    <h2>Pair with the workspace</h2>
+    <p class="status">Scan the QR code, or paste the pairing token, or log in with the remote password.</p>
+    <form id="login-form">
+      <input id="login-token" type="text" placeholder="pairing token" autocomplete="off" spellcheck="false">
+      <input id="login-password" type="password" placeholder="or remote password" autocomplete="current-password">
+      <button type="submit">Connect</button>
+    </form>
+    <p id="login-status" class="status"></p>
+  </main>
+  <main id="remote" hidden>
+    <nav>
+      <button data-view="approvals" class="active">Approvals</button>
+      <button data-view="patches">Patches</button>
+      <button data-view="tasks">Tasks</button>
+      <button data-view="chats">Chats</button>
+    </nav>
+    <section id="view-approvals"></section>
+    <section id="view-patches" hidden></section>
+    <section id="view-tasks" hidden></section>
+    <section id="view-chats" hidden></section>
+  </main>
+  <script type="module" src="remote.js"></script>
+</body>
+</html>

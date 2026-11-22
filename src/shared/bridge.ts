@@ -5,6 +5,8 @@
  * the `mcp` proxy only.
  */
 
+import type { CoreStatus } from './core-api.js';
+
 /** The file slice the renderers use. Paths are absolute, data crosses as text or bytes. */
 export interface BridgeFileSystem {
   /** Reads the entry names of one directory. Rejects when the directory does not read. */
@@ -93,7 +95,7 @@ export interface BridgeWindows {  /** Sizes the window to one content size and l
   openWorkspace(handoff: unknown): Promise<void>;
 }
 
-/** One permission check the main process asks the workspace page to run. */
+/** One permission check the worker core runs. */
 export interface BridgePermissionCheck {
   readonly principal: string;
   readonly action: string;
@@ -101,12 +103,6 @@ export interface BridgePermissionCheck {
   readonly description: string;
   readonly source: string | null;
   readonly preauthorized: boolean;
-}
-
-/** The answer of one permission check. */
-export interface BridgePermissionAnswer {
-  readonly ok: boolean;
-  readonly error?: string;
 }
 
 /** One MCP session event the main process pushes into the host tab. */
@@ -130,6 +126,22 @@ export interface ChatImageShape {
   readonly mimeType: string;
 }
 
+/** The core slice: the requests every surface sends to the background worker that owns the app state.
+ * The main process relays them into the worker, and the state changes come back as workspace
+ * events on the `core.state` channel. */
+export interface BridgeCoreApi {
+  /**
+   * Runs one core request of the shared contract (`src/shared/core-api.ts`).
+   *
+   * @param channel The request channel.
+   * @param payload The payload of the request.
+   * @returns The reply value of the worker.
+   */
+  request(channel: string, payload?: unknown): Promise<unknown>;
+  /** Reads the state of the background worker. Null when no worker runs. */
+  status(): Promise<CoreStatus | null>;
+}
+
 /** The workspace-only slice: the main services and the session tools of the app. */
 export interface BridgeWorkspaceApi {
   /** Runs one window tool in the main process as the chat agent principal. The source names the
@@ -146,10 +158,6 @@ export interface BridgeWorkspaceApi {
   readMcpResource(uri: string): Promise<string>;
   /** Runs one native MCP tool of the connected endpoints. */
   runMcpNativeTool(name: string, args: Record<string, unknown>): Promise<unknown>;
-  /** Answers one permission check the main process asks. */
-  onPermissionRequest(
-    handler: (check: BridgePermissionCheck) => Promise<BridgePermissionAnswer>,
-  ): void;
   /** Serves one workspace request channel the main process calls. */
   onWorkspaceRequest(handler: (channel: string, payload: unknown) => Promise<unknown>): void;
   /** Subscribes to one event channel the main process pushes. */
@@ -189,6 +197,7 @@ export interface NodeWavenBridge {
   readonly windows: BridgeWindows;
   readonly workspace: BridgeWorkspaceApi;
   readonly plugins: BridgePlugins;
+  readonly core: BridgeCoreApi;
 }
 
 declare global {

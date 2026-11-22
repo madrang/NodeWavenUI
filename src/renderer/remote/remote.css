@@ -1,0 +1,157 @@
+/* The phone page of the remote control. Dark, compact, touch first. */
+:root {
+  color-scheme: dark;
+  --text: #e8e8ec;
+  --muted: #9aa0ad;
+  --card: #1c1f26;
+  --line: #2c313c;
+  --accent: #4f8cff;
+  --danger: #e0564f;
+  --ok: #3fb27f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #12141a;
+  color: var(--text);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: 0;
+  background: #12141a;
+}
+
+header h1 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.status {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+#connection.online {
+  color: var(--ok);
+}
+
+main {
+  padding: 12px;
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+form {
+  display: grid;
+  gap: 8px;
+}
+
+input,
+button {
+  font: inherit;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+}
+
+nav {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+nav button {
+  flex: 1;
+}
+
+nav button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.card .row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.card .row button {
+  flex: 1;
+}
+
+.card .row button.approve {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.card .row button.deny {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.card pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #101218;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 0.75rem;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.card .muted {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.entry {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.entry.user {
+  color: var(--accent);
+}
+
+.entry.error {
+  color: var(--danger);
+}
+
+#chat-send {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+#chat-send input {
+  flex: 1;
+}

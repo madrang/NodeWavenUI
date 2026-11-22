@@ -327,3 +327,52 @@
   gap: 8px;
   align-items: center;
 }
+
+/* The remote control section: the config row spreads its fields, the credential rows keep one
+   instrument look, and the QR keeps a white quiet zone for the phone camera. */
+#remote-control-section .token-row {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+#remote-control-section .token-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.check-row input {
+  flex: none;
+  margin: 0;
+}
+
+/* The two toggles frame the row: Enabled leads, Allow plain HTTP rides at the right edge. */
+.check-row:last-child {
+  margin-left: auto;
+}
+
+#remote-port {
+  flex: none;
+  width: 7em;
+}
+
+#remote-bind {
+  flex: none;
+}
+
+#remote-token {
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  letter-spacing: 0.04em;
+}
+
+#remote-qr-image:not([hidden]) {
+  display: block;
+  width: 240px;
+  margin: 10px 0 2px;
+  /* The thin white frame rounds the PNG's own quiet zone; a thicker band reads as waste. */
+  padding: 4px;
+  border-radius: 10px;
+  background: #fff;
+}

@@ -2,67 +2,19 @@
  * The storage sharing of one workspace: which storages the chat agent may read.
  * The settings storage stays unshared by default. Every added storage carries its own access level,
  * none or read-only, set in the settings section. The record persists in the `shared-storages` record.
+ * The record shape and its guard live with the storage layer (`src/storage/shared-storages.ts`).
  */
 
 import type { StorageSetup } from './plugins.js';
 import type { StorageBackend } from '../storage/storage.js';
+import {
+  type SharedStorageEntry,
+  type SharedStoragesRecord,
+  type StorageAccess,
+} from '../storage/shared-storages.js';
 
-/** The access one shared storage grants the chat agent. */
-export type StorageAccess = 'none' | 'readonly';
-
-/** One shared storage entry of the persisted record. */
-export interface SharedStorageEntry {
-  readonly id: string;
-  readonly setupId: string;
-  readonly label: string;
-  /** The URI id of the storage, the sanitized label. It stays unique among the shared storages. */
-  readonly uriId: string;
-  readonly config: unknown;
-  readonly password: string | null;
-  readonly access: StorageAccess;
-}
-
-/** The persisted sharing record of the workspace. */
-export interface SharedStoragesRecord {
-  /** The access to the workspace settings storage itself. Not shared by default. */
-  readonly settingsAccess: StorageAccess;
-  readonly storages: readonly SharedStorageEntry[];
-}
-
-/** The empty sharing record: nothing shared. */
-export const EMPTY_SHARED_STORAGES: SharedStoragesRecord = { settingsAccess: 'none', storages: [] };
-
-function isAccess(value: unknown): value is StorageAccess {
-  return value === 'none' || value === 'readonly';
-}
-
-/**
- * Checks that a value is a valid SharedStoragesRecord.
- *
- * @param value The value to check. It can have any type.
- * @returns True when the value satisfies the record shape.
- */
-export function isSharedStoragesRecord(value: unknown): value is SharedStoragesRecord {
-  if (typeof value !== 'object' || !value) {
-    return false;
-  }
-  const candidate = value as Record<string, unknown>;
-  if (!isAccess(candidate.settingsAccess) || !Array.isArray(candidate.storages)) {
-    return false;
-  }
-  return candidate.storages.every(
-    (entry) =>
-      typeof entry === 'object' &&
-      entry !== null &&
-      typeof (entry as Record<string, unknown>).id === 'string' &&
-      typeof (entry as Record<string, unknown>).setupId === 'string' &&
-      typeof (entry as Record<string, unknown>).label === 'string' &&
-      typeof (entry as Record<string, unknown>).uriId === 'string' &&
-      ((entry as Record<string, unknown>).password === null ||
-        typeof (entry as Record<string, unknown>).password === 'string') &&
-      isAccess((entry as Record<string, unknown>).access),
-  );
-}
+export { EMPTY_SHARED_STORAGES, isSharedStoragesRecord } from '../storage/shared-storages.js';
+export type { SharedStorageEntry, SharedStoragesRecord, StorageAccess } from '../storage/shared-storages.js';
 
 /** The public state of one shared storage, for the settings cards. */
 export interface SharedStorageState {

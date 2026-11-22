@@ -18,6 +18,9 @@ import { registerMcpClientService } from './mcp-client-service.js';
 import { sessions } from './session-service.js';
 import { registerWindowService } from './window-service.js';
 import { registerWorkspaceLink, pushWorkspace } from './workspace-link.js';
+import { ensureTray, trayActive } from './tray.js';
+import { registerWorkerService, startWorkspaceWorker } from './worker-service.js';
+import { readFileSync } from 'node:fs';
 
 registerAppProtocolPrivileges();
 
@@ -84,6 +87,10 @@ function runSmokeProbe(win: BrowserWindow): void {
 }
 
 app.on('window-all-closed', () => {
+  // The tray keeps the app alive: the worker core, the MCP host, and the remote control answer on.
+  if (trayActive()) {
+    return;
+  }
   app.quit();
 });
 
@@ -94,11 +101,84 @@ void app.whenReady().then(() => {
   registerServices();
   registerMcpClientService();
   registerWindowService();
+  registerWorkerService();
   registerWorkspaceLink();
   registerToolService();
+  if (process.argv.includes('--headless')) {
+    startHeadless();
+    log.main.informative('main ready (headless): electron %s, node %s', process.versions.electron, process.versions.node);
+    return;
+  }
   createLauncherWindow();
   log.main.informative('main ready: electron %s, node %s', process.versions.electron, process.versions.node);
 });
+
+/**
+ * Boots the app without a window: the positional argument names the workspace, and the worker
+ * core opens it with the tray holding the app alive. The MCP host answers too when a
+ * `--mcp-host` argument runs. A password or legacy workspace cannot open in the worker core,
+ * so it logs the refusal and quits.
+ */
+function startHeadless(): void {
+  // The scan skips the executable and the app-path argument, so the first free positional
+  // argument names the workspace.
+  const positional = process.argv.slice(2).find((argument) => argument.length > 0 && !argument.startsWith('-'));
+  if (!positional) {
+    log.main.error('the headless start needs a positional workspace path after the flags.');
+    app.quit();
+    return;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(join(positional, '.nodewavenui.json'), 'utf-8'));
+  } catch {
+    parsed = null;
+  }
+  const marker =
+    typeof parsed === 'object' && parsed ? (parsed as { storageId?: unknown; storageConfig?: unknown }) : null;
+  // Only the plain JSON setup opens without a surface: a password needs an unlock, and the
+  // legacy IndexedDB setups die with the renderer profile they lived in.
+  if (!marker || marker.storageId !== 'json') {
+    log.main.error(`the headless start cannot open "${positional}": it holds no readable plain JSON workspace.`);
+    app.quit();
+    return;
+  }
+  ensureTray(() => {
+    log.main.notice('the headless start owns no window to show. Use the launcher without --headless to open one.');
+  });
+  void startMcpHostFromArguments().then((endpoint) => {
+    log.main.notice(
+      endpoint ? `the MCP host answers on ${endpoint}` : 'the headless start carries no --mcp-host argument, so the MCP host stays off.',
+    );
+  });
+  startWorkspaceWorker({
+    directoryPath: positional,
+    storageId: marker.storageId,
+    storageConfig: marker.storageConfig,
+    password: null,
+    appRoot: APP_ROOT,
+  });
+}
+
+/**
+ * Starts the MCP host under the `--mcp-host` argument.
+ *
+ * @returns The endpoint it answers on, or null when no argument runs or the start fails.
+ */
+async function startMcpHostFromArguments(): Promise<string | null> {
+  const config = parseMcpHostArgument(process.argv);
+  if (!config) {
+    return null;
+  }
+  try {
+    const host = await startMcpHost(config);
+    return host.readEndpoint();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log.main.warning(`the MCP host could not start: ${message}`);
+    return null;
+  }
+}
 
 /**
  * Installs the application menu. The framed window shows no custom top bar, so the menu carries
@@ -188,19 +268,6 @@ function registerToolService(): void {
     const source = typeof candidate.source === 'string' && candidate.source.length > 0 ? candidate.source : CHAT_AGENT_SOURCE;
     return tool.handler(args, { principal: 'agent', source });
   });
-  ipcMain.handle('nodewavenui:mcp:start', async () => {
-    try {
-      const config = parseMcpHostArgument(process.argv);
-      if (!config) {
-        return null;
-      }
-      const host = await startMcpHost(config);
-      return host.readEndpoint();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log.main.warning(`the MCP host could not start: ${message}`);
-      return null;
-    }
-  });
+  ipcMain.handle('nodewavenui:mcp:start', () => startMcpHostFromArguments());
   ipcMain.handle('nodewavenui:mcp:info', () => readMcpHostInfo());
 }

@@ -21,18 +21,9 @@ import type {
 
 const MINIMUM_PASSWORD_LENGTH = 8;
 
-/** The name of the JSON settings file inside a workspace folder. */
-const JSON_SETTINGS_FILE = '.nodewavenui-settings.json';
+import { workspaceSettingsFilePath } from '../shared/workspace.js';
 
-/**
- * Builds the path of the JSON settings file of one workspace folder.
- *
- * @param directoryPath The absolute workspace folder path.
- * @returns The absolute settings file path.
- */
-export function jsonSettingsFilePath(directoryPath: string): string {
-  return `${directoryPath.replace(/[\\/]+$/, '')}/${JSON_SETTINGS_FILE}`;
-}
+export { workspaceSettingsFilePath as jsonSettingsFilePath };
 
 /**
  * Builds a stable database name for one workspace folder.
@@ -113,6 +104,9 @@ export function registerBuiltinStorageSetups(registry: PluginRegistry): void {
     id: 'plain',
     label: 'Local database (no password)',
     needsPassword: false,
+    // The profile database does not follow the workspace folder, and the worker core cannot
+    // open it. The setup only serves the one-shot migration of an old workspace.
+    legacy: true,
     readConfiguration: () => ({ config: null, password: null }),
     open: ({ directoryPath }) => new IndexedDbStorage({ databaseName: databaseNameFor(directoryPath) }),
   });
@@ -120,6 +114,7 @@ export function registerBuiltinStorageSetups(registry: PluginRegistry): void {
     id: 'password',
     label: 'Local database, encrypted with a password',
     needsPassword: true,
+    legacy: true,
     fields: passwordFields(),
     readConfiguration: readPasswordConfiguration,
     open: ({ directoryPath, config, password }) => {
@@ -137,7 +132,7 @@ export function registerBuiltinStorageSetups(registry: PluginRegistry): void {
     label: 'JSON file in the workspace (no password)',
     needsPassword: false,
     readConfiguration: () => ({ config: null, password: null }),
-    open: ({ directoryPath }) => new JsonFileStorage({ path: jsonSettingsFilePath(directoryPath) }),
+    open: ({ directoryPath }) => new JsonFileStorage({ path: workspaceSettingsFilePath(directoryPath) }),
   });
   registry.registerStorageSetup({
     id: 'json-password',
@@ -148,7 +143,7 @@ export function registerBuiltinStorageSetups(registry: PluginRegistry): void {
     open: ({ directoryPath, config, password }) => {
       const suite = suiteFromConfig(config);
       return new JsonFileStorage({
-        path: jsonSettingsFilePath(directoryPath),
+        path: workspaceSettingsFilePath(directoryPath),
         password: password ?? '',
         ...(suite ? { suite } : {}),
       });

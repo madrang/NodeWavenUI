@@ -12,8 +12,8 @@ import { readAppArguments, readAppVersion, HELP_TEXT } from './arguments.js';
 import { closeWindow, resizeWindowLocked } from './window-ops.js';
 import { PluginManager } from './plugins.js';
 import { registerBuiltinStorageSetups } from './storage-setups.js';
-import { migrateLegacyStorage } from './storage-migration.js';
-import { WorkspaceSettingsStore } from './settings-store.js';
+import { isLegacyStorageId, migrateLegacyStorage } from './storage-migration.js';
+import { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import { resolveFrameMode } from './frame-mode.js';
 import { launchMainWindow } from './main-window.js';
 import { selectWorkspaceDirectory } from './workspace-picker.js';
@@ -215,6 +215,12 @@ async function openExistingWorkspace(
       void launchWorkspaceWindow(directory, migrated.settings, new WorkspaceSettingsStore(migrated.backend), null);
       return;
     }
+    if (isLegacyStorageId(settings.storageId)) {
+      showLauncherStatus(
+        'The settings of this workspace could not move into its JSON file, and the old database no longer opens in this version.',
+      );
+      return;
+    }
     void launchWorkspaceWindow(directory, settings, new WorkspaceSettingsStore(backend), null);
     return;
   }
@@ -304,6 +310,13 @@ unlockForm.addEventListener('submit', async (event) => {
         migrated.settings,
         new WorkspaceSettingsStore(migrated.backend),
         unlockPassword.value,
+      );
+      return;
+    }
+    if (isLegacyStorageId(settings.storageId)) {
+      unlockPassword.disabled = false;
+      showLauncherStatus(
+        'The settings of this workspace could not move into its JSON file, and the old database no longer opens in this version.',
       );
       return;
     }

@@ -1,15 +1,16 @@
 /**
  * The settings store of one workspace: a thin reader and writer over one storage backend.
- * A storage setup builds the backend (see `storage-setups.ts`).
- * The provider settings (which carry the API key) are the stored values.
+ * A storage setup builds the backend in the renderers (see `storage-setups.ts`), and the worker
+ * core builds it over its direct-fs backend. The provider settings (which carry the API key) are
+ * the stored values.
  */
 
-import type { StorageBackend } from '../storage/storage.js';
+import type { StorageBackend } from './storage.js';
 import type { ThinkingLevel } from '../providers/provider.js';
-import type { StoredPluginFolders } from './plugin-folders.js';
+import type { StoredPluginFolders } from '../shared/workspace.js';
 import { isMcpEndpoints, type McpEndpoints } from '../shared/mcp-endpoints.js';
 import { isPermissionRule, readPathRules, type PathRule, type PermissionRule } from '../shared/permissions.js';
-import { EMPTY_SHARED_STORAGES, isSharedStoragesRecord, type SharedStoragesRecord } from './storage-shares.js';
+import { EMPTY_SHARED_STORAGES, isSharedStoragesRecord, type SharedStoragesRecord } from './shared-storages.js';
 import {
   emptyProviderRegistry,
   isProviderSettings,
@@ -34,8 +35,27 @@ const AGENT_THINKING_KEY = 'agent-thinking';
 const CHAT_KEY_KEY = 'chat-key';
 const AGENT_TOOL_DEFAULTS_KEY = 'agent-tool-defaults';
 const PLUGIN_FOLDERS_KEY = 'plugin-folders';
+const REMOTE_SERVER_KEY = 'remote-server';
+const REMOTE_TOKEN_KEY = 'remote-token';
+const REMOTE_AUTH_KEY = 'remote-auth';
+const CLOSE_BEHAVIOR_KEY = 'close-behavior';
 const MINIMUM_MCP_TOKEN_LENGTH = 16;
 const MAXIMUM_MCP_TOKEN_LENGTH = 256;
+
+/** The port the remote control server takes when the record holds none. */
+const DEFAULT_REMOTE_PORT = 9777;
+
+/** The configuration of the remote control server of the worker core. */
+export interface RemoteServerConfig {
+  /** True when the server runs. The server stays off by default. */
+  readonly enabled: boolean;
+  /** The port the server listens on. */
+  readonly port: number;
+  /** The network interface the server binds. */
+  readonly bind: string;
+  /** True when the server answers plain HTTP without a certificate. Off by default. */
+  readonly allowPlainHttp: boolean;
+}
 
 /** Builds a display label for a migrated account out of its endpoint host. */
 function labelForBaseUrl(baseUrl: string): string {
@@ -505,5 +525,111 @@ export class WorkspaceSettingsStore {
    */
   async savePluginFolders(record: StoredPluginFolders): Promise<void> {
     await this.backend.set(PLUGIN_FOLDERS_KEY, JSON.stringify(record));
+  }
+
+  /**
+   * Reads the remote control server configuration. A missing or damaged record reads as off.
+   *
+   * @returns The configuration. The server stays off by default.
+   * @throws StorageError when the store fails.
+   */
+  async loadRemoteServerConfig(): Promise<RemoteServerConfig> {
+    const raw = await this.backend.get(REMOTE_SERVER_KEY);
+    if (!raw) {
+      return { enabled: false, port: DEFAULT_REMOTE_PORT, bind: '0.0.0.0', allowPlainHttp: false };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      console.warn('[NodeWavenUI] the stored remote server configuration is damaged and ignored.');
+      return { enabled: false, port: DEFAULT_REMOTE_PORT, bind: '0.0.0.0', allowPlainHttp: false };
+    }
+    if (typeof parsed !== 'object' || !parsed) {
+      return { enabled: false, port: DEFAULT_REMOTE_PORT, bind: '0.0.0.0', allowPlainHttp: false };
+    }
+    const candidate = parsed as Record<string, unknown>;
+    return {
+      enabled: candidate.enabled === true,
+      port:
+        typeof candidate.port === 'number' && Number.isInteger(candidate.port) && candidate.port > 0 && candidate.port < 65536 ?
+          candidate.port :
+          DEFAULT_REMOTE_PORT,
+      bind: typeof candidate.bind === 'string' && candidate.bind.length > 0 ? candidate.bind : '0.0.0.0',
+      allowPlainHttp: candidate.allowPlainHttp === true,
+    };
+  }
+
+  /**
+   * Writes the remote control server configuration.
+   *
+   * @param config The configuration to persist.
+   * @throws StorageError when the store fails.
+   */
+  async saveRemoteServerConfig(config: RemoteServerConfig): Promise<void> {
+    await this.backend.set(REMOTE_SERVER_KEY, JSON.stringify(config));
+  }
+
+  /**
+   * Reads the pairing token of the remote control. A missing or short record reads as none.
+   *
+   * @returns The token, or null when the store holds none.
+   * @throws StorageError when the store fails.
+   */
+  async loadRemoteToken(): Promise<string | null> {
+    const raw = await this.backend.get(REMOTE_TOKEN_KEY);
+    return typeof raw === 'string' && raw.length >= 16 ? raw : null;
+  }
+
+  /**
+   * Writes the pairing token of the remote control.
+   *
+   * @param token The token to persist.
+   * @throws StorageError when the store fails.
+   */
+  async saveRemoteToken(token: string): Promise<void> {
+    await this.backend.set(REMOTE_TOKEN_KEY, token);
+  }
+
+  /**
+   * Reads the remote password verifier. The record holds a digest and a salt, never the password.
+   *
+   * @returns The stored record text, or null when no password was set.
+   * @throws StorageError when the store fails.
+   */
+  async loadRemoteAuth(): Promise<string | null> {
+    return this.backend.get(REMOTE_AUTH_KEY);
+  }
+
+  /**
+   * Writes the remote password verifier.
+   *
+   * @param record The digest record to persist.
+   * @throws StorageError when the store fails.
+   */
+  async saveRemoteAuth(record: string): Promise<void> {
+    await this.backend.set(REMOTE_AUTH_KEY, record);
+  }
+
+  /**
+   * Reads what the close of the workspace window does. Quit is the default, so the current
+   * behavior stays. A damaged record reads as quit.
+   *
+   * @returns The close behavior id.
+   * @throws StorageError when the store fails.
+   */
+  async loadCloseBehavior(): Promise<'quit' | 'tray'> {
+    const raw = await this.backend.get(CLOSE_BEHAVIOR_KEY);
+    return raw === 'tray' ? 'tray' : 'quit';
+  }
+
+  /**
+   * Writes what the close of the workspace window does.
+   *
+   * @param behavior The close behavior id.
+   * @throws StorageError when the store fails.
+   */
+  async saveCloseBehavior(behavior: 'quit' | 'tray'): Promise<void> {
+    await this.backend.set(CLOSE_BEHAVIOR_KEY, behavior);
   }
 }

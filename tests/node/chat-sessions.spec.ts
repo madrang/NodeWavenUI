@@ -3,7 +3,7 @@
  */
 
 import { expect } from 'chai';
-import { readStoredChatSession } from '../../dist/renderer/chat-sessions.js';
+import { readStoredChatSession } from '../../dist/worker/chat-sessions.js';
 
 /** One session record with test defaults. */
 function session(overrides: Record<string, unknown> = {}): Record<string, unknown> {

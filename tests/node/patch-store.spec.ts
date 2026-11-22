@@ -5,50 +5,14 @@
  */
 
 import { expect } from 'chai';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PatchStore, type PatchNotice } from '../../dist/renderer/patch-store.js';
-import type { NodeWavenBridge } from '../../dist/shared/bridge.js';
+import { PatchStore, type PatchNotice } from '../../dist/worker/patch-store.js';
 
-/** Installs the bridge fs slice of the workspace page over real files. */
-function installBridge(): void {
-  globalThis.nodewavenui = {
-    fs: {
-      list: async (directory: string) => readdirSync(directory),
-      readText: async (path: string) => readFileSync(path, 'utf8'),
-      readData: async () => {
-        throw new Error('not used');
-      },
-      writeText: async (path: string, text: string) => {
-        writeFileSync(path, text);
-      },
-      writeData: async () => {
-        throw new Error('not used');
-      },
-      makeDirectory: async (path: string) => {
-        mkdirSync(path, { recursive: true });
-      },
-      remove: async (path: string) => {
-        rmSync(path, { recursive: true, force: true });
-      },
-      rename: async () => {
-        throw new Error('not used');
-      },
-      stat: async (path: string) => {
-        if (!existsSync(path)) {
-          return null;
-        }
-        return { exists: true, directory: statSync(path).isDirectory() };
-      },
-    },
-  } as unknown as NodeWavenBridge;
-}
-
-/** One store over a fresh temp workspace, with the bridge installed. */
+/** One store over a fresh temp workspace. */
 function freshStore(): { store: PatchStore; root: string } {
   const root = mkdtempSync(join(tmpdir(), 'nvpatch-'));
-  installBridge();
   return { store: new PatchStore(root), root };
 }
 
@@ -71,42 +35,49 @@ describe('the patch store', () => {
   });
 
   afterEach(() => {
-    globalThis.nodewavenui = undefined;
     rmSync(root, { recursive: true, force: true });
   });
 
   it('proposes without writing the file', async () => {
-    const record = await store.propose(7, target, '', 'line one\nline two\n');
+    const record = await store.propose(7, null,target, '', 'line one\nline two\n');
     expect(record.state).to.equal('pending');
     expect(record.taskId).to.equal(null);
     expect(existsSync(target)).to.equal(false);
   });
 
   it('refreshes the rolling patch of the same waiting file', async () => {
-    const first = await store.propose(7, target, '', 'line one\nline two\n');
-    const second = await store.propose(7, target, '', 'line one\nline two changed\nline three\n');
+    const first = await store.propose(7, null, target, '', 'line one\nline two\n');
+    const second = await store.propose(7, null, target, '', 'line one\nline two changed\nline three\n');
     expect(second.id).to.equal(first.id);
     expect(second.patch).to.include('line three');
     expect(store.listPatches()).to.have.lengthOf(1);
   });
 
+  it('keeps the rolling patch of a chat across a restore, keyed on the session file id', async () => {
+    const first = await store.propose(7, 'session-file-9', target, '', 'line one\n');
+    // The restored chat runs under a new runtime id, with the same session file id.
+    const second = await store.propose(12, 'session-file-9', target, 'line one\n', 'line one\nline two\n');
+    expect(second.id).to.equal(first.id);
+    expect(store.listPatches()).to.have.lengthOf(1);
+  });
+
   it('applies on approve and closes the record', async () => {
-    const record = await store.propose(7, target, '', 'line one\nline two\n');
+    const record = await store.propose(7, null,target, '', 'line one\nline two\n');
     expect(await store.apply(record.id)).to.equal('applied');
     expect(readFileSync(target, 'utf8')).to.equal('line one\nline two\n');
     expect(store.patch(record.id)?.state).to.equal('applied');
   });
 
   it('opens a fresh record after a review closed the rolling one', async () => {
-    const first = await store.propose(7, target, '', 'line one\n');
+    const first = await store.propose(7, null,target, '', 'line one\n');
     await store.apply(first.id);
-    const second = await store.propose(7, target, 'line one\n', 'line one\nline two\n');
+    const second = await store.propose(7, null,target, 'line one\n', 'line one\nline two\n');
     expect(second.id).to.not.equal(first.id);
   });
 
   it('denies without touching the file and notices the agent', async () => {
     writeFileSync(target, 'line one\n');
-    const record = await store.propose(7, target, 'line one\n', 'line changed\n');
+    const record = await store.propose(7, null,target, 'line one\n', 'line changed\n');
     await store.deny(record.id);
     expect(readFileSync(target, 'utf8')).to.equal('line one\n');
     expect(store.patch(record.id)?.state).to.equal('denied');
@@ -116,7 +87,7 @@ describe('the patch store', () => {
   });
 
   it('conflicts when the file drifted under the patch', async () => {
-    const record = await store.propose(7, target, 'line one\nline two\n', 'line one changed\nline two\n');
+    const record = await store.propose(7, null,target, 'line one\nline two\n', 'line one changed\nline two\n');
     writeFileSync(target, 'someone rewrote everything here\n');
     expect(await store.apply(record.id)).to.equal('conflicted');
     expect(readFileSync(target, 'utf8')).to.equal('someone rewrote everything here\n');
@@ -124,14 +95,14 @@ describe('the patch store', () => {
   });
 
   it('applies with the offset search after a nearby shift', async () => {
-    const record = await store.propose(7, target, 'top\nline two\nline three\n', 'top\nline two\nline three changed\n');
+    const record = await store.propose(7, null,target, 'top\nline two\nline three\n', 'top\nline two\nline three changed\n');
     writeFileSync(target, 'inserted header\ntop\nline two\nline three\n');
     expect(await store.apply(record.id)).to.equal('applied');
     expect(readFileSync(target, 'utf8')).to.equal('inserted header\ntop\nline two\nline three changed\n');
   });
 
   it('denies with a comment and sends both to the agent', async () => {
-    const record = await store.propose(7, target, '', 'proposed\n');
+    const record = await store.propose(7, null,target, '', 'proposed\n');
     await store.deny(record.id, 'Keep the original wording.');
     expect(store.patch(record.id)?.state).to.equal('denied');
     expect(store.patch(record.id)?.comment).to.equal('Keep the original wording.');
@@ -140,7 +111,7 @@ describe('the patch store', () => {
   });
 
   it('dismisses without any notice to the agent', async () => {
-    const record = await store.propose(7, target, '', 'proposed\n');
+    const record = await store.propose(7, null,target, '', 'proposed\n');
     await store.dismiss(record.id);
     expect(store.patch(record.id)?.state).to.equal('dismissed');
     expect(store.patch(record.id)?.comment).to.equal(null);
@@ -148,9 +119,9 @@ describe('the patch store', () => {
   });
 
   it('restores every record from a reload', async () => {
-    const first = await store.propose(7, target, '', 'one\n');
+    const first = await store.propose(7, null,target, '', 'one\n');
     await store.apply(first.id);
-    const second = await store.propose(7, target, 'one\n', 'two\n');
+    const second = await store.propose(7, null,target, 'one\n', 'two\n');
     await store.deny(second.id);
     const reopened = new PatchStore(root);
     await reopened.load();
@@ -168,7 +139,7 @@ describe('the patch store', () => {
     expect(store.openTask(7)?.description).to.equal('The rail breaks');
     await store.setTask(7, 'Second task', null, false);
     expect(store.openTask(7)?.title).to.equal('Second task');
-    const record = await store.propose(7, target, '', 'proposed\n');
+    const record = await store.propose(7, null,target, '', 'proposed\n');
     expect(record.taskId).to.equal(store.openTask(7)?.id);
   });
 
@@ -180,8 +151,8 @@ describe('the patch store', () => {
   });
 
   it('deletes one record alone, whatever its state', async () => {
-    const waiting = await store.propose(7, join(root, 'waiting.md'), '', 'waits\n');
-    const applied = await store.propose(7, join(root, 'applied.md'), '', 'content\n');
+    const waiting = await store.propose(7, null,join(root, 'waiting.md'), '', 'waits\n');
+    const applied = await store.propose(7, null,join(root, 'applied.md'), '', 'content\n');
     await store.apply(applied.id);
     await store.deletePatch(waiting.id);
     expect(store.listPatches().map((record) => record.path.split('/').at(-1))).to.deep.equal(['applied.md']);
@@ -193,13 +164,13 @@ describe('the patch store', () => {
 
   it('clears the resolved records and keeps the waiting ones', async () => {
     await store.setTask(7, 'Old task', null, false);
-    const applied = await store.propose(7, join(root, 'applied.md'), '', 'content\n');
+    const applied = await store.propose(7, null,join(root, 'applied.md'), '', 'content\n');
     await store.apply(applied.id);
-    const denied = await store.propose(7, join(root, 'denied.md'), '', 'no\n');
+    const denied = await store.propose(7, null,join(root, 'denied.md'), '', 'no\n');
     await store.deny(denied.id);
     await store.setTask(7, 'Open task', null, false);
-    const waiting = await store.propose(7, join(root, 'waiting.md'), '', 'waits\n');
-    await store.propose(7, join(root, 'open-task.md'), '', 'rides\n');
+    const waiting = await store.propose(7, null,join(root, 'waiting.md'), '', 'waits\n');
+    await store.propose(7, null,join(root, 'open-task.md'), '', 'rides\n');
     await store.clearResolved();
     const states = store.listPatches().map((record) => [record.path.split('/').at(-1), record.state]);
     expect(states).to.deep.equal([

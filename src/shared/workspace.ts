@@ -34,6 +34,51 @@ export function isWorkspaceDirectory(value: unknown): value is WorkspaceDirector
 /** Marker file that marks a folder as a NodeWavenUI workspace. */
 export const WORKSPACE_MARKER_FILE = '.nodewavenui.json';
 
+/** The name of the JSON settings file inside a workspace folder. */
+export const WORKSPACE_SETTINGS_FILE = '.nodewavenui-settings.json';
+
+/** The folder that holds the remote control certificate of a workspace. */
+export const WORKSPACE_REMOTE_FOLDER = '.nodewavenui-remote';
+
+/** Normalizes one path to comparable segments: split on separators, empty and dot segments out. */
+function workspacePathSegments(path: string): readonly string[] {
+  return path.split('/').filter((segment) => segment.length > 0 && segment !== '.');
+}
+
+/**
+ * True when one absolute path is a config file of the workspace: the marker, the settings file,
+ * or anything under the remote certificate folder. These paths deny the agent by default, and
+ * only an explicit path rule opens them.
+ *
+ * @param absolutePath The absolute path to test.
+ * @param workspaceRoot The absolute path of the workspace directory.
+ * @returns True when the path carries workspace configuration.
+ */
+export function isWorkspaceConfigPath(absolutePath: string, workspaceRoot: string): boolean {
+  const root = workspaceRoot.replace(/[\\/]+$/, '');
+  if (absolutePath !== root && !absolutePath.startsWith(`${root}/`)) {
+    return false;
+  }
+  const segments = workspacePathSegments(absolutePath === root ? '' : absolutePath.slice(root.length + 1));
+  if (segments.length === 0) {
+    return false;
+  }
+  if (segments[0] === WORKSPACE_MARKER_FILE || segments[0] === WORKSPACE_SETTINGS_FILE) {
+    return segments.length === 1;
+  }
+  return segments[0] === WORKSPACE_REMOTE_FOLDER;
+}
+
+/**
+ * Builds the path of the JSON settings file of one workspace folder.
+ *
+ * @param directoryPath The absolute workspace folder path.
+ * @returns The absolute settings file path.
+ */
+export function workspaceSettingsFilePath(directoryPath: string): string {
+  return `${directoryPath.replace(/[\\/]+$/, '')}/${WORKSPACE_SETTINGS_FILE}`;
+}
+
 /** Identity and storage configuration of one workspace, kept in the marker file. */
 export interface WorkspaceSettings {
   /** Display name of the workspace. */
@@ -74,6 +119,16 @@ export function isWorkspaceSettings(value: unknown): value is WorkspaceSettings 
     versionValid
   );
 }
+
+/** The stored state of one plugin folder, kept in the `plugin-folders` record. */
+export interface StoredPluginFolder {
+  readonly enabled: boolean;
+  /** The SHA-256 digest of the folder content at enable time. */
+  readonly digest?: string;
+}
+
+/** The record the workspace settings hold, keyed by plugin folder name. */
+export type StoredPluginFolders = Record<string, StoredPluginFolder>;
 
 /** Connection settings of the inference provider, kept in the settings store. */
 export interface ProviderSettings {

@@ -1,7 +1,8 @@
 /**
  * Specs for the file tool permissions: every write proposes without a card, an outside read
- * asks one card, a deny rule refuses, an allow rule reads free,
- * and the read-first gate holds until the chat reads the file.
+ * asks one card, a deny rule refuses, an allow rule reads free, the workspace config files
+ * refuse without a rule, the pending patch overlays the reads, and the read-first gate holds
+ * until the chat reads the file.
  */
 
 import { expect } from 'chai';
@@ -9,7 +10,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFileTools, type FileToolDeps } from '../../dist/renderer/file-tools.js';
-import { PatchStore } from '../../dist/renderer/patch-store.js';
+import { PatchStore } from '../../dist/worker/patch-store.js';
 import type { AgentTool } from '../../dist/renderer/agent-tools.js';
 import type { NodeWavenBridge } from '../../dist/shared/bridge.js';
 import type { PathRule } from '../../dist/shared/permissions.js';
@@ -79,6 +80,7 @@ describe('the file tool permissions', () => {
       },
       workspacePath: root,
       chatId: 3,
+      sessionFileId: 'spec-session',
       source: 'chat-agent:3',
       store,
       pathRules: () => rules,
@@ -134,6 +136,81 @@ describe('the file tool permissions', () => {
     const output = await files.run({ action: 'read', path: 'docs' });
     expect(output.text).to.equal('open data');
     expect(checks).to.deep.equal([]);
+  });
+
+  it('refuses the workspace config files without a rule', async () => {
+    writeFileSync(join(root, '.nodewavenui-settings.json'), '{"remote-token":"secret"}');
+    const readError = await errorOf(() => files.run({ action: 'read', path: '.nodewavenui-settings.json' }));
+    const writeError = await errorOf(() => write.run({ action: 'write', path: '.nodewavenui-settings.json', text: '{}' }));
+    expect(readError).to.include('holds workspace configuration');
+    expect(writeError).to.include('holds workspace configuration');
+    expect(checks).to.deep.equal([]);
+  });
+
+  it('refuses the remote certificate folder without a rule, and a rule opens it', async () => {
+    mkdirSync(join(root, '.nodewavenui-remote'));
+    writeFileSync(join(root, '.nodewavenui-remote', 'key.pem'), 'private');
+    const refused = await errorOf(() => files.run({ action: 'read', path: '.nodewavenui-remote/key.pem' }));
+    expect(refused).to.include('holds workspace configuration');
+    rules = [{ path: '.nodewavenui-remote', name: 'Remote certificate', mode: 'allow' }];
+    const output = await files.run({ action: 'read', path: '.nodewavenui-remote/key.pem' });
+    expect(output.text).to.equal('private');
+    expect(checks).to.deep.equal([]);
+  });
+
+  it('skips refused paths inside a grep scan', async () => {
+    writeFileSync(join(root, 'note.md'), 'needle');
+    writeFileSync(join(root, '.nodewavenui-settings.json'), '{"needle":"secret"}');
+    const output = await files.run({ action: 'grep', path: root, pattern: 'needle' });
+    expect(output.text).to.include('note.md');
+    expect(output.text).to.not.include('.nodewavenui-settings.json');
+  });
+
+  it('reads a written file back with its pending patch applied', async () => {
+    await write.run({ action: 'write', path: 'draft.md', text: 'one\ntwo\n' });
+    const output = await files.run({ action: 'read', path: 'draft.md' });
+    expect(output.text).to.equal('one\ntwo\n');
+    expect(existsSync(join(root, 'draft.md'))).to.equal(false);
+  });
+
+  it('stacks a later write on the pending content', async () => {
+    await write.run({ action: 'write', path: 'stack.md', text: 'alpha\n' });
+    await write.run({ action: 'replace', path: 'stack.md', oldText: 'alpha', newText: 'beta' });
+    const output = await files.run({ action: 'read', path: 'stack.md' });
+    expect(output.text).to.equal('beta\n');
+    const records = store.listPatches().filter((record) => record.path === join(root, 'stack.md'));
+    expect(records).to.have.lengthOf(1);
+  });
+
+  it('greps and lists the pending files of the chat', async () => {
+    await write.run({ action: 'write', path: 'needle.md', text: 'the needle sleeps\n' });
+    const grep = await files.run({ action: 'grep', path: root, pattern: 'needle sleeps' });
+    expect(grep.text).to.include('needle.md');
+    const list = await files.run({ action: 'list', path: root });
+    expect(list.text).to.include('needle.md');
+    expect(existsSync(join(root, 'needle.md'))).to.equal(false);
+  });
+
+  it('keeps the overlay across a restore, keyed on the session file id', async () => {
+    // The write runs under chat id 3; the restored chat runs under a new runtime id.
+    await write.run({ action: 'write', path: 'restore.md', text: 'first\n' });
+    const restoredDeps = {
+      check: { check: async () => {} },
+      workspacePath: root,
+      chatId: 9,
+      sessionFileId: 'spec-session',
+      source: 'chat-agent:9',
+      store,
+      pathRules: () => rules,
+    };
+    const restoredTools = createFileTools(restoredDeps);
+    const read = await restoredTools.find((tool) => tool.name === 'files')!.run({ action: 'read', path: 'restore.md' });
+    expect(read.text).to.equal('first\n');
+    await restoredTools.find((tool) => tool.name === 'write')!.run({ action: 'replace', path: 'restore.md', oldText: 'first', newText: 'second' });
+    const records = store.listPatches().filter((record) => record.path === join(root, 'restore.md'));
+    expect(records).to.have.lengthOf(1);
+    const again = await restoredTools.find((tool) => tool.name === 'files')!.run({ action: 'read', path: 'restore.md' });
+    expect(again.text).to.equal('second\n');
   });
 
   it('holds the read-first gate until the chat reads the file', async () => {

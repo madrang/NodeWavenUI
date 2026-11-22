@@ -7,7 +7,7 @@
  */
 
 import type { WorkspaceSettings } from '../shared/workspace.js';
-import { readBridge, type BridgeMcpSinkEvent, type BridgePermissionCheck } from '../shared/bridge.js';
+import { readBridge, type BridgeMcpSinkEvent } from '../shared/bridge.js';
 import type { StorageBackend } from '../storage/storage.js';
 import { requireElement } from './dom.js';
 import { ChatSessionStore } from './chat-sessions.js';
@@ -26,8 +26,9 @@ import { serveFrames } from './frames.js';
 import { log } from './logger.js';
 import { init as initLanguage, LANGUAGE_MIRROR_KEY, localizeHTML } from './locale/index.js';
 import { PluginFolderController, bridgePluginFolderFs } from './plugin-folders.js';
+import { openCoreStorage } from './remote-storage.js';
 import { StorageShareRegistry } from './storage-shares.js';
-import { WorkspaceSettingsStore } from './settings-store.js';
+import { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import { initializeTheme } from './theme.js';
 import { rememberMainWindowGeometry, restoreMainWindowGeometry } from './window-geometry.js';
 import { forceCloseWindow, onWindowEvent, resizeWindowResizable } from './window-ops.js';
@@ -55,7 +56,7 @@ function storageLabelFor(settings: WorkspaceSettings): string {
  * @throws Error when the storage setup is not registered or the backend does not open.
  */
 async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
-  const { directory, settings, password } = payload;
+  const { directory, settings } = payload;
   document.body.classList.toggle('framed', payload.frameMode === 'system');
   // A maximized screen squares its corners, so no rounded gap sits at the screen edges. The
   // maximize states arrive as events, and the resize check covers the states the boot missed.
@@ -86,13 +87,17 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   if (!setup) {
     throw new Error(`The storage "${settings.storageId}" of this workspace is not registered.`);
   }
-  const backend: StorageBackend = setup.open(
-    password ?
-      { directoryPath: directory.path, config: settings.storageConfig, password } :
-      { directoryPath: directory.path, config: settings.storageConfig },
-  );
+  const bridge = readBridge();
+  if (!bridge) {
+    throw new Error('The workspace window runs outside the app, so no service can reach it.');
+  }
+  // The storage of the workspace lives in the background core: the worker opens the settings
+  // file while this window loads, and the page waits for its state before it reads anything.
+  const backend: StorageBackend = await openCoreStorage(bridge);
   const store = new WorkspaceSettingsStore(backend);
-  const permissionGate = new PermissionGate(store);
+  // The gate state lives in the worker core too: this proxy carries the checks of the file tools
+  // and the agent tools into it, and the cards render from its pushed state.
+  const permissionGate = new PermissionGate(bridge);
   const notificationHub = new NotificationHub();
   const mcpClients = createMcpClientAdapter();
   const storageShares = new StorageShareRegistry(
@@ -120,35 +125,10 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     directory.path,
     storageShares,
     plugins.listStorageSetups(),
-    new ChatSessionStore(directory.path, store, setup.needsPassword),
+    new ChatSessionStore(),
     plugins.listSystemPromptSetups(),
     pluginFolders,
   );
-  const bridge = readBridge();
-  if (!bridge) {
-    throw new Error('The workspace window runs outside the app, so no service can reach it.');
-  }
-  // The main services ask this page for permission decisions: the same gate the chat uses,
-  // with the same cards and rules.
-  bridge.workspace.onPermissionRequest(async (check: BridgePermissionCheck) => {
-    log.permission.informative(`check: ${check.principal} ${check.action}`);
-    try {
-      await permissionGate.check(
-        check.principal as Parameters<typeof permissionGate.check>[0],
-        check.action,
-        check.target as Parameters<typeof permissionGate.check>[2],
-        check.description,
-        check.source,
-        check.preauthorized,
-      );
-      log.permission.informative(`check: ${check.principal} ${check.action} allowed`);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      log.permission.warning(`check: ${check.principal} ${check.action} refused: ${message}`);
-      return { ok: false, error: message };
-    }
-  });
   // One request router serves every channel the main process calls: the token storage, the
   // page API proxies, and the frame builds. One registration answers, so no channel races.
   const workspaceRoutes = new Map<string, (payload: unknown) => Promise<unknown>>();
@@ -184,6 +164,13 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   // Every MCP session and tool call of the host lands in the host tab.
   bridge.workspace.onWorkspaceEvent('mcp.sink', (payload) => {
     dispatchSinkEvent(app, payload as BridgeMcpSinkEvent);
+  });
+  // A remote send from the phone lands in its chat through the same deliver path as the composer.
+  bridge.workspace.onWorkspaceEvent('remote.chat.send', (payload) => {
+    const send = payload as { fileId?: unknown; text?: unknown } | null;
+    if (typeof send?.text === 'string') {
+      app.remoteDeliver(typeof send.fileId === 'string' ? send.fileId : null, send.text);
+    }
   });
   // The MCP host starts once this storage is open. The handle carries the endpoint for the settings pane.
   const endpoint = await bridge.workspace.startMcpHost();

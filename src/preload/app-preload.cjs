@@ -56,19 +56,9 @@ const bridge = {
   },
   workspace: {
     runWindowTool: (name, args, source) => ipcRenderer.invoke(`${CHANNEL}:tools:call`, { name, args, source }),
-    onPermissionRequest: (handler) => {
-      ipcRenderer.on(`${CHANNEL}:workspace:request`, (_event, request) => {
-        if (request && request.channel === 'permission.check') {
-          void Promise.resolve(handler(request.payload)).then(
-            (answer) => ipcRenderer.send(`${CHANNEL}:workspace:reply`, { id: request.id, ok: true, value: answer }),
-            (error) => ipcRenderer.send(`${CHANNEL}:workspace:reply`, { id: request.id, ok: false, error: String(error) }),
-          );
-        }
-      });
-    },
     onWorkspaceRequest: (handler) => {
       ipcRenderer.on(`${CHANNEL}:workspace:request`, (_event, request) => {
-        if (request && request.channel !== 'permission.check') {
+        if (request) {
           void Promise.resolve(handler(request.channel, request.payload)).then(
             (value) => ipcRenderer.send(`${CHANNEL}:workspace:reply`, { id: request.id, ok: true, value }),
             (error) => ipcRenderer.send(`${CHANNEL}:workspace:reply`, { id: request.id, ok: false, error: String(error) }),
@@ -94,6 +84,10 @@ const bridge = {
   },
   plugins: {
     loadEntry: (modulePath) => ipcRenderer.invoke(`${CHANNEL}:plugins:loadEntry`, { modulePath }),
+  },
+  core: {
+    request: (channel, payload) => ipcRenderer.invoke(`${CHANNEL}:core:request`, channel, payload),
+    status: () => ipcRenderer.invoke(`${CHANNEL}:core:status`),
   },
 };
 

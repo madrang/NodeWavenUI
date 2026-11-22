@@ -1,72 +1,59 @@
 /**
- * The store of the dispatchable task records. One JSON file per task lives in the workspace
- * `tasks/` folder, plain like the patch records, so a restart loses nothing. The store owns the
- * transition rules of `src/shared/tasks.ts`: every mutator refuses a move the table forbids and
- * answers null, so a caller never guesses the outcome.
+ * The task store of the workspace page: the client side of the store that lives in the worker
+ * core. It keeps a local cache fed by the `task.event` pushes, carries every action through the
+ * core contract, and offers the interface the task tool, the task board, and the main app always
+ * used. The records persist in the workspace `tasks/` folder under the worker.
  */
 
-import { readTaskRecord, taskCanTransition, taskIsLive, type TaskDispatchMode, type TaskRecord } from '../shared/tasks.js';
-import { joinPath, listDirectoryNames, makeDirectory, readTextFile, removePath, writeTextFile } from './file-system.js';
+import { readBridge, type NodeWavenBridge } from '../shared/bridge.js';
+import { isRecord } from '../shared/records.js';
+import type { CoreTaskCreateInput, CoreTaskState, CoreTaskUpdateInput } from '../shared/core-api.js';
+import type { TaskRecord } from '../shared/tasks.js';
 
 /** The input of one create call. */
-export interface TaskCreateInput {
-  readonly title: string;
-  readonly description: string;
-  readonly goal: string;
-  readonly origin: 'user' | 'agent';
-  readonly originChatId: number | null;
-  readonly parentTaskId: string | null;
-  readonly blockedBy: readonly string[];
+export type TaskCreateInput = CoreTaskCreateInput;
+
+/** The editable fields of one record. An absent field keeps its stored value, and an empty string clears it. */
+export type TaskUpdateInput = CoreTaskUpdateInput;
+
+/** Reads one pushed or answered task state. Returns null on an invalid shape. */
+function readTaskState(value: unknown): CoreTaskState | null {
+  if (!isRecord(value) || !Array.isArray(value.records)) {
+    return null;
+  }
+  return { records: value.records as readonly TaskRecord[] };
 }
 
-/** The editable fields of one record. An absent field keeps its stored value, and an empty
- * string clears it. */
-export interface TaskUpdateInput {
-  readonly title?: string;
-  readonly description?: string;
-  readonly goal?: string;
-}
-
-/** Owns the task records of the workspace. */
+/** The task store client of the workspace page. Every record lives in the worker core. */
 export class TaskStore {
-  private readonly root: string;
-  private readonly records = new Map<string, TaskRecord>();
+  private readonly bridge: NodeWavenBridge | null;
+  private records: readonly TaskRecord[] = [];
   private readonly listeners = new Set<() => void>();
   private readonly settleListeners = new Set<(task: TaskRecord) => void>();
 
-  /**
-   * @param workspacePath The absolute path of the workspace directory, the parent of `tasks/`.
-   */
-  constructor(workspacePath: string) {
-    this.root = joinPath(workspacePath, 'tasks');
+  constructor() {
+    this.bridge = readBridge();
+    this.bridge?.workspace.onWorkspaceEvent('task.event', (payload) => {
+      const state = readTaskState(payload);
+      if (state) {
+        this.records = state.records;
+        this.emit();
+      }
+    });
+    this.bridge?.workspace.onWorkspaceEvent('task.settle', (payload) => {
+      if (isRecord(payload) && typeof payload.id === 'string') {
+        for (const listener of this.settleListeners) {
+          listener(payload as unknown as TaskRecord);
+        }
+      }
+    });
   }
 
-  /** Reads every stored record into memory. Call once at boot, before any tool runs. */
+  /** Reads every stored record into the cache. Call once at boot, before any tool runs. */
   async load(): Promise<void> {
-    await makeDirectory(this.root);
-    const names = await listDirectoryNames(this.root);
-    if (!names) {
-      return;
-    }
-    for (const name of names) {
-      if (!name.startsWith('task-') || !name.endsWith('.json')) {
-        continue;
-      }
-      const text = await readTextFile(joinPath(this.root, name));
-      // eslint-disable-next-line local/prefer-truthiness -- an empty record file reads as an empty string, only a failed read skips
-      if (text === null) {
-        continue;
-      }
-      let value: unknown;
-      try {
-        value = JSON.parse(text);
-      } catch {
-        continue;
-      }
-      const record = readTaskRecord(value);
-      if (record && record.id === name.slice('task-'.length, -'.json'.length)) {
-        this.records.set(record.id, record);
-      }
+    const state = readTaskState(await this.request('task.list'));
+    if (state) {
+      this.records = state.records;
     }
   }
 
@@ -86,90 +73,41 @@ export class TaskStore {
     };
   }
 
-  /** Fires every record listener. */
-  private emit(): void {
-    for (const listener of this.listeners) {
-      listener();
-    }
-  }
-
   /** Reads every record, newest first. */
   list(): readonly TaskRecord[] {
-    return [...this.records.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    return [...this.records].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
   /** Reads one record. */
   get(id: string): TaskRecord | null {
-    return this.records.get(id) ?? null;
+    return this.records.find((record) => record.id === id) ?? null;
   }
 
   /** True when every blockedBy task of one record reached done. A missing reference blocks. */
   ready(record: TaskRecord): boolean {
-    return record.blockedBy.every((id) => this.records.get(id)?.status === 'done');
+    return record.blockedBy.every((id) => this.records.find((candidate) => candidate.id === id)?.status === 'done');
   }
 
   /**
-   * Creates one record. Every blockedBy id must name a known record, so a typo cannot block a
-   * task forever.
+   * Creates one record in the worker core. Every blockedBy id must name a known record.
    *
    * @param input The record facts.
    * @returns The record, or null when one blockedBy id is unknown.
    */
   async create(input: TaskCreateInput): Promise<TaskRecord | null> {
-    for (const id of input.blockedBy) {
-      if (!this.records.has(id)) {
-        return null;
-      }
-    }
-    const record: TaskRecord = {
-      id: crypto.randomUUID(),
-      title: input.title,
-      description: input.description,
-      goal: input.goal,
-      origin: input.origin,
-      originChatId: input.originChatId,
-      parentTaskId: input.parentTaskId,
-      blockedBy: [...input.blockedBy],
-      status: 'draft',
-      dispatchMode: null,
-      sessionFileId: null,
-      sessionChatId: null,
-      result: null,
-      evidence: null,
-      note: null,
-      createdAt: new Date().toISOString(),
-      dispatchedAt: null,
-      settledAt: null,
-    };
-    this.records.set(record.id, record);
-    await this.write(record);
-    this.emit();
-    return record;
+    return (await this.request('task.create', { input })) as TaskRecord | null;
   }
 
   /**
-   * Dispatches one record: draft moves to queued. A session-mode dispatch names the chat session
-   * file that will take the task. The queue claim checks the blockedBy state again, so a dispatch
-   * on a blocked task simply waits.
+   * Dispatches one record in the worker core: draft moves to queued.
    *
    * @param id The record id.
    * @param mode How the dispatch binds the session.
    * @param sessionFileId The chat session file, on session mode. Null on new-session mode.
    * @returns The record, or null when the transition is forbidden.
    */
-  async dispatch(id: string, mode: TaskDispatchMode, sessionFileId: string | null): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record || !taskCanTransition(record.status, 'queued')) {
-      return null;
-    }
-    record.status = 'queued';
-    record.dispatchMode = mode;
-    record.sessionFileId = mode === 'session' ? sessionFileId : null;
-    record.sessionChatId = null;
-    record.dispatchedAt = new Date().toISOString();
-    await this.write(record);
-    this.emit();
-    return record;
+  async dispatch(id: string, mode: 'new-session' | 'session', sessionFileId: string | null): Promise<TaskRecord | null> {
+    return (await this.request('task.dispatch', { id, mode, sessionFileId })) as TaskRecord | null;
   }
 
   /**
@@ -179,17 +117,12 @@ export class TaskStore {
    * @param sessionFileId The chat session file.
    * @returns The record, or null when no ready task waits for the session.
    */
-  nextQueuedFor(sessionFileId: string): TaskRecord | null {
-    const queued = this.list()
-      .filter((record) => record.status === 'queued' && record.dispatchMode === 'session' && record.sessionFileId === sessionFileId)
-      .sort((left, right) => (left.dispatchedAt ?? '').localeCompare(right.dispatchedAt ?? ''));
-    return queued.find((record) => this.ready(record)) ?? null;
+  async nextQueuedFor(sessionFileId: string): Promise<TaskRecord | null> {
+    return (await this.request('task.next', { sessionFileId })) as TaskRecord | null;
   }
 
   /**
-   * Binds one record to the chat that runs it and moves it to running. A queued new-session task
-   * binds the chat the dispatch opened; a queued session task binds the chat that took it from
-   * the queue.
+   * Binds one record to the chat that runs it and moves it to running.
    *
    * @param id The record id.
    * @param chatId The runtime chat id of the session.
@@ -197,21 +130,11 @@ export class TaskStore {
    * @returns The record, or null when the transition is forbidden.
    */
   async bindSession(id: string, chatId: number, sessionFileId: string): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record || !taskCanTransition(record.status, 'running')) {
-      return null;
-    }
-    record.status = 'running';
-    record.sessionChatId = chatId;
-    record.sessionFileId = sessionFileId;
-    await this.write(record);
-    this.emit();
-    return record;
+    return (await this.request('task.bind', { id, chatId, sessionFileId })) as TaskRecord | null;
   }
 
   /**
-   * Completes one record: running moves to review, and the summary with its evidence waits for
-   * the user.
+   * Completes one record in the worker core: running moves to review.
    *
    * @param id The record id.
    * @param result The completion summary.
@@ -219,107 +142,49 @@ export class TaskStore {
    * @returns The record, or null when the transition is forbidden.
    */
   async complete(id: string, result: string, evidence: string | null): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record || !taskCanTransition(record.status, 'review')) {
-      return null;
-    }
-    record.status = 'review';
-    record.result = result;
-    record.evidence = evidence;
-    await this.write(record);
-    this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
-    return record;
+    return (await this.request('task.complete', { id, result, evidence })) as TaskRecord | null;
   }
 
   /**
-   * Fails one record: running moves to failed on the word of the agent.
+   * Fails one record in the worker core: running moves to failed on the word of the agent.
    *
    * @param id The record id.
    * @param note The reason, when one was written.
    * @returns The record, or null when the transition is forbidden.
    */
   async fail(id: string, note: string | null): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record || !taskCanTransition(record.status, 'failed')) {
-      return null;
-    }
-    record.status = 'failed';
-    record.note = note;
-    record.settledAt = new Date().toISOString();
-    await this.write(record);
-    this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
-    return record;
+    return (await this.request('task.fail', { id, note })) as TaskRecord | null;
   }
 
   /**
-   * Cancels one record from any live state.
+   * Cancels one record in the worker core, from any live state.
    *
    * @param id The record id.
    * @param note The reason, when one was written.
    * @returns The record, or null when the record is absent or already settled.
    */
   async cancel(id: string, note: string | null): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record || !taskIsLive(record.status) || !taskCanTransition(record.status, 'cancelled')) {
-      return null;
-    }
-    record.status = 'cancelled';
-    record.note = note;
-    record.settledAt = new Date().toISOString();
-    await this.write(record);
-    this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
-    return record;
+    return (await this.request('task.cancel', { id, note })) as TaskRecord | null;
   }
 
   /**
-   * Accepts one review: review moves to done, and the tasks it blocks may run.
+   * Accepts one review in the worker core: review moves to done.
    *
    * @param id The record id.
    * @returns The record, or null when the transition is forbidden.
    */
   async accept(id: string): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record || !taskCanTransition(record.status, 'done')) {
-      return null;
-    }
-    record.status = 'done';
-    record.settledAt = new Date().toISOString();
-    await this.write(record);
-    this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
-    return record;
+    return (await this.request('task.accept', { id })) as TaskRecord | null;
   }
 
   /**
-   * Returns one review to the session: review moves back to running, and the comment of the user
-   * rides to the agent as a re-brief. The old result and evidence clear, so the next completion
-   * writes a fresh summary.
+   * Returns one review to the session in the worker core: review moves back to running.
    *
    * @param id The record id.
    * @returns The record, or null when the transition is forbidden.
    */
   async returnToSession(id: string): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record || !taskCanTransition(record.status, 'running')) {
-      return null;
-    }
-    record.status = 'running';
-    record.result = null;
-    record.evidence = null;
-    await this.write(record);
-    this.emit();
-    return record;
+    return (await this.request('task.return', { id })) as TaskRecord | null;
   }
 
   /**
@@ -329,58 +194,41 @@ export class TaskStore {
    * @param chatId The runtime chat id of the session that owns the record's session file.
    */
   async relink(id: string, chatId: number): Promise<void> {
-    const record = this.records.get(id);
-    if (!record || record.sessionChatId === chatId) {
-      return;
-    }
-    record.sessionChatId = chatId;
-    await this.write(record);
+    await this.request('task.relink', { id, chatId });
   }
 
   /**
-   * Updates the editable fields of one record. Every state accepts the edit: the fields carry
-   * the brief and the goal, not the run state. An absent input field keeps its stored value.
+   * Updates the editable fields of one record in the worker core.
    *
    * @param id The record id.
    * @param input The fields to change. A title must stay non-empty.
    * @returns The record, or null when it is absent or the new title is empty.
    */
   async update(id: string, input: TaskUpdateInput): Promise<TaskRecord | null> {
-    const record = this.records.get(id);
-    if (!record) {
-      return null;
-    }
-    const { title = record.title, description = record.description, goal = record.goal } = input;
-    if (title.length === 0) {
-      return null;
-    }
-    record.title = title;
-    record.description = description;
-    record.goal = goal;
-    await this.write(record);
-    this.emit();
-    return record;
+    return (await this.request('task.update', { id, input })) as TaskRecord | null;
   }
 
   /**
-   * Removes one record from memory and from the workspace folder. Every state accepts the removal.
+   * Removes one record in the worker core, from memory and from the workspace folder.
    *
    * @param id The record id.
    */
   async remove(id: string): Promise<void> {
-    if (!this.records.has(id)) {
-      return;
-    }
-    this.records.delete(id);
-    await removePath(joinPath(this.root, `task-${id}.json`));
-    this.emit();
+    await this.request('task.remove', { id });
   }
 
-  /** Writes one record to its file. */
-  private async write(record: TaskRecord): Promise<void> {
-    await writeTextFile(
-      joinPath(this.root, `task-${record.id}.json`),
-      JSON.stringify({ kind: 'task', ...record }, null, 2),
-    );
+  /** Runs one core request of the task contract. */
+  private async request(channel: string, payload?: unknown): Promise<unknown> {
+    if (!this.bridge) {
+      throw new Error('The task store needs the nodewavenui bridge of an app window.');
+    }
+    return this.bridge.core.request(channel, payload);
+  }
+
+  /** Fires every record listener. */
+  private emit(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
   }
 }

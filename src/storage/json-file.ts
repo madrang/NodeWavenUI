@@ -35,6 +35,8 @@ export interface JsonFileStorageConfig {
   readonly suite?: EncryptionSuiteId;
   /** PBKDF2 iteration count. The default is 600000, the OWASP minimum for SHA-256. */
   readonly iterations?: number;
+  /** The fs slice the file reads and writes through. The default rides the bridge of an app window. */
+  readonly fs?: JsonFileFs;
 }
 
 const CHECK_VALUE = 'nodewavenui-password-check';
@@ -58,6 +60,7 @@ export class JsonFileStorage implements StorageBackend {
   private readonly password: string | null;
   private readonly iterations: number;
   private readonly suiteId: EncryptionSuiteId;
+  private readonly fileSystem: JsonFileFs | undefined;
   private values: Map<string, string> | null = null;
   private unlocked: UnlockedKey | null = null;
   private ready: Promise<void> | null = null;
@@ -71,6 +74,7 @@ export class JsonFileStorage implements StorageBackend {
     this.password = typeof config.password === 'string' && config.password.length > 0 ? config.password : null;
     this.iterations = config.iterations ?? DEFAULT_ITERATIONS;
     this.suiteId = readEncryptionSuite(config.suite);
+    this.fileSystem = config.fs;
   }
 
   /**
@@ -260,7 +264,7 @@ export class JsonFileStorage implements StorageBackend {
   }
 
   private requireFileSystem(): JsonFileFs {
-    const fileSystem = bridgeJsonFileFs();
+    const fileSystem = this.fileSystem ?? bridgeJsonFileFs();
     if (!fileSystem) {
       throw new StorageError('The settings file needs the nodewavenui bridge of an app window.');
     }

@@ -1,16 +1,15 @@
 /**
- * The permission gate: the stateful side of the permission model.
- * It loads and persists the user rules through the settings store, queues undecided requests, and hands the main app UI the approve and deny controls.
- * A request waits forever. The caller promise settles only when the UI resolves the request.
+ * The permission gate of the workspace page: the client side of the gate that lives in the
+ * worker core. It speaks the permission channels of the core contract through the bridge, keeps
+ * a local cache fed by the `permission.event` pushes, and offers the interface the main app UI,
+ * the rail, and the file tools always used. The queue and the rules live in the worker; a
+ * resolve from any surface settles a request, and the first answer wins.
  */
 
-import { decidePermission, type PermissionRule, type PermissionTarget, type PrincipalKind } from '../shared/permissions.js';
-
-/** The rule persistence the gate needs. The settings store of the workspace implements it. */
-export interface PermissionRuleStore {
-  loadPermissionRules(): Promise<readonly PermissionRule[]>;
-  savePermissionRules(rules: readonly PermissionRule[]): Promise<void>;
-}
+import { isRecord } from '../shared/records.js';
+import type { CorePermissionState } from '../shared/core-api.js';
+import type { PermissionRule, PrincipalKind } from '../shared/permissions.js';
+import type { NodeWavenBridge } from '../shared/bridge.js';
 
 /** The public view of one queued request, for the main app UI. */
 export interface PermissionRequestInfo {
@@ -28,62 +27,33 @@ export interface PermissionRequestInfo {
   readonly source: string | null;
 }
 
-/** One queued request with the promise that waits for the UI decision. */
-interface PendingPermissionRequest {
-  readonly info: PermissionRequestInfo;
-  readonly target: PermissionTarget;
-  readonly resolve: () => void;
-  readonly reject: (error: Error) => void;
+/** Reads one pushed or answered permission state. Returns null on an invalid shape. */
+function readPermissionState(value: unknown): CorePermissionState | null {
+  if (!isRecord(value) || !Array.isArray(value.pending) || !Array.isArray(value.rules)) {
+    return null;
+  }
+  return { pending: value.pending, rules: value.rules };
 }
 
-function describeTarget(target: PermissionTarget): string {
-  if (target.kind === 'window') {
-    return `window ${target.url}`;
-  }
-  if (target.kind === 'file') {
-    return `file ${target.path}`;
-  }
-  if (target.kind === 'command') {
-    return `command ${target.command}`;
-  }
-  if (target.kind === 'tool') {
-    return `tool ${target.name}`;
-  }
-  return `storage "${target.storageId}" key "${target.key}"`;
-}
-
-function resourceOfTarget(target: PermissionTarget): string {
-  if (target.kind === 'window') {
-    return 'window';
-  }
-  if (target.kind === 'file') {
-    return 'file';
-  }
-  if (target.kind === 'command') {
-    return 'command';
-  }
-  if (target.kind === 'tool') {
-    return 'tool';
-  }
-  return `storage:${target.storageId}`;
-}
-
-/** Decides guarded calls and holds the request queue and the rule list of one workspace. */
+/** The gate client of the workspace page. Every state lives in the worker core. */
 export class PermissionGate {
-  private readonly store: PermissionRuleStore;
-  private rules: PermissionRule[] = [];
-  private rulesLoaded = false;
-  private rulesLoading: Promise<void> | null = null;
-  private readonly pending = new Map<number, PendingPermissionRequest>();
-  private nextRequestId = 1;
+  private readonly bridge: NodeWavenBridge;
+  private state: CorePermissionState = { pending: [], rules: [] };
   private readonly listeners = new Set<() => void>();
 
-  constructor(store: PermissionRuleStore) {
-    this.store = store;
+  constructor(bridge: NodeWavenBridge) {
+    this.bridge = bridge;
+    bridge.workspace.onWorkspaceEvent('permission.event', (payload) => {
+      const state = readPermissionState(payload);
+      if (state) {
+        this.state = state;
+        this.notifyChange();
+      }
+    });
   }
 
   /**
-   * Checks one guarded call and waits for the UI decision when the pipeline ends on `ask`.
+   * Checks one guarded call and waits for a decision when the pipeline ends on `ask`.
    *
    * @param principal The principal that wants to act.
    * @param action The action, for example `evaluate` or `write`.
@@ -96,51 +66,32 @@ export class PermissionGate {
   async check(
     principal: PrincipalKind,
     action: string,
-    target: PermissionTarget,
+    target: unknown,
     detail: string,
     source: string | null = null,
     preauthorized = false,
   ): Promise<void> {
-    await this.ensureRules();
-    const decision = decidePermission(principal, action, target, this.rules, preauthorized);
-    if (decision === 'allow') {
-      return;
-    }
-    if (decision === 'deny') {
-      throw new Error(
-        `Permission denied: "${principal}" may not run "${action}" on ${describeTarget(target)}.`,
-      );
-    }
-    const targetText = describeTarget(target);
-    await new Promise<void>((resolve, reject) => {
-      const id = this.nextRequestId;
-      this.nextRequestId += 1;
-      const info: PermissionRequestInfo = {
-        id,
-        principal,
-        action,
-        target: targetText,
-        command: target.kind === 'command' ? target.command : null,
-        detail,
-        createdAt: Date.now(),
-        source,
-      };
-      this.pending.set(id, { info, target, resolve, reject });
-      this.notifyChange();
+    await this.bridge.core.request('permission.check', {
+      principal,
+      action,
+      target,
+      description: detail,
+      source,
+      preauthorized,
     });
   }
 
   /**
-   * Lists the queued requests, oldest first.
+   * Lists the queued requests, oldest first, from the local cache.
    *
    * @returns The requests the main app UI can resolve.
    */
   pendingRequests(): readonly PermissionRequestInfo[] {
-    return [...this.pending.values()].map((request) => request.info);
+    return this.state.pending as readonly PermissionRequestInfo[];
   }
 
   /**
-   * Resolves one queued request.
+   * Resolves one queued request in the worker core.
    * The always choice persists one rule that covers the request, so the next equal call decides without a request.
    *
    * @param id The request id.
@@ -148,70 +99,34 @@ export class PermissionGate {
    * @param remember True persists the decision as a rule.
    */
   async resolveRequest(id: number, approve: boolean, remember: boolean): Promise<void> {
-    const request = this.pending.get(id);
-    if (!request) {
-      return;
-    }
-    this.pending.delete(id);
-    if (remember) {
-      const rule: PermissionRule = {
-        id: crypto.randomUUID(),
-        enabled: true,
-        principal: request.info.principal,
-        resource: resourceOfTarget(request.target),
-        actions: [request.info.action],
-        effect: approve ? 'allow' : 'deny',
-      };
-      this.rules.push(rule);
-      await this.persistRules();
-    }
-    if (approve) {
-      request.resolve();
-    } else {
-      request.reject(
-        new Error(
-          `Permission denied: the user rejected "${request.info.principal}" ${request.info.action} on ${request.info.target}.`,
-        ),
-      );
-    }
-    this.notifyChange();
+    await this.bridge.core.request('permission.resolve', { id, approve, remember });
   }
 
   /**
-   * Lists the persisted rules.
+   * Lists the persisted rules from the local cache.
    *
    * @returns The rules in evaluation order.
    */
   listRules(): readonly PermissionRule[] {
-    return [...this.rules];
+    return [...this.state.rules];
   }
 
   /**
-   * Adds one rule and persists the rule list.
+   * Adds one rule in the worker core and persists the rule list.
    *
    * @param rule The rule to append at the end of the evaluation order.
    */
   async addRule(rule: PermissionRule): Promise<void> {
-    await this.ensureRules();
-    this.rules.push(rule);
-    await this.persistRules();
-    this.notifyChange();
+    await this.bridge.core.request('permission.rule.add', rule);
   }
 
   /**
-   * Removes one rule and persists the rule list.
+   * Removes one rule in the worker core and persists the rule list.
    *
    * @param id The rule id. An unknown id does nothing.
    */
   async removeRule(id: string): Promise<void> {
-    await this.ensureRules();
-    const next = this.rules.filter((rule) => rule.id !== id);
-    if (next.length === this.rules.length) {
-      return;
-    }
-    this.rules = next;
-    await this.persistRules();
-    this.notifyChange();
+    await this.bridge.core.request('permission.rule.remove', { id });
   }
 
   /**
@@ -228,34 +143,15 @@ export class PermissionGate {
   }
 
   /**
-   * Waits until the persisted rules loaded. The first call loads them.
+   * Waits until the first permission state arrived from the worker core.
    * The UI reads `listRules` before any `check` runs, so it must await this or it reads an empty list.
    *
-   * @throws StorageError when the store fails.
+   * @throws Error when the core request fails.
    */
-  ready(): Promise<void> {
-    return this.ensureRules();
-  }
-
-  private ensureRules(): Promise<void> {
-    if (this.rulesLoaded) {
-      return Promise.resolve();
-    }
-    this.rulesLoading ??= this.loadRules();
-    return this.rulesLoading;
-  }
-
-  private async loadRules(): Promise<void> {
-    this.rules = [...await this.store.loadPermissionRules()];
-    this.rulesLoaded = true;
-  }
-
-  private async persistRules(): Promise<void> {
-    try {
-      await this.store.savePermissionRules(this.rules);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the permission rules could not be saved: ${message}`);
+  async ready(): Promise<void> {
+    const state = readPermissionState(await this.bridge.core.request('permission.list'));
+    if (state) {
+      this.state = state;
     }
   }
 

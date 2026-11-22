@@ -13,14 +13,14 @@ import { PATH_RULE_MODES, type PathRule, type PathRuleMode } from '../shared/per
 import type { ModelEntry, ProviderAccount, ProviderRegistry } from '../shared/workspace.js';
 import { emptyProviderRegistry } from '../shared/workspace.js';
 import { PROVIDER_PRESETS } from '../shared/provider-presets/index.js';
-import { readBridge } from '../shared/bridge.js';
+import { readBridge, type NodeWavenBridge } from '../shared/bridge.js';
 import { agentToolRule, type AgentTool } from './agent-tools.js';
 import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { McpHostHandle } from '../shared/window-tools.js';
 import type { PermissionGate } from './permission-gate.js';
 import { PluginFieldGroup } from './plugin-fields.js';
 import { requireElement } from './dom.js';
-import type { WorkspaceSettingsStore } from './settings-store.js';
+import type { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import {
   EMPTY_SHARED_STORAGES,
   type StorageShareRegistry,
@@ -31,6 +31,7 @@ import {
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
 import { currentLanguage, LANGUAGES, LANGUAGE_MIRROR_KEY, translateMessage } from './locale/index.js';
+import { log } from './logger.js';
 import type { PluginFolderController } from './plugin-folders.js';
 
 /** The settings label of each path rule mode. */
@@ -198,26 +199,26 @@ export class SettingsView {
       this.providerRegistry = await this.store.loadProviderRegistry();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the provider registry: ${message}`);
+      log.settings.warning(`could not read the provider registry: ${message}`);
     }
     this.syncProviderCors();
     try {
       this.mcpEndpoints = await this.store.loadMcpEndpoints();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the MCP endpoints: ${message}`);
+      log.settings.warning(`could not read the MCP endpoints: ${message}`);
     }
     try {
       this.sharedStorages = await this.store.loadSharedStorages();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the storage sharing: ${message}`);
+      log.settings.warning(`could not read the storage sharing: ${message}`);
     }
     try {
       this.pathRuleList = await this.store.loadPathRules();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not read the path rules: ${message}`);
+      log.settings.warning(`could not read the path rules: ${message}`);
     }
     void this.mcpClients.applyEndpoints(this.mcpEndpoints);
     this.mcpClients.subscribe(() => {
@@ -233,6 +234,7 @@ export class SettingsView {
     this.initializeMcpEndpointsSection();
     this.initializeKnownPathsSection();
     this.initializeStorageShareSection();
+    void this.initializeRemoteSection();
   }
 
   /**
@@ -247,6 +249,193 @@ export class SettingsView {
     this.initializeProviderSection();
   }
 
+  /** Reads the bridge of the workspace window for the core requests of the remote section. */
+  private core(): NodeWavenBridge | null {
+    return readBridge();
+  }
+
+  /** Wires the remote control section: the server toggle, the pairing token, the QR, and the password. */
+  private async initializeRemoteSection(): Promise<void> {
+    const bridge = this.core();
+    if (!bridge) {
+      return;
+    }
+    const enabledField = requireElement<HTMLInputElement>('#remote-enabled');
+    const portField = requireElement<HTMLInputElement>('#remote-port');
+    const bindField = requireElement<HTMLSelectElement>('#remote-bind');
+    const plainHttpField = requireElement<HTMLInputElement>('#remote-plain-http');
+    const closeBehaviorField = requireElement<HTMLSelectElement>('#close-behavior');
+    const originLine = requireElement<HTMLElement>('#remote-origin');
+    const tokenField = requireElement<HTMLInputElement>('#remote-token');
+    const qrImage = requireElement<HTMLImageElement>('#remote-qr-image');
+    const passwordField = requireElement<HTMLInputElement>('#remote-password');
+    type RemoteConfig = {
+      enabled: boolean;
+      port: number;
+      bind: string;
+      allowPlainHttp: boolean;
+      origin: string | null;
+      /** The addresses the host may bind, from the latest answer. */
+      interfaces?: string[];
+    };
+    let interfaces: readonly string[] = [];
+    const fillInterfaces = (list: readonly string[]): void => {
+      interfaces = list;
+      bindField.replaceChildren(
+        ...list.map((address) => {
+          const option = document.createElement('option');
+          option.value = address;
+          option.textContent = address === '0.0.0.0' ? translateMessage('settings', 'remoteControl', 'bindAll') : address;
+          return option;
+        }),
+      );
+    };
+    const apply = (config: RemoteConfig): void => {
+      enabledField.checked = config.enabled;
+      portField.value = String(config.port);
+      plainHttpField.checked = config.allowPlainHttp;
+      fillInterfaces(config.interfaces ?? interfaces);
+      bindField.value = config.bind;
+      originLine.textContent = config.enabled ? `The phone page answers on ${config.origin ?? 'the configured address'}.` : 'The server stays off.';
+    };
+    try {
+      apply((await bridge.core.request('remote.config.get')) as RemoteConfig);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      originLine.textContent = `The remote section failed: ${message}`;
+      return;
+    }
+    const save = async (): Promise<void> => {
+      const config = {
+        enabled: enabledField.checked,
+        port: Number.parseInt(portField.value, 10),
+        bind: bindField.value,
+        allowPlainHttp: plainHttpField.checked,
+      };
+      if (!Number.isInteger(config.port) || config.port <= 0 || config.port >= 65536) {
+        originLine.textContent = 'The port needs a number between 1 and 65535.';
+        return;
+      }
+      try {
+        const answer = (await bridge.core.request('remote.config.save', config)) as { origin?: string; interfaces?: string[] };
+        apply({
+          ...config,
+          origin: answer?.origin ?? null,
+          ...(answer?.interfaces ? { interfaces: answer.interfaces } : {}),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        originLine.textContent = `The configuration could not be saved: ${message}`;
+      }
+    };
+    enabledField.addEventListener('change', () => {
+      void save();
+    });
+    plainHttpField.addEventListener('change', () => {
+      void save();
+    });
+    portField.addEventListener('change', () => {
+      void save();
+    });
+    bindField.addEventListener('change', () => {
+      void save();
+    });
+    try {
+      closeBehaviorField.value = await this.store.loadCloseBehavior();
+    } catch {
+      closeBehaviorField.value = 'quit';
+    }
+    closeBehaviorField.addEventListener('change', () => {
+      const behavior = closeBehaviorField.value === 'tray' ? 'tray' : 'quit';
+      void this.store.saveCloseBehavior(behavior).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log.settings.warning(`the close behavior could not be saved: ${message}`);
+      });
+    });
+    requireElement<HTMLButtonElement>('#remote-token-show').addEventListener('click', () => {
+      void bridge.core
+        .request('remote.token.show')
+        .then((token) => {
+          tokenField.value = typeof token === 'string' ? token : '';
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          originLine.textContent = `The pairing token could not be read: ${message}`;
+        });
+    });
+    requireElement<HTMLButtonElement>('#remote-token-renew').addEventListener('click', () => {
+      void bridge.core
+        .request('remote.token.renew')
+        .then((token) => {
+          tokenField.value = typeof token === 'string' ? token : '';
+          originLine.textContent = 'The pairing token was renewed. Pair the phone again with the new token.';
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          originLine.textContent = `The pairing token could not be renewed: ${message}`;
+        });
+    });
+    requireElement<HTMLButtonElement>('#remote-token-copy').addEventListener('click', () => {
+      void bridge.core
+        .request('remote.token.show')
+        .then((token) => (typeof token === 'string' ? navigator.clipboard.writeText(token) : Promise.reject(new Error('No token.'))))
+        .then(() => {
+          tokenField.value = 'Copied.';
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          log.settings.warning(`the remote token could not be copied: ${message}`);
+        });
+    });
+    requireElement<HTMLButtonElement>('#remote-qr').addEventListener('click', () => {
+      // The second press hides the code again, so the pane keeps its size while nobody pairs.
+      if (!qrImage.hidden) {
+        qrImage.hidden = true;
+        return;
+      }
+      void bridge.core
+        .request('remote.qr')
+        .then((image) => {
+          if (typeof image === 'string') {
+            qrImage.src = image;
+            qrImage.hidden = false;
+          }
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          originLine.textContent = `The QR code failed: ${message}`;
+        });
+    });
+    requireElement<HTMLButtonElement>('#remote-password-set').addEventListener('click', () => {
+      const password = passwordField.value;
+      if (password.length < 8) {
+        originLine.textContent = 'The remote password needs at least eight characters.';
+        return;
+      }
+      void bridge.core
+        .request('remote.password.set', { password })
+        .then(() => {
+          passwordField.value = '';
+          originLine.textContent = 'The remote password was set.';
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          originLine.textContent = `The remote password could not be set: ${message}`;
+        });
+    });
+    requireElement<HTMLButtonElement>('#remote-password-clear').addEventListener('click', () => {
+      void bridge.core
+        .request('remote.password.clear')
+        .then(() => {
+          passwordField.value = '';
+          originLine.textContent = 'The remote password was cleared. The token stays the only credential.';
+        })
+        .catch((error: unknown) => {
+          const message = error instanceof Error ? error.message : String(error);
+          originLine.textContent = `The remote password could not be cleared: ${message}`;
+        });
+    });
+  }
   /** Wires the MCP host section. The section stays hidden while the host stays off. */
   private initializeMcpHostSection(): void {
     const section = requireElement<HTMLFieldSetElement>('#mcp-host-section');
@@ -269,7 +458,7 @@ export class SettingsView {
         })
         .catch((error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
-          console.warn(`[NodeWavenUI] the MCP host token could not be copied: ${message}`);
+          log.settings.warning(`the MCP host token could not be copied: ${message}`);
         });
     });
   }
@@ -337,7 +526,7 @@ export class SettingsView {
     label.className = 'known-path-label';
     label.textContent = rule.path;
     const modeSelect = document.createElement('select');
-    modeSelect.title = 'The access of the path';
+    modeSelect.title = 'The access rule of the path';
     for (const mode of PATH_RULE_MODES) {
       const option = document.createElement('option');
       option.value = mode;
@@ -370,7 +559,7 @@ export class SettingsView {
       await this.store.savePathRules(this.pathRuleList);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] could not save the path rules: ${message}`);
+      log.settings.warning(`could not save the path rules: ${message}`);
     }
   }
 
@@ -736,7 +925,7 @@ export class SettingsView {
       await this.store.saveAgentToolDefaults(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the agent tool defaults could not be seeded: ${message}`);
+      log.settings.warning(`the agent tool defaults could not be seeded: ${message}`);
     }
   }
 
@@ -846,7 +1035,7 @@ export class SettingsView {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the state of the tool "${name}" could not be saved: ${message}`);
+      log.settings.warning(`the state of the tool "${name}" could not be saved: ${message}`);
     }
   }
 
@@ -974,7 +1163,7 @@ export class SettingsView {
           await gate.addRule({ ...rule, actions: mapped });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.warn(`[NodeWavenUI] the tool rules of "${old.label}" could not move to "${endpoint.label}": ${message}`);
+          log.settings.warning(`the tool rules of "${old.label}" could not move to "${endpoint.label}": ${message}`);
         }
       }
     }
@@ -987,7 +1176,7 @@ export class SettingsView {
       stored = await this.store.loadThemePreference();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored theme could not be read, the default applies: ${message}`);
+      log.settings.warning(`the stored theme could not be read, the default applies: ${message}`);
     }
     const themeId = resolveThemeId(stored);
     applyTheme(themeId);
@@ -1004,7 +1193,7 @@ export class SettingsView {
       applyTheme(themeSelect.value);
       this.store.saveThemePreference(themeSelect.value).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the theme choice could not be saved: ${message}`);
+        log.settings.warning(`the theme choice could not be saved: ${message}`);
       });
     });
   }
@@ -1017,7 +1206,7 @@ export class SettingsView {
       stored = await this.store.loadFrameModePreference();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored window frame could not be read, the default applies: ${message}`);
+      log.settings.warning(`the stored window frame could not be read, the default applies: ${message}`);
     }
     const frameSelect = requireElement<HTMLSelectElement>('#frame-mode-select');
     frameSelect.replaceChildren();
@@ -1031,7 +1220,7 @@ export class SettingsView {
     frameSelect.addEventListener('change', () => {
       this.store.saveFrameModePreference(frameSelect.value).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the window frame choice could not be saved: ${message}`);
+        log.settings.warning(`the window frame choice could not be saved: ${message}`);
       });
     });
   }
@@ -1044,7 +1233,7 @@ export class SettingsView {
       stored = await this.store.loadLanguagePreference();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored language could not be read, the navigator preference applies: ${message}`);
+      log.settings.warning(`the stored language could not be read, the navigator preference applies: ${message}`);
     }
     const languageSelect = requireElement<HTMLSelectElement>('#language-select');
     languageSelect.replaceChildren();
@@ -1060,7 +1249,7 @@ export class SettingsView {
       localStorage.setItem(LANGUAGE_MIRROR_KEY, languageSelect.value);
       this.store.saveLanguagePreference(languageSelect.value).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the language choice could not be saved: ${message}`);
+        log.settings.warning(`the language choice could not be saved: ${message}`);
       });
     });
   }
@@ -1071,7 +1260,7 @@ export class SettingsView {
       this.turnLimit = await this.store.loadAgentTurnLimit();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored agent round limit could not be read, no limit applies: ${message}`);
+      log.settings.warning(`the stored agent round limit could not be read, no limit applies: ${message}`);
     }
     const turnsSelect = requireElement<HTMLSelectElement>('#agent-turns-select');
     turnsSelect.value = this.turnLimit ? String(this.turnLimit) : '';
@@ -1080,14 +1269,14 @@ export class SettingsView {
       this.turnLimit = turnsSelect.value === '' ? null : value;
       this.store.saveAgentTurnLimit(this.turnLimit).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the agent round limit could not be saved: ${message}`);
+        log.settings.warning(`the agent round limit could not be saved: ${message}`);
       });
     });
     try {
       this.thinkingDefault = await this.store.loadAgentThinking();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the stored agent thinking default could not be read, the endpoint default applies: ${message}`);
+      log.settings.warning(`the stored agent thinking default could not be read, the endpoint default applies: ${message}`);
     }
     const thinkingSelect = requireElement<HTMLSelectElement>('#agent-thinking-select');
     thinkingSelect.value = this.thinkingDefault ?? '';
@@ -1096,7 +1285,7 @@ export class SettingsView {
       this.thinkingDefault = value === 'low' || value === 'medium' || value === 'high' ? value : null;
       this.store.saveAgentThinking(this.thinkingDefault).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the agent thinking default could not be saved: ${message}`);
+        log.settings.warning(`the agent thinking default could not be saved: ${message}`);
       });
     });
   }
@@ -1180,7 +1369,7 @@ export class SettingsView {
       .allowProviderCors(this.providerRegistry.accounts.map((account) => account.baseUrl))
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.warn(`[NodeWavenUI] the provider CORS allowlist could not be registered: ${message}`);
+        log.settings.warning(`the provider CORS allowlist could not be registered: ${message}`);
       });
   }
 
