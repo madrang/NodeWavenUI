@@ -1,11 +1,12 @@
 /**
- * The DOM renderer of the text stack: it builds elements from the markdown block model and the
- * highlight runs, and it never writes markup from raw text. Every element is constructed, so
- * nothing injects. A link renders as styled text with its target in the tooltip, because the
- * workspace page never navigates away.
+ * The DOM renderer of the text stack: it builds elements from the markdown block model, the diff
+ * line model, and the highlight runs, and it never writes markup from raw text. Every element is
+ * constructed, so nothing injects. A link renders as styled text with its target in the tooltip,
+ * because the workspace page never navigates away.
  */
 
-import { highlightRuns, languageName } from './highlight.js';
+import { readDiff, type DiffLineKind } from './diff.js';
+import { highlightRuns, languageName, languageOfPath } from './highlight.js';
 import type { InlineRun, MarkdownBlock } from './markdown.js';
 import { parseMarkdown } from './markdown.js';
 
@@ -119,4 +120,44 @@ export function renderMarkdown(container: HTMLElement, text: string): void {
   for (const block of parseMarkdown(text)) {
     container.append(buildBlock(block));
   }
+}
+
+/** Builds one diff line row: the marker and the text. A content line carries the token runs of
+ * the file grammar. */
+function buildDiffLine(kind: DiffLineKind, marker: string, text: string, language: string | null): HTMLDivElement {
+  const row = element('div', `review-${kind}`);
+  const mark = element('span', 'review-mark');
+  mark.textContent = marker;
+  const line = element('span', 'review-line');
+  if (text && language) {
+    appendCodeRuns(line, text, language);
+  } else {
+    line.textContent = text;
+  }
+  row.append(mark, line);
+  return row;
+}
+
+/**
+ * Builds the diff body of one patch: the file heads, the hunk heads, and the changed lines, with
+ * the token runs of the file grammar on the content lines. The review view of the workspace and
+ * the patch card of the phone page share it.
+ *
+ * @param patch The unified diff text.
+ * @param path The path of the file the patch changes. It picks the grammar and heads a nameless section.
+ */
+export function buildDiff(patch: string, path: string): HTMLElement {
+  const body = element('div', 'review-diff');
+  const language = languageOfPath(path);
+  for (const line of readDiff(patch, path)) {
+    if (line.kind === 'file') {
+      const head = element('div', 'review-file');
+      head.textContent = line.text;
+      body.append(head);
+      continue;
+    }
+    const content = line.kind === 'add' || line.kind === 'remove' || line.kind === 'context';
+    body.append(buildDiffLine(line.kind, line.marker, line.text, content ? language : null));
+  }
+  return body;
 }

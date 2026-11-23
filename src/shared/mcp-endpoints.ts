@@ -103,6 +103,36 @@ export function sanitizeEndpointLabel(label: string): string {
   return sanitized.length > 0 ? sanitized : 'mcp';
 }
 
+/**
+ * Reads the label collisions of the tool prefix: the first native endpoint of one sanitized
+ * prefix keeps it, and every later native endpoint with the same prefix blocks, because both
+ * would name their tools `<prefix>.<tool>` and the second set would answer no call. The other
+ * modes build no prefixed agent tools, so they never collide.
+ *
+ * @param endpoints The configured endpoints, in order. The first of one prefix wins.
+ * @returns The refusal message per blocked endpoint id.
+ */
+export function endpointLabelCollisions(endpoints: readonly McpEndpoint[]): ReadonlyMap<string, string> {
+  const collisions = new Map<string, string>();
+  const owners = new Map<string, string>();
+  for (const endpoint of endpoints) {
+    if (endpoint.mode !== 'native') {
+      continue;
+    }
+    const prefix = sanitizeEndpointLabel(endpoint.label);
+    const owner = owners.get(prefix);
+    if (owner) {
+      collisions.set(
+        endpoint.id,
+        `The label "${endpoint.label}" sanitizes to "${prefix}", the same tool prefix as "${owner}". Rename one endpoint.`,
+      );
+      continue;
+    }
+    owners.set(prefix, endpoint.label);
+  }
+  return collisions;
+}
+
 /** One image a vision model sees, as base64 data without the data-url prefix. */
 export interface McpImage {
   readonly data: string;

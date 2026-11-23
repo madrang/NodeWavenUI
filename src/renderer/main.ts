@@ -104,6 +104,7 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     backend,
     (setupId) => plugins.getStorageSetup(setupId),
     directory.path,
+    () => permissionGate.listRules(),
   );
   const pluginFolders = new PluginFolderController(
     plugins,
@@ -194,7 +195,7 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
 /** Routes one MCP host sink event of the main process into the host tab of the app. */
 function dispatchSinkEvent(app: MainApp, event: BridgeMcpSinkEvent): void {
   if (event.kind === 'sessionOpened') {
-    app.sessionOpened('', event.info as Parameters<MainApp['sessionOpened']>[1]);
+    app.sessionOpened(event.sessionId, event.info as Parameters<MainApp['sessionOpened']>[1]);
     return;
   }
   if (event.kind === 'toolCall') {

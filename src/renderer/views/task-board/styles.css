@@ -90,6 +90,19 @@
   letter-spacing: 0.04em;
 }
 
+/* The badge of the edit state becomes the hand status override: the badge look over a control.
+   The width stays auto, because the base sheet stretches every select to the full row. */
+select.task-board-status {
+  font: inherit;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 4px;
+  width: auto;
+  flex: none;
+  cursor: pointer;
+}
+
 .task-board-card p {
   margin: 0;
   font-size: 12px;

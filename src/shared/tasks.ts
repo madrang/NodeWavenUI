@@ -6,8 +6,11 @@
  * Keep this file free of platform dependencies, so that every module can import it.
  */
 
-/** The statuses of one task record. */
-export type TaskStatus = 'draft' | 'queued' | 'running' | 'review' | 'done' | 'failed' | 'cancelled';
+/** The statuses of one task record, in life order. */
+export const TASK_STATUSES = ['draft', 'queued', 'running', 'review', 'done', 'failed', 'cancelled'] as const;
+
+/** The status of one task record. */
+export type TaskStatus = (typeof TASK_STATUSES)[number];
 
 /** How one dispatch binds a chat session. */
 export type TaskDispatchMode = 'new-session' | 'session';
@@ -51,7 +54,9 @@ export interface TaskRecord {
 /**
  * The allowed status transitions of one task record. A dispatch moves draft to queued, a session
  * takes a queued task to running, the agent word moves running to review or failed, and the user
- * review settles it: done, or back to running on a return.
+ * review settles it: done, or back to running on a return. The settled states answer no
+ * transition: the user edit overrides the status by hand, and the agent reopen of one settled
+ * record sits outside this table.
  */
 const TASK_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   draft: ['queued', 'cancelled'],
@@ -79,11 +84,8 @@ export function taskSettlesWaiter(status: TaskStatus): boolean {
 }
 
 /** Checks that a value is one task status. */
-function isTaskStatus(value: unknown): value is TaskStatus {
-  return (
-    value === 'draft' || value === 'queued' || value === 'running' ||
-    value === 'review' || value === 'done' || value === 'failed' || value === 'cancelled'
-  );
+export function isTaskStatus(value: unknown): value is TaskStatus {
+  return TASK_STATUSES.includes(value as TaskStatus);
 }
 
 /** Checks that a value is one dispatch mode. */

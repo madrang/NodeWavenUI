@@ -8,7 +8,7 @@
 import { isRecord } from './records.js';
 import type { BridgePermissionCheck, ChatImageShape } from './bridge.js';
 import { isPermissionRule, type PermissionRule } from './permissions.js';
-import type { TaskRecord } from './tasks.js';
+import { isTaskStatus, type TaskRecord, type TaskStatus } from './tasks.js';
 
 /** One request a surface sends to the core. The id ties the reply to the request. */
 export interface CoreRequest {
@@ -77,6 +77,7 @@ export const CORE_REQUEST_CHANNELS = [
   'task.cancel',
   'task.accept',
   'task.return',
+  'task.reopen',
   'task.relink',
   'task.update',
   'task.remove',
@@ -356,11 +357,13 @@ export interface CoreTaskCreateInput {
   readonly blockedBy: readonly string[];
 }
 
-/** The editable fields of one task record. */
+/** The editable fields of one task record. The status is the hand override of the user edit: it
+ * accepts every status and settles or revives the record fields, outside the transition table. */
 export interface CoreTaskUpdateInput {
   readonly title?: string;
   readonly description?: string;
   readonly goal?: string;
+  readonly status?: TaskStatus;
 }
 
 /** The full task state of the core: every dispatchable record. */
@@ -643,10 +646,12 @@ export function readTaskUpdatePayload(
   const title = typeof input.title === 'string' && input.title ? input.title : undefined;
   const description = typeof input.description === 'string' ? input.description : undefined;
   const goal = typeof input.goal === 'string' ? input.goal : undefined;
-  const changes: { title?: string; description?: string; goal?: string } = {
+  const status = isTaskStatus(input.status) ? input.status : undefined;
+  const changes: CoreTaskUpdateInput = {
     ...(title ? { title } : {}),
     ...(typeof description === 'string' ? { description } : {}),
     ...(typeof goal === 'string' ? { goal } : {}),
+    ...(status ? { status } : {}),
   };
   return { id: value.id, input: changes };
 }

@@ -6,7 +6,15 @@
  * reach the store through the core contract.
  */
 
-import { readTaskRecord, taskCanTransition, taskIsLive, type TaskDispatchMode, type TaskRecord } from '../shared/tasks.js';
+import type { CoreTaskUpdateInput } from '../shared/core-api.js';
+import {
+  readTaskRecord,
+  taskCanTransition,
+  taskIsLive,
+  taskSettlesWaiter,
+  type TaskDispatchMode,
+  type TaskRecord,
+} from '../shared/tasks.js';
 import { joinPath, listDirectoryNames, makeDirectory, readTextFile, removePath, writeTextFile } from './node-file-system.js';
 
 /** The input of one create call. */
@@ -20,13 +28,10 @@ export interface TaskCreateInput {
   readonly blockedBy: readonly string[];
 }
 
-/** The editable fields of one record. An absent field keeps its stored value, and an empty
- * string clears it. */
-export interface TaskUpdateInput {
-  readonly title?: string;
-  readonly description?: string;
-  readonly goal?: string;
-}
+/** The editable fields of one record, the shape of the core contract. An absent field keeps its
+ * stored value, and an empty string clears it. The status is the hand override of the user edit:
+ * it accepts every status, outside the transition table. */
+export type TaskUpdateInput = CoreTaskUpdateInput;
 
 /** Owns the task records of the workspace. */
 export class TaskStore {
@@ -92,6 +97,21 @@ export class TaskStore {
     for (const listener of this.listeners) {
       listener();
     }
+  }
+
+  /** Fires every settle listener with one record that reached review or a terminal state. */
+  private notifySettled(record: TaskRecord): void {
+    for (const listener of this.settleListeners) {
+      listener(record);
+    }
+  }
+
+  /** Clears the settle fields of one record, so the record returns to its live, editable state. */
+  private clearSettle(record: TaskRecord): void {
+    record.result = null;
+    record.evidence = null;
+    record.note = null;
+    record.settledAt = null;
   }
 
   /** Reads every record, newest first. */
@@ -229,9 +249,7 @@ export class TaskStore {
     record.evidence = evidence;
     await this.write(record);
     this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
+    this.notifySettled(record);
     return record;
   }
 
@@ -252,9 +270,7 @@ export class TaskStore {
     record.settledAt = new Date().toISOString();
     await this.write(record);
     this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
+    this.notifySettled(record);
     return record;
   }
 
@@ -275,9 +291,7 @@ export class TaskStore {
     record.settledAt = new Date().toISOString();
     await this.write(record);
     this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
+    this.notifySettled(record);
     return record;
   }
 
@@ -296,9 +310,27 @@ export class TaskStore {
     record.settledAt = new Date().toISOString();
     await this.write(record);
     this.emit();
-    this.settleListeners.forEach((listener) => {
-      listener(record);
-    });
+    this.notifySettled(record);
+    return record;
+  }
+
+  /**
+   * Reopens one settled record: done, failed, or cancelled moves back to draft. The agent reopen
+   * action runs this path. The user edit holds the wider hand override through `update`. The
+   * settle fields clear, so the record returns to its editable, dispatchable state.
+   *
+   * @param id The record id.
+   * @returns The record, or null when the record is absent or still lives.
+   */
+  async reopen(id: string): Promise<TaskRecord | null> {
+    const record = this.records.get(id);
+    if (!record || taskIsLive(record.status)) {
+      return null;
+    }
+    record.status = 'draft';
+    this.clearSettle(record);
+    await this.write(record);
+    this.emit();
     return record;
   }
 
@@ -316,8 +348,7 @@ export class TaskStore {
       return null;
     }
     record.status = 'running';
-    record.result = null;
-    record.evidence = null;
+    this.clearSettle(record);
     await this.write(record);
     this.emit();
     return record;
@@ -340,7 +371,11 @@ export class TaskStore {
 
   /**
    * Updates the editable fields of one record. Every state accepts the edit: the fields carry
-   * the brief and the goal, not the run state. An absent input field keeps its stored value.
+   * the brief and the goal, not the run state. An absent input field keeps its stored value. The
+   * status input is the hand override of the user edit: it accepts every status, outside the
+   * transition table, and settles or revives the record fields to match. A hand override that
+   * moves a live record to review or a terminal state reaches the settle listeners, like the
+   * review buttons do.
    *
    * @param id The record id.
    * @param input The fields to change. A title must stay non-empty.
@@ -351,15 +386,29 @@ export class TaskStore {
     if (!record) {
       return null;
     }
-    const { title = record.title, description = record.description, goal = record.goal } = input;
+    const { title = record.title, description = record.description, goal = record.goal, status } = input;
     if (title.length === 0) {
       return null;
     }
     record.title = title;
     record.description = description;
     record.goal = goal;
+    let handSettle = false;
+    if (status && status !== record.status) {
+      handSettle = taskIsLive(record.status) && taskSettlesWaiter(status);
+      record.status = status;
+      if (taskIsLive(status)) {
+        this.clearSettle(record);
+      } else {
+        record.note = null;
+        record.settledAt = new Date().toISOString();
+      }
+    }
     await this.write(record);
     this.emit();
+    if (handSettle) {
+      this.notifySettled(record);
+    }
     return record;
   }
 

@@ -7,7 +7,7 @@
 
 import { renderMarkdown } from './text/render.js';
 import { translateMessage } from './locale/index.js';
-import type { TaskDispatchMode, TaskRecord } from '../shared/tasks.js';
+import { TASK_STATUSES, type TaskDispatchMode, type TaskRecord, type TaskStatus } from '../shared/tasks.js';
 import type { TaskStore } from './task-store.js';
 
 /** The deps the board needs beside the store. */
@@ -24,11 +24,12 @@ export interface TaskBoardDeps {
 }
 
 /** The edit state of the board: which card sits in its edit form, and the unsaved drafts that
- * survive a re-render, so a settle elsewhere never eats a typed change. */
+ * survive a re-render, so a settle elsewhere never eats a typed change. The status choice of one
+ * settled record rides the draft: null keeps the stored status. */
 export interface BoardEditState {
   readonly store: TaskStore;
   editingId: string | null;
-  readonly drafts: Map<string, { title: string; description: string; goal: string }>;
+  readonly drafts: Map<string, { title: string; description: string; goal: string; status: TaskStatus | null }>;
   readonly requestRender: () => void;
 }
 
@@ -99,9 +100,36 @@ function buildDispatch(deps: TaskBoardDeps, task: TaskRecord, actions: HTMLEleme
   }, { primary: true });
 }
 
+/** Builds the status badge of one card in its edit state: the badge becomes a select over every
+ * status, so the user hand-overrides the record. The choice rides the edit draft and applies on
+ * Save. */
+function buildStatusChoice(task: TaskRecord, edit: BoardEditState): HTMLSelectElement {
+  const select = document.createElement('select');
+  select.className = 'task-board-status';
+  select.title = translateMessage('tasks', 'statusTitle');
+  for (const status of TASK_STATUSES) {
+    const option = document.createElement('option');
+    option.value = status;
+    option.textContent = status;
+    select.append(option);
+  }
+  select.value = edit.drafts.get(task.id)?.status ?? task.status;
+  select.addEventListener('change', () => {
+    const draft = edit.drafts.get(task.id) ?? {
+      title: task.title,
+      description: task.description,
+      goal: task.goal,
+      status: null as TaskStatus | null,
+    };
+    draft.status = select.value as TaskStatus;
+    edit.drafts.set(task.id, draft);
+  });
+  return select;
+}
+
 /** Builds the edit form of one card: the title, the description, and the goal over the saved
  * draft, with Save and Cancel. The inputs write the draft on every change, so a re-render keeps
- * the typed text. */
+ * the typed text. The status choice of the head select applies with the same Save. */
 function buildEditForm(task: TaskRecord, edit: BoardEditState): HTMLElement {
   const form = document.createElement('form');
   form.className = 'task-board-edit';
@@ -109,6 +137,7 @@ function buildEditForm(task: TaskRecord, edit: BoardEditState): HTMLElement {
     title: task.title,
     description: task.description,
     goal: task.goal,
+    status: null as TaskStatus | null,
   };
   edit.drafts.set(task.id, draft);
   const title = document.createElement('input');
@@ -138,6 +167,7 @@ function buildEditForm(task: TaskRecord, edit: BoardEditState): HTMLElement {
         title: title.value.trim() || task.title,
         description: description.value.trim(),
         goal: goal.value.trim(),
+        ...(draft.status && draft.status !== task.status ? { status: draft.status } : {}),
       });
       edit.drafts.delete(task.id);
       edit.editingId = null;
@@ -158,7 +188,8 @@ function buildEditForm(task: TaskRecord, edit: BoardEditState): HTMLElement {
   return form;
 }
 
-/** Builds one card of the board. A card in its edit state shows the form alone. */
+/** Builds one card of the board. A card in its edit state shows the form alone, and its status
+ * badge becomes the status select. */
 function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState): HTMLElement {
   const card = document.createElement('article');
   card.className = `task-board-card ${task.status}`;
@@ -166,10 +197,15 @@ function buildCard(deps: TaskBoardDeps, task: TaskRecord, edit: BoardEditState):
   head.className = 'task-board-card-head';
   const title = document.createElement('h3');
   title.textContent = task.title;
-  const status = document.createElement('span');
-  status.className = 'task-board-status';
-  status.textContent = task.status;
-  head.append(title, status);
+  head.append(title);
+  if (edit.editingId === task.id) {
+    head.append(buildStatusChoice(task, edit));
+  } else {
+    const status = document.createElement('span');
+    status.className = 'task-board-status';
+    status.textContent = task.status;
+    head.append(status);
+  }
   card.append(head);
   if (edit.editingId === task.id) {
     card.append(buildEditForm(task, edit));

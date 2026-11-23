@@ -289,13 +289,69 @@ function ruleMatchesTarget(
 }
 
 /**
+ * Reads the first rule that matches one guarded call.
+ * The renderer follows the same matcher for the tool rules of the agent, so the tool matrix and
+ * the request cards read the rules the gate reads.
+ *
+ * @param principal The principal that wants to act.
+ * @param action The action, for example `evaluate` or `write`.
+ * @param target The target of the action.
+ * @param rules The persisted rules, in order. The first match wins.
+ * @returns The first matching rule, or null when no rule matches.
+ */
+export function matchingRule(
+  principal: PrincipalKind,
+  action: string,
+  target: PermissionTarget,
+  rules: readonly PermissionRule[],
+): PermissionRule | null {
+  for (const rule of rules) {
+    if (ruleMatchesTarget(rule, principal, action, target)) {
+      return rule;
+    }
+  }
+  return null;
+}
+
+/**
+ * Reads the decision of the first rule that matches one guarded call.
+ * The pipeline defaults never run here, so a caller that holds its own grant, for example a
+ * storage share, may follow the rules alone and keep its grant under every no-rule key.
+ *
+ * @param principal The principal that wants to act.
+ * @param action The action, for example `evaluate` or `write`.
+ * @param target The target of the action.
+ * @param rules The persisted rules, in order. The first match wins.
+ * @returns The effect of the first matching rule, or null when no rule matches.
+ */
+export function matchingRuleDecision(
+  principal: PrincipalKind,
+  action: string,
+  target: PermissionTarget,
+  rules: readonly PermissionRule[],
+): PermissionEffect | null {
+  const rule = matchingRule(principal, action, target, rules);
+  if (!rule) {
+    return null;
+  }
+  if (rule.effect === 'deny') {
+    return 'deny';
+  }
+  if (rule.readOnly && isWriteAction(target, action)) {
+    return 'deny';
+  }
+  return 'allow';
+}
+
+/**
  * Runs the decision pipeline for one guarded call.
  * The rules decide first, then the defaults apply: `user` and `plugin` allow, `agent` and `mcp` allow window reads
  * and window detach, ask for other window actions, ask for file reads, file patch proposals, and command runs, ask
  * for tool calls, and deny storage.
  * A preauthorized call turns the ask defaults into allow, so one call never prompts twice. Rules and deny
  * defaults still decide, so a deny rule below a higher-level allow keeps its block.
- * Storage sharing for the chat agent runs through the storage sharing settings, not through this pipeline.
+ * The storage shares of the chat agent sit behind the guarded storage wrapper: a matching rule
+ * decides there through `matchingRuleDecision`, and these defaults never run for them.
  *
  * @param principal The principal that wants to act.
  * @param action The action, for example `evaluate` or `write`.
@@ -311,17 +367,9 @@ export function decidePermission(
   rules: readonly PermissionRule[],
   preauthorized = false,
 ): PermissionDecision {
-  for (const rule of rules) {
-    if (!ruleMatchesTarget(rule, principal, action, target)) {
-      continue;
-    }
-    if (rule.effect === 'deny') {
-      return 'deny';
-    }
-    if (rule.readOnly && isWriteAction(target, action)) {
-      return 'deny';
-    }
-    return 'allow';
+  const ruled = matchingRuleDecision(principal, action, target, rules);
+  if (ruled) {
+    return ruled;
   }
   if (principal === 'user' || principal === 'plugin') {
     return 'allow';

@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NodeWavenUI remote</title>
+  <!-- The default theme and the shared text stack join the page: the markdown replies, the code tokens, and the diff lines. -->
+  <link rel="stylesheet" href="themes/dark-gray.css">
+  <link rel="stylesheet" href="text/styles.css">
   <link rel="stylesheet" href="remote.css">
 </head>
 <body>
@@ -30,6 +33,16 @@
     <section id="view-tasks" hidden></section>
     <section id="view-chats" hidden></section>
   </main>
+  <!-- Prism highlights code. The grammar files register on the Prism global in dependency order. -->
+  <script src="libs/prism/prism-core.js"></script>
+  <script src="libs/prism/prism-markup.js"></script>
+  <script src="libs/prism/prism-clike.js"></script>
+  <script src="libs/prism/prism-javascript.js"></script>
+  <script src="libs/prism/prism-typescript.js"></script>
+  <script src="libs/prism/prism-css.js"></script>
+  <script src="libs/prism/prism-json.js"></script>
+  <script src="libs/prism/prism-markdown.js"></script>
+  <script src="libs/prism/prism-bash.js"></script>
   <script type="module" src="remote.js"></script>
 </body>
 </html>

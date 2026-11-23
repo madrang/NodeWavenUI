@@ -15,6 +15,7 @@ import { extname, join, normalize } from 'node:path';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { RemoteServerConfig, WorkspaceSettingsStore } from '../storage/settings-store.js';
 import { WORKSPACE_REMOTE_FOLDER } from '../shared/workspace.js';
+import { BodyLimitError, readRequestBody } from '../shared/http-body.js';
 import { log } from './logger.js';
 
 /** Generates the self-signed certificate of the remote server. */
@@ -232,6 +233,17 @@ export class RemoteServer {
     await this.ensureToken();
     const handler = (request: IncomingMessage, response: ServerResponse): void => {
       void this.handle(request, response).catch((error: unknown) => {
+        if (error instanceof BodyLimitError && !response.destroyed) {
+          // The unread rest of the body rides the socket after the refusal; the destroy on the
+          // flush closes it.
+          log.worker.warning(`the remote request "${request.url}" was refused: ${error.text}`);
+          response.once('finish', () => {
+            request.destroy();
+          });
+          response.writeHead(error.status, { 'content-type': 'text/plain' });
+          response.end(error.text);
+          return;
+        }
         const message = error instanceof Error ? error.message : String(error);
         log.worker.warning(`the remote request "${request.url}" failed: ${message}`);
         if (!response.headersSent) {
@@ -405,29 +417,22 @@ export class RemoteServer {
     }
   }
 
-  /** Reads the body of one request as parsed JSON, with a size cap. */
+  /** Reads the body of one request as parsed JSON, with a size cap. An empty body reads as null. */
   private async readBody(request: IncomingMessage): Promise<unknown> {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of request) {
-      size += (chunk as Buffer).length;
-      if (size > 1_000_000) {
-        throw new Error('The request body exceeds the size cap.');
-      }
-      chunks.push(chunk as Buffer);
-    }
-    if (chunks.length === 0) {
-      return null;
-    }
-    return JSON.parse(Buffer.concat(chunks).toString('utf-8'));
+    const text = await readRequestBody(request, 1_000_000);
+    return text.length === 0 ? null : JSON.parse(text);
   }
 
-  /** Serves one static file of the phone page. */
+  /** Serves one static file of the phone page. The `text`, `libs`, and `themes` folders of the
+   * renderer build join the page folder, so the phone carries the text stack, Prism, and the
+   * default theme like the app. */
   private serveStatic(urlPath: string, response: ServerResponse): boolean {
     const relative = urlPath === '/' ? 'index.html' : urlPath.slice(1);
     const base = join(this.appRoot, 'dist', 'renderer', 'remote');
-    const resolved = normalize(join(base, relative));
-    if (!resolved.startsWith(`${base}/`) || !existsSync(resolved)) {
+    const shared = relative.startsWith('text/') || relative.startsWith('libs/') || relative.startsWith('themes/');
+    const root = shared ? join(this.appRoot, 'dist', 'renderer') : base;
+    const resolved = normalize(join(root, relative));
+    if (!resolved.startsWith(`${root}/`) || !existsSync(resolved)) {
       return false;
     }
     response.writeHead(200, {

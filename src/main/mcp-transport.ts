@@ -7,18 +7,31 @@
 
 import { spawn } from 'node:child_process';
 import { asRecord } from '../shared/records.js';
+import { PendingCalls } from '../shared/pending-calls.js';
 
 /** One JSON-RPC reply of a server. */
 export interface JsonRpcReply {
   readonly id?: number | string;
   readonly result?: unknown;
-  readonly error?: { readonly code: number; readonly message: string };
+  readonly error?: { readonly code: number; message: string };
 }
+
+/** The cap of the initialize handshake. A hung server must not pin its endpoint at connecting. */
+export const MCP_HANDSHAKE_TIMEOUT_MS = 30_000;
+
+/** The cap of one request reply wait. The cap stays high, because a tool call may wait on a slow
+ * backend of its server, the way one inference call needs its minutes. */
+export const MCP_REQUEST_TIMEOUT_MS = 300_000;
+
+/** A connect-class failure: a network fault, a timeout, or a stream that ended before the reply.
+ * A connect retry may repeat it, because the server ran nothing. A server-answered error — an
+ * HTTP status or a JSON-RPC error reply — is a plain Error instead, and no retry repeats it. */
+export class McpNetworkError extends Error {}
 
 /** Sends JSON-RPC messages to one MCP server. */
 export interface McpTransport {
-  /** Sends one request and resolves with its result. */
-  request(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** Sends one request and resolves with its result. The timeout cap defaults to the request cap. */
+  request(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
   /** Sends one notification. The server answers it with no body. */
   notify(method: string, params?: Record<string, unknown>): void;
   /** Closes the transport and fails every pending request. */
@@ -47,7 +60,7 @@ async function readEventStreamReply(
     for (;;) {
       const chunk = await reader.read();
       if (chunk.done) {
-        throw new Error('The MCP event stream ended before the reply arrived.');
+        throw new McpNetworkError('The MCP event stream ended before the reply arrived.');
       }
       buffer += decoder.decode(chunk.value, { stream: true });
       let newline = buffer.indexOf('\n');
@@ -93,6 +106,13 @@ export class HttpMcpTransport implements McpTransport {
   private readonly onNotification: (method: string, params: unknown) => void;
   private sessionId: string | null = null;
   private nextId = 1;
+  /** The abort controllers of the in-flight posts, so close() cancels them. */
+  private readonly live = new Set<AbortController>();
+  private closed = false;
+  /** The recovery the owner installs: it re-runs the initialize handshake after a session loss. */
+  private recover: (() => Promise<void>) | null = null;
+  /** The running recovery, so concurrent losses share one handshake. */
+  private recovery: Promise<void> | null = null;
 
   constructor(url: string, token?: string, onNotification: (method: string, params: unknown) => void = () => {}) {
     this.url = url;
@@ -100,10 +120,19 @@ export class HttpMcpTransport implements McpTransport {
     this.onNotification = onNotification;
   }
 
-  async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+  /** Installs the session-loss recovery: a 404 on a held session runs it once, then replays. */
+  recoverSessions(reinitialize: () => Promise<void>): void {
+    this.recover = reinitialize;
+  }
+
+  async request(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs = MCP_REQUEST_TIMEOUT_MS,
+  ): Promise<unknown> {
     const id = this.nextId;
     this.nextId += 1;
-    const reply = await this.post({ jsonrpc: '2.0', id, method, params: params ?? {} });
+    const reply = await this.post({ jsonrpc: '2.0', id, method, params: params ?? {} }, timeoutMs);
     return settleReply(reply, method);
   }
 
@@ -114,7 +143,14 @@ export class HttpMcpTransport implements McpTransport {
     });
   }
 
-  private async post(message: Record<string, unknown>): Promise<JsonRpcReply> {
+  private async post(
+    message: Record<string, unknown>,
+    timeoutMs = MCP_REQUEST_TIMEOUT_MS,
+    replay = true,
+  ): Promise<JsonRpcReply> {
+    if (this.closed) {
+      throw new McpNetworkError('The MCP HTTP transport is closed.');
+    }
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
@@ -125,11 +161,39 @@ export class HttpMcpTransport implements McpTransport {
     if (this.sessionId) {
       headers['Mcp-Session-Id'] = this.sessionId;
     }
-    const response = await fetch(this.url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(message),
-    });
+    const controller = new AbortController();
+    this.live.add(controller);
+    let response: Response;
+    try {
+      response = await fetch(this.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(message),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]),
+      });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new McpNetworkError('The MCP HTTP transport closed before the reply arrived.');
+      }
+      throw new McpNetworkError(`The MCP endpoint "${this.url}" did not answer: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      this.live.delete(controller);
+    }
+    // A 404 on a held session names a lost session: the server restarted or evicted it. One
+    // recovery handshake runs, then the message replays once on the fresh session.
+    if (response.status === 404 && replay && this.sessionId && this.recover && Object.hasOwn(message, 'id')) {
+      const rerun = this.recovery ?? (async () => {
+        try {
+          this.sessionId = null;
+          await this.recover?.();
+        } finally {
+          this.recovery = null;
+        }
+      })();
+      this.recovery = rerun;
+      await rerun;
+      return this.post(message, timeoutMs, false);
+    }
     const sessionHeader = response.headers.get('mcp-session-id');
     if (sessionHeader) {
       this.sessionId = sessionHeader;
@@ -155,13 +219,18 @@ export class HttpMcpTransport implements McpTransport {
   }
 
   close(): void {
-    // HTTP keeps no connection open between calls.
+    this.closed = true;
+    for (const controller of this.live) {
+      controller.abort();
+    }
+    this.live.clear();
   }
 }
 
 interface NodeChildStream {
   setEncoding(encoding: string): unknown;
   on(event: 'data', listener: (chunk: string) => void): unknown;
+  on(event: 'error', listener: (error: Error) => void): unknown;
   write(text: string): boolean;
   end(): unknown;
 }
@@ -176,16 +245,10 @@ interface NodeChild {
   kill(): unknown;
 }
 
-interface PendingCall {
-  readonly resolve: (result: unknown) => void;
-  readonly reject: (error: Error) => void;
-}
-
 /** The stdio transport: one spawned subprocess, newline-delimited JSON-RPC on stdin and stdout. */
 export class StdioMcpTransport implements McpTransport {
   private child: NodeChild | null = null;
-  private nextId = 1;
-  private readonly pending = new Map<number, PendingCall>();
+  private readonly pending = new PendingCalls();
   private readonly onNotification: (method: string, params: unknown) => void;
   private closed = false;
 
@@ -222,7 +285,15 @@ export class StdioMcpTransport implements McpTransport {
     this.child = child;
     child.once('close', () => {
       this.failPending('The MCP stdio process closed before the reply arrived.');
+      // The dead child leaves, so a later request spawns a fresh process instead of writing
+      // into the dead stdin and waiting forever.
+      this.child = null;
     });
+    if (child.stdin) {
+      // A dead child answers a late write with EPIPE. The reply wait fails through the close
+      // handler, so the write error itself needs no crash of the host process.
+      child.stdin.on('error', () => {});
+    }
     const stdout = child.stdout;
     if (!stdout) {
       throw new Error('The MCP stdio process carries no stdout pipe.');
@@ -267,18 +338,16 @@ export class StdioMcpTransport implements McpTransport {
     const id = record.id;
     if (Object.hasOwn(record, 'result') || Object.hasOwn(record, 'error')) {
       if (typeof id === 'number') {
-        const pending = this.pending.get(id);
-        if (!pending) {
+        if (!this.pending.has(id)) {
           return;
         }
-        this.pending.delete(id);
         if (record.error) {
           const error = asRecord(record.error);
           const code = error && typeof error.code === 'number' ? error.code : -32603;
           const message = error && typeof error.message === 'string' ? error.message : 'unknown error';
-          pending.reject(new Error(`The MCP stdio call failed with code ${code}: ${message}`));
+          this.pending.reject(id, new Error(`The MCP stdio call failed with code ${code}: ${message}`));
         } else {
-          pending.resolve(record.result);
+          this.pending.resolve(id, record.result);
         }
       }
       return;
@@ -303,25 +372,26 @@ export class StdioMcpTransport implements McpTransport {
   }
 
   private failPending(reason: string): void {
-    for (const pending of this.pending.values()) {
-      pending.reject(new Error(reason));
-    }
-    this.pending.clear();
+    this.pending.rejectAll(() => new McpNetworkError(reason));
   }
 
-  async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+  /** Sends one request and waits for the reply under its cap. The cap drops the waiting entry, so
+   * a late reply of a silent server resolves nothing. */
+  async request(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs = MCP_REQUEST_TIMEOUT_MS,
+  ): Promise<unknown> {
     await this.ensureChild();
-    const id = this.nextId;
-    this.nextId += 1;
-    const child = this.child;
-    if (!child) {
+    if (!this.child) {
       throw new Error('The MCP stdio transport did not start.');
     }
-    const result = await new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.writeLine(JSON.stringify({ jsonrpc: '2.0', id, method, params: params ?? {} }));
-    });
-    return result;
+    const { id, promise } = this.pending.open(
+      timeoutMs,
+      () => new McpNetworkError(`The MCP stdio call "${method}" timed out after ${timeoutMs} ms.`),
+    );
+    this.writeLine(JSON.stringify({ jsonrpc: '2.0', id, method, params: params ?? {} }));
+    return promise;
   }
 
   notify(method: string, params?: Record<string, unknown>): void {

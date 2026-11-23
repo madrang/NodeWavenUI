@@ -1,7 +1,9 @@
 /**
  * Specs for the task store: a create starts a draft, the transition table refuses a forbidden
- * move, a completion waits for the review, a return re-opens the work, a blockedBy list holds a
- * queued task until its blocker reaches done, and the records persist across a reload.
+ * move, a completion waits for the review, a return re-opens the work, a reopen returns a settle
+ * to draft, a blockedBy list holds a queued task until its blocker reaches done, the status
+ * override of an edit settles or revives a record outside the table, and the records persist
+ * across a reload.
  */
 
 import { expect } from 'chai';
@@ -9,7 +11,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TaskStore } from '../../dist/worker/task-store.js';
-import { readTaskRecord, type TaskRecord } from '../../dist/shared/tasks.js';
+import { readTaskRecord, taskCanTransition, type TaskRecord } from '../../dist/shared/tasks.js';
 
 /** One store over a fresh temp workspace. */
 function freshStore(): { store: TaskStore; root: string } {
@@ -207,6 +209,74 @@ describe('the task store', () => {
     const reloaded = new TaskStore(root);
     await reloaded.load();
     expect(reloaded.get(task.id)?.title).to.equal('Settled words');
+  });
+
+  it('reopens a settled record to a draft and clears the settle fields', async () => {
+    const task = (await store.create({
+      title: 'Second wind',
+      description: '',
+      goal: '',
+      origin: 'agent',
+      originChatId: 6,
+      parentTaskId: null,
+      blockedBy: [],
+    }))!;
+    await store.dispatch(task.id, 'new-session', null);
+    await store.bindSession(task.id, 6, 'session-file-6');
+    await store.complete(task.id, 'Done once.', 'The file shows it.');
+    await store.accept(task.id);
+    expect(settles.length).to.equal(2);
+    const reopened = await store.reopen(task.id);
+    expect(reopened?.status).to.equal('draft');
+    expect(reopened?.result).to.equal(null);
+    expect(reopened?.evidence).to.equal(null);
+    expect(reopened?.settledAt).to.equal(null);
+    // A revive is no settle, and a live record reopens nothing.
+    expect(settles.length).to.equal(2);
+    expect(await store.reopen(task.id)).to.equal(null);
+    expect(await store.reopen('no-such-task')).to.equal(null);
+    await store.dispatch(task.id, 'new-session', null);
+    await store.bindSession(task.id, 6, 'session-file-7');
+    await store.fail(task.id, 'The second run stopped.');
+    expect((await store.reopen(task.id))?.note).to.equal(null);
+    const reloaded = new TaskStore(root);
+    await reloaded.load();
+    expect(reloaded.get(task.id)?.status).to.equal('draft');
+  });
+
+  it('sets a status by hand outside the transition table, and a hand settle reaches the listeners', async () => {
+    const task = (await store.create({
+      title: 'By hand',
+      description: '',
+      goal: '',
+      origin: 'user',
+      originChatId: null,
+      parentTaskId: null,
+      blockedBy: [],
+    }))!;
+    // The table forbids draft to done, and the hand override answers no table.
+    expect(taskCanTransition('draft', 'done')).to.equal(false);
+    // The listeners receive the live record, so the status is read as each settle fires.
+    const heard: string[] = [];
+    store.onSettle((record) => {
+      heard.push(record.status);
+    });
+    const done = await store.update(task.id, { status: 'done' });
+    expect(done?.status).to.equal('done');
+    expect(typeof done?.settledAt).to.equal('string');
+    expect(heard).to.deep.equal(['done']);
+    // A settle of a settled record is no news.
+    const failed = await store.update(task.id, { status: 'failed' });
+    expect(failed?.status).to.equal('failed');
+    expect(heard).to.deep.equal(['done']);
+    // A revive clears the settle fields and fires no settle.
+    const revived = await store.update(task.id, { status: 'draft' });
+    expect(revived?.status).to.equal('draft');
+    expect(revived?.settledAt).to.equal(null);
+    expect(heard).to.deep.equal(['done']);
+    // The revived record settles again by hand.
+    await store.update(task.id, { status: 'cancelled' });
+    expect(heard).to.deep.equal(['done', 'cancelled']);
   });
 
   it('removes one record from memory and from the folder', async () => {

@@ -7,63 +7,12 @@
  * conflict, so the review shows the reason and the patch stays.
  */
 
-import { parsePatch } from './libs/diff/index.js';
-import { appendCodeRuns } from './text/render.js';
-import { languageOfPath } from './text/highlight.js';
+import { buildDiff } from './text/render.js';
 import { getWorkarea, type WorkareaView } from './workarea.js';
 import { patchWaitsForReview, type PatchRecord, type PatchStore } from './patch-store.js';
 
 /** The id of the shared review view. A CTRL open registers a per-patch view beside it. */
 const SHARED_VIEW_ID = 'patch-review';
-
-/** Builds one diff line row. A content line carries the token runs of the file grammar. */
-function diffRow(className: string, marker: string, text: string | null, language: string | null): HTMLDivElement {
-  const row = document.createElement('div');
-  row.className = className;
-  const mark = document.createElement('span');
-  mark.className = 'review-mark';
-  mark.textContent = marker;
-  const line = document.createElement('span');
-  line.className = 'review-line';
-  if (!text || !language) {
-    line.textContent = text ?? '';
-  } else {
-    appendCodeRuns(line, text, language);
-  }
-  row.append(mark, line);
-  return row;
-}
-
-/** Builds the diff body of one patch: the header lines, the hunk heads, and the changed lines. */
-function buildDiff(record: PatchRecord): HTMLElement {
-  const body = document.createElement('div');
-  body.className = 'review-diff';
-  const language = languageOfPath(record.path);
-  const files = parsePatch(record.patch);
-  for (const file of files) {
-    const head = document.createElement('div');
-    head.className = 'review-file';
-    head.textContent = file.newFileName ?? file.oldFileName ?? record.path;
-    body.append(head);
-    for (const hunk of file.hunks) {
-      body.append(diffRow('review-hunk', '@@', ` -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`, null));
-      for (const line of hunk.lines) {
-        const marker = line.charAt(0);
-        const text = line.slice(1);
-        if (marker === '+') {
-          body.append(diffRow('review-add', '+', text, language));
-        } else if (marker === '-') {
-          body.append(diffRow('review-remove', '-', text, language));
-        } else if (marker === '\\') {
-          body.append(diffRow('review-note', '\\', text, null));
-        } else {
-          body.append(diffRow('review-context', ' ', text, language));
-        }
-      }
-    }
-  }
-  return body;
-}
 
 /** Builds the answer controls of one waiting patch and wires them to the store. */
 function buildControls(store: PatchStore, record: PatchRecord, rerender: () => void): HTMLElement {
@@ -161,7 +110,7 @@ export function openPatchReviewView(store: PatchStore, id: number, separateTab: 
   rerender();
 }
 
-/** Builds the whole review body of one record: the facts, the conflict note, the diff, the controls. */
+/** Builds the whole review body of one record: the facts, the conflict note, the diff, then the controls. */
 function buildReview(store: PatchStore, record: PatchRecord, rerender: () => void): HTMLElement[] {
   const header = document.createElement('header');
   header.className = 'review-header';
@@ -176,15 +125,15 @@ function buildReview(store: PatchStore, record: PatchRecord, rerender: () => voi
   facts.textContent = `${task?.title ?? 'no task'} · ${record.state}${note}`;
   header.append(path, facts);
   const parts: HTMLElement[] = [header];
+  if (patchWaitsForReview(record.state) && record.state === 'conflicted') {
+    const banner = document.createElement('div');
+    banner.className = 'review-conflict';
+    banner.textContent = `The patch conflicts: ${record.comment ?? 'it no longer applies.'} Deny it with a comment for the agent, or dismiss it silently.`;
+    parts.push(banner);
+  }
+  parts.push(buildDiff(record.patch, record.path));
   if (patchWaitsForReview(record.state)) {
-    if (record.state === 'conflicted') {
-      const banner = document.createElement('div');
-      banner.className = 'review-conflict';
-      banner.textContent = `The patch conflicts: ${record.comment ?? 'it no longer applies.'} Deny it with a comment for the agent, or dismiss it silently.`;
-      parts.push(banner);
-    }
     parts.push(buildControls(store, record, rerender));
   }
-  parts.push(buildDiff(record));
   return parts;
 }

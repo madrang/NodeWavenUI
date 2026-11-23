@@ -3,8 +3,10 @@
  * manual entry, keeps the bearer in the local storage, renders the permission asks, the patch
  * proposals, the task reviews, and the chat sessions, and answers through the API of the worker
  * core. The event stream rides a fetch stream with the authorization header, so no credential
- * lands in a URL.
+ * lands in a URL. The replies and the patch diffs render through the shared text stack of the app.
  */
+
+import { buildDiff, renderMarkdown } from '../text/render.js';
 
 interface PendingAsk {
   readonly id: number;
@@ -312,9 +314,7 @@ function renderPatches(): void {
       note.textContent = patch.comment;
       card.append(note);
     }
-    const pre = document.createElement('pre');
-    pre.textContent = patch.patch;
-    card.append(pre);
+    card.append(buildDiff(patch.patch, patch.path));
     const row = document.createElement('div');
     row.className = 'row';
     const apply = document.createElement('button');
@@ -389,13 +389,11 @@ function renderChats(sessions: readonly ChatSessionDto[]): void {
   }
   view.replaceChildren();
   const list = document.createElement('div');
-  list.className = 'card';
+  list.className = 'card chat-session-list';
   for (const session of sessions) {
     const button = document.createElement('button');
+    button.className = 'chat-session';
     button.textContent = session.title;
-    button.style.display = 'block';
-    button.style.width = '100%';
-    button.style.marginBottom = '6px';
     button.addEventListener('click', () => {
       renderChat(session);
     });
@@ -420,13 +418,28 @@ function renderChat(session: ChatSessionDto | null): void {
     return;
   }
   const card = document.createElement('div');
-  card.className = 'card chat-view';
+  card.className = 'chat-view';
+  const scroll = document.createElement('div');
+  scroll.className = 'chat-scroll';
   for (const entry of session.entries.slice(-40)) {
-    const line = document.createElement('p');
+    // A persisted empty reply renders nothing, like the app.
+    if (entry.role === 'assistant' && entry.content.length === 0) {
+      continue;
+    }
+    const line = document.createElement('div');
     line.className = `entry ${entry.role}`;
-    line.textContent = entry.content;
-    card.append(line);
+    // The replies carry markdown like the app; the user lines stay plain text.
+    if (entry.role === 'assistant') {
+      const body = document.createElement('div');
+      body.className = 'md-body';
+      renderMarkdown(body, entry.content);
+      line.append(body);
+    } else {
+      line.textContent = entry.content;
+    }
+    scroll.append(line);
   }
+  card.append(scroll);
   const form = document.createElement('form');
   form.id = 'chat-send';
   const input = document.createElement('input');
@@ -452,7 +465,8 @@ function renderChat(session: ChatSessionDto | null): void {
   });
   card.append(form);
   view.append(card);
-  card.scrollIntoView();
+  // The chat opens at its latest message, like the app.
+  scroll.scrollTop = scroll.scrollHeight;
 }
 
 /** Shows one error on the login status line. */

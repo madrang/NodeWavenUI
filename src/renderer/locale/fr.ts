@@ -18,11 +18,14 @@ export const FR: typeof EN = {
   rail: {
     events: 'Événements',
     files: 'Fichiers',
+    tasks: 'Tâches',
     all: 'Tous',
     pending: 'En attente',
     completed: 'Terminés',
     clear: 'Vider',
     clearTitle: 'Vide les événements terminés et supprime les correctifs résolus',
+    board: 'Ouvrir le tableau',
+    boardTitle: 'Ouvre la vue du tableau des tâches dans l’espace de travail central',
     resizeTitle: 'Tirer pour redimensionner le rail',
   },
   workarea: {
@@ -48,6 +51,7 @@ export const FR: typeof EN = {
     editTitlePlaceholder: 'Titre de la tâche',
     editBriefPlaceholder: 'Le brief que l’agent de session lit. Les blocs de code clôturés s’affichent en surbrillance.',
     editGoalPlaceholder: 'Objectif : le test d’achèvement (facultatif)',
+    statusTitle: 'Définit le statut de l’enregistrement à la main. Il s’applique à l’enregistrement, quoi que dise la machine d’états.',
     save: 'Enregistrer',
     cancel: 'Annuler',
     edit: 'Modifier',

@@ -1,69 +1,72 @@
-/* The phone page of the remote control. Dark, compact, touch first. */
+/* The phone page of the remote control. It carries the design vocabulary of the main app: the
+   default dark-gray palette, the chat bubbles of the workspace, and the shared text stack for the
+   markdown replies and the patch diffs. Compact and touch first. */
 :root {
-  color-scheme: dark;
-  --text: #e8e8ec;
-  --muted: #9aa0ad;
-  --card: #1c1f26;
-  --line: #2c313c;
-  --accent: #4f8cff;
-  --danger: #e0564f;
-  --ok: #3fb27f;
+  --ok: #3fb26a;
 }
 
 * {
   box-sizing: border-box;
 }
 
+/* The display rules below beat the user-agent [hidden] style, so the attribute needs its own
+   important rule. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
-  font-family: system-ui, sans-serif;
-  background: #12141a;
-  color: var(--text);
-}
-
-header {
+  height: 100vh;
+  height: 100dvh;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
-  position: sticky;
-  top: 0;
-  background: #12141a;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.45 system-ui, "Segoe UI", sans-serif;
 }
 
-header h1 {
-  font-size: 1rem;
-  margin: 0;
+/* The auto focus ring carries a fixed blue, so the accent colors it, like the app. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .status {
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* The top bar: the workspace name and the connection state, over one border like the app bar. */
+header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
 }
 
 #connection.online {
   color: var(--ok);
 }
 
-main {
-  padding: 12px;
-  max-width: 640px;
-  margin: 0 auto;
-}
-
-form {
-  display: grid;
-  gap: 8px;
-}
-
+/* Controls: the base control styles of the app, with touch padding. */
 input,
 button {
   font: inherit;
-  padding: 10px;
-  border-radius: 8px;
-  border: 1px solid var(--line);
-  background: var(--card);
+  padding: 10px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--field);
   color: var(--text);
 }
 
@@ -71,7 +74,67 @@ button {
   cursor: pointer;
 }
 
+button.primary,
+button.approve,
+#login-form button {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+button.deny {
+  border-color: color-mix(in srgb, var(--error) 60%, var(--border));
+  color: var(--error);
+  background: none;
+}
+
+button.deny:hover {
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+}
+
+/* The login screen: one card centered in the window, like the wizard. */
+main#login {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+main#login h2 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+main#login > p.status {
+  margin: 0 0 14px;
+}
+
+#login-form {
+  display: grid;
+  gap: 8px;
+}
+
+/* The remote view: one column under the bar, every section scrolling its own area. */
+main#remote {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 12px;
+}
+
+/* The view switcher: the tab vocabulary of the app, flattened into one segmented row. */
 nav {
+  flex: none;
   display: flex;
   gap: 6px;
   margin-bottom: 10px;
@@ -79,19 +142,42 @@ nav {
 
 nav button {
   flex: 1;
+  padding: 8px 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 40%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  color: var(--muted);
+}
+
+nav button:hover {
+  background: var(--surface);
+  color: var(--text);
 }
 
 nav button.active {
-  border-color: var(--accent);
-  color: var(--accent);
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  font-weight: 600;
 }
 
+main#remote > section {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* The cards: the permission card vocabulary of the app. */
 .card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px;
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
   margin-bottom: 10px;
+}
+
+.card p {
+  margin: 0;
 }
 
 .card .row {
@@ -104,54 +190,164 @@ nav button.active {
   flex: 1;
 }
 
-.card .row button.approve {
-  border-color: var(--ok);
-  color: var(--ok);
-}
-
-.card .row button.deny {
-  border-color: var(--danger);
-  color: var(--danger);
+.card .muted {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
 }
 
 .card pre {
+  margin: 8px 0 0;
   white-space: pre-wrap;
   word-break: break-word;
-  background: #101218;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
   border-radius: 6px;
-  padding: 8px;
-  font-size: 0.75rem;
-  max-height: 200px;
+  padding: 8px 10px;
+  font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 240px;
   overflow: auto;
 }
 
-.card .muted {
-  color: var(--muted);
-  font-size: 0.8rem;
+/* The diff of one patch card: the shared diff lines of the text stack inside a scrolling box,
+   with the compact paddings of the phone. */
+.review-diff {
+  flex: none;
+  margin-top: 8px;
+  max-height: 240px;
+  padding: 0;
+  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
-.entry {
-  padding: 8px 0;
-  border-bottom: 1px solid var(--line);
-  font-size: 0.9rem;
+.review-file,
+.review-hunk,
+.review-add,
+.review-remove,
+.review-context,
+.review-note {
+  padding-left: 10px;
+  padding-right: 10px;
+}
+
+.review-mark {
+  width: 16px;
+}
+
+.review-file {
   white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* The chat view: the column vocabulary of the app. The message area scrolls, the composer
+   stays pinned at the bottom. */
+#view-chats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-session-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-session {
+  width: 100%;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-session:hover {
+  border-color: var(--accent);
+}
+
+.chat-view {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* One entry: the message bubble shape of the app. */
+.entry {
+  max-width: 85%;
+  padding: 7px 11px;
+  border-radius: 10px;
   word-break: break-word;
 }
 
 .entry.user {
-  color: var(--accent);
+  align-self: flex-end;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  white-space: pre-wrap;
+}
+
+.entry.assistant {
+  align-self: flex-start;
+  background: var(--surface);
+}
+
+/* The quiet centered lines: the notices, the tool cards, and the errors of the app. */
+.entry.notice,
+.entry.tool {
+  align-self: center;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+  background: none;
 }
 
 .entry.error {
-  color: var(--danger);
+  align-self: center;
+  max-width: 100%;
+  color: var(--error);
+  font-size: 12px;
+  background: none;
 }
 
 #chat-send {
+  flex: none;
   display: flex;
   gap: 8px;
-  margin-top: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
 }
 
 #chat-send input {
   flex: 1;
+  min-width: 0;
+}
+
+#chat-send button {
+  flex: none;
+}
+
+/* The markdown body of an assistant reply and the code tokens take the shared text stack. The
+   phone resets the paragraph margin of the body. */
+.md-body p {
+  margin: 0;
 }

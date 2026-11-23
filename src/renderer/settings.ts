@@ -8,7 +8,7 @@
 import type { ThinkingLevel } from '../providers/provider.js';
 import type { StorageSetup } from './plugins.js';
 import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
-import { sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
+import { endpointLabelCollisions, sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { PATH_RULE_MODES, type PathRule, type PathRuleMode } from '../shared/permissions.js';
 import type { ModelEntry, ProviderAccount, ProviderRegistry } from '../shared/workspace.js';
 import { emptyProviderRegistry } from '../shared/workspace.js';
@@ -620,6 +620,13 @@ export class SettingsView {
       transport,
       mode,
     };
+    // Two native labels that sanitize to one tool prefix would name their tools alike, so the
+    // second set answers no call. The add form refuses the collision before it lands.
+    const collision = endpointLabelCollisions([...this.mcpEndpoints.endpoints, endpoint]).get(endpoint.id);
+    if (collision) {
+      this.showMcpEndpointStatus(collision, true);
+      return;
+    }
     this.mcpAddLabel.value = '';
     this.mcpAddUrl.value = '';
     this.mcpAddToken.value = '';

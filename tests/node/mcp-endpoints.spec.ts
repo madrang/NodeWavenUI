@@ -1,9 +1,15 @@
 /**
- * Specs for the MCP endpoint contract: the label sanitizer and the record guards.
+ * Specs for the MCP endpoint contract: the label sanitizer, the label collisions, and the record guards.
  */
 
 import { expect } from 'chai';
-import { isMcpEndpoint, isMcpEndpoints, sanitizeEndpointLabel } from '../../dist/shared/mcp-endpoints.js';
+import {
+  endpointLabelCollisions,
+  isMcpEndpoint,
+  isMcpEndpoints,
+  sanitizeEndpointLabel,
+  type McpEndpoint,
+} from '../../dist/shared/mcp-endpoints.js';
 
 describe('the endpoint label sanitizer', () => {
   it('lowercases and keeps letters, digits, and dashes', () => {
@@ -22,6 +28,39 @@ describe('the endpoint label sanitizer', () => {
     expect(sanitizeEndpointLabel('')).to.equal('mcp');
     expect(sanitizeEndpointLabel('!!!')).to.equal('mcp');
     expect(sanitizeEndpointLabel('---')).to.equal('mcp');
+  });
+});
+
+describe('the endpoint label collisions', () => {
+  const native = (id: string, label: string): McpEndpoint => ({
+    id,
+    label,
+    transport: { kind: 'http', url: `https://${id}/mcp` },
+    mode: 'native',
+  });
+
+  it('blocks the later native endpoint of one sanitized prefix and keeps the first', () => {
+    const collisions = endpointLabelCollisions([native('a', 'My Vault'), native('b', 'my-vault!')]);
+    expect([...collisions.keys()]).to.deep.equal(['b']);
+    expect(collisions.get('b')).to.match(/"my-vault!" sanitizes to "my-vault", the same tool prefix as "My Vault"\./u);
+  });
+
+  it('ignores the other modes, even on one prefix', () => {
+    const other: McpEndpoint = { ...native('b', 'my-vault'), mode: 'preloaded' };
+    const dormant: McpEndpoint = { ...native('c', 'my-vault'), mode: 'none' };
+    expect([...endpointLabelCollisions([native('a', 'My Vault'), other, dormant]).keys()]).to.deep.equal([]);
+  });
+
+  it('blocks every later endpoint of one prefix, and clears when the labels differ again', () => {
+    const first = [native('a', 'Vault'), native('b', 'VAULT'), native('c', 'vault-')];
+    expect([...endpointLabelCollisions(first).keys()]).to.deep.equal(['b', 'c']);
+    expect([...endpointLabelCollisions([native('a', 'Vault'), native('b', 'Other')]).keys()]).to.deep.equal([]);
+  });
+
+  it('blocks the empty-label fallback prefix like any other', () => {
+    const collisions = endpointLabelCollisions([native('a', '!!!'), native('b', '---')]);
+    expect([...collisions.keys()]).to.deep.equal(['b']);
+    expect(collisions.get('b')).to.match(/sanitizes to "mcp"/u);
   });
 });
 

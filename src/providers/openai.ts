@@ -5,6 +5,7 @@
  */
 
 import { isRecord } from '../shared/records.js';
+import { retry } from '../shared/retry.js';
 import {
   ProviderError,
   type ChatMessage,
@@ -63,12 +64,6 @@ function wireContent(message: ChatMessage): string | readonly unknown[] {
     parts.push({ type: 'image_url', image_url: { url: `data:${image.mimeType};base64,${image.data}` } });
   }
   return parts;
-}
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
 }
 
 /**
@@ -441,39 +436,37 @@ export class OpenAiInferenceProvider implements InferenceProvider {
     }
     // The endpoint preset holds the last word on the wire shape.
     this.config.beforeRequest?.(body);
-    for (let attempt = 0; ; attempt += 1) {
-      let response: Response | null = null;
-      let networkError: unknown = null;
-      try {
-        response = await fetch(url, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
-            Accept: 'application/json',
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(body),
-          signal: request.signal ?? null,
-        });
-      } catch (error) {
-        // A user abort is final: it never retries and carries its own error through.
-        if (request.signal?.aborted) {
-          throw error;
+    // Every ProviderError of one attempt is transient, so the retry repeats it under the budget.
+    // A user abort carries its own error through, and the retry never repeats it.
+    return retry(
+      async (attempt) => {
+        let response: Response;
+        try {
+          response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${this.config.apiKey}`,
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(body),
+            signal: request.signal ?? null,
+          });
+        } catch (error) {
+          if (request.signal?.aborted) {
+            throw error;
+          }
+          throw new ProviderError(`Provider "${this.id}" could not reach ${url}.`, { cause: error });
         }
-        networkError = error;
-      }
-      const exhausted = attempt >= RETRY_COUNT;
-      if (
-        response &&
-        (response.ok || !RETRYABLE_STATUSES.includes(response.status) || exhausted)
-      ) {
-        return response;
-      }
-      if (!response && exhausted) {
-        throw new ProviderError(`Provider "${this.id}" could not reach ${url}.`, { cause: networkError });
-      }
-      await response?.text().catch(() => '');
-      await sleep(RETRY_BASE_DELAY * 2 ** attempt);
-    }
+        const exhausted = attempt >= RETRY_COUNT;
+        if (response.ok || !RETRYABLE_STATUSES.includes(response.status) || exhausted) {
+          return response;
+        }
+        // The body drains before the retry, so the connection returns to the pool.
+        await response.text().catch(() => '');
+        throw new ProviderError(`Provider "${this.id}" answered HTTP ${response.status}.`);
+      },
+      { attempts: RETRY_COUNT + 1, baseDelayMs: RETRY_BASE_DELAY, retryOn: (error) => error instanceof ProviderError },
+    );
   }
 }

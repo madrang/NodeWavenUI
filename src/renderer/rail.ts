@@ -1,12 +1,14 @@
 /**
  * The left rail of the workspace window: a strip of section icons beside the open panel.
- * The events panel lists two sources in one feed: the permission requests of the gate and the
- * patch proposals of the write tool. A request waits as a pending row until the approval card of
- * its tab resolves it, and a patch waits until the user reviews it. A pending approval row click
- * activates the tab that holds the card, and a pending patch row click opens its review in the
- * center workspace. The files panel lists the workspace directory as a read-only tree with lazy
- * folder expansion. An icon click on the open section minimizes the rail to the strip, and any
- * icon click opens its section again.
+ * The events panel lists three sources in one feed: the permission requests of the gate, the
+ * patch proposals of the write tool, and the task records. A request waits as a pending row until
+ * the approval card of its tab resolves it, and a patch waits until the user reviews it. A pending
+ * approval row click activates the tab that holds the card, and a pending patch row click opens
+ * its review in the center workspace. The files panel lists the workspace directory as a read-only
+ * tree with lazy folder expansion. The tasks panel lists the task records: a waiting review pins
+ * to the top, a row click opens the task board on its record, and the footer link opens the board
+ * plain. An icon click on the open section minimizes the rail to the strip, and any icon click
+ * opens its section again.
  */
 
 import type { PermissionGate, PermissionRequestInfo } from './permission-gate.js';
@@ -29,10 +31,10 @@ export interface RailDeps {
   readonly patchStore: PatchStore | null;
   /** Opens the review of one patch in the center workspace. The flag opens it in its own tab. */
   readonly openPatch: (id: number, separateTab: boolean) => void;
-  /** The task store whose records feed the events tab as the third source. Null before it loads. */
+  /** The task store whose records feed the events tab and the tasks panel. Null before it loads. */
   readonly taskStore: TaskStore | null;
-  /** Opens the task board in the center workspace. */
-  readonly openTaskBoard: () => void;
+  /** Opens the task board in the center workspace. The id focuses one record in its edit form. */
+  readonly openTaskBoard: (id: string | null) => void;
   /** Opens one file of the tree in the editor view. The flag opens it in its own tab. */
   readonly openFile: (path: string, separateTab: boolean) => void;
 }
@@ -78,6 +80,22 @@ function fileIconClass(name: string, directory: boolean): string {
   return /^[a-z0-9]+$/.test(extension) ? extension : 'file';
 }
 
+/** Reads the sort rank of one feed row: a waiting row pins to the top, a live row follows, and a
+ * settle ends the feed. */
+function rankOf(event: RailEvent): number {
+  return event.state === 'pending' ? 0 : event.state === 'live' ? 1 : 2;
+}
+
+/** Sorts the feed rows: the waiting rows first, oldest first, so nothing that needs an answer
+ * sinks under the history, then the live rows, then the settles, newest first. */
+function sortFeed(left: RailEvent, right: RailEvent): number {
+  const order = rankOf(left) - rankOf(right);
+  if (order !== 0) {
+    return order;
+  }
+  return rankOf(left) === 2 ? right.sortTime - left.sortTime : left.sortTime - right.sortTime;
+}
+
 /** Drives the left rail. */
 export class AppRail {
   private readonly deps: RailDeps;
@@ -87,6 +105,8 @@ export class AppRail {
   private readonly eventList: HTMLElement;
   private readonly eventCount: HTMLElement;
   private readonly fileTree: HTMLElement;
+  private readonly taskList: HTMLElement;
+  private readonly taskCount: HTMLElement;
   private activeTab: string | null = null;
   private minimized = false;
   private openWidth = '';
@@ -120,6 +140,8 @@ export class AppRail {
     this.eventList = requireElement<HTMLElement>('#rail-event-list');
     this.eventCount = requireElement<HTMLElement>('#rail-event-count');
     this.fileTree = requireElement<HTMLElement>('#rail-file-tree');
+    this.taskList = requireElement<HTMLElement>('#rail-task-list');
+    this.taskCount = requireElement<HTMLElement>('#rail-task-count');
   }
 
   /**
@@ -143,6 +165,9 @@ export class AppRail {
         this.renderEvents();
       });
     }
+    requireElement<HTMLButtonElement>('#rail-task-open').addEventListener('click', () => {
+      this.deps.openTaskBoard(null);
+    });
     requireElement<HTMLButtonElement>('#rail-event-clear').addEventListener('click', () => {
       for (let index = this.events.length - 1; index >= 0; index -= 1) {
         const event = this.events[index];
@@ -163,8 +188,10 @@ export class AppRail {
     });
     this.deps.taskStore?.subscribe(() => {
       this.renderEvents();
+      this.renderTasks();
     });
     this.syncPending();
+    this.renderTasks();
     void this.mountFolder(this.fileTree, this.deps.workspacePath, 0);
   }
 
@@ -236,9 +263,10 @@ export class AppRail {
     });
   }
 
-  /** Reads the task records of the store as feed rows, the third source of the events tab. A
-   * review row waits for the user; the live states show the work in flight; a settle completes. */
-  private taskRows(): RailEvent[] {
+  /** Reads the task records of the store as rows, for the events tab and the tasks panel. The
+   * feed prefixes the kind, because it mixes three sources. A review row waits for the user; the
+   * live states show the work in flight; a settle completes. */
+  private taskRows(inFeed: boolean): RailEvent[] {
     const store = this.deps.taskStore;
     if (!store) {
       return [];
@@ -252,7 +280,7 @@ export class AppRail {
         id: task.id,
         kind: 'task',
         title: task.title,
-        meta: `task · ${task.status} · ${origin}`,
+        meta: inFeed ? `task · ${task.status} · ${origin}` : `${task.status} · ${origin}`,
         time: new Date(stamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }),
         sortTime: stamp,
         state: (waiting ? 'pending' : live ? 'live' : 'completed') as RailEvent['state'],
@@ -305,45 +333,45 @@ export class AppRail {
     }
   }
 
+  /** Builds one feed row: the state classes, the body with the title and the meta line, and the
+   * time. The caller wires the click and the menu of the row. */
+  private buildRow(event: RailEvent, meta: string): HTMLDivElement {
+    const row = document.createElement('div');
+    const classes = ['rail-event', event.state, event.kind];
+    if (event.conflicted) {
+      classes.push('conflicted');
+    }
+    if (event.state === 'completed' && event.outcome === 'denied') {
+      classes.push('denied');
+    }
+    row.className = classes.join(' ');
+    const body = document.createElement('div');
+    body.className = 'rail-event-body';
+    const title = document.createElement('div');
+    title.className = 'rail-event-title';
+    title.textContent = event.title;
+    const metaLine = document.createElement('div');
+    metaLine.className = 'rail-event-meta';
+    metaLine.textContent = meta;
+    body.append(title, metaLine);
+    const time = document.createElement('span');
+    time.className = 'rail-event-time';
+    time.textContent = event.time;
+    row.append(body, time);
+    return row;
+  }
+
   /** Re-renders the events feed and the pending count. The waiting events pin to the top, oldest
    * first, so nothing that needs an answer sinks under the history. The live task rows follow,
    * then the completed events, newest first. */
   private renderEvents(): void {
     this.eventList.replaceChildren();
-    const rank = (event: RailEvent): number => (event.state === 'pending' ? 0 : event.state === 'live' ? 1 : 2);
-    const merged = [...this.events, ...this.patchRows(), ...this.taskRows()].sort((left, right) => {
-      const order = rank(left) - rank(right);
-      if (order !== 0) {
-        return order;
-      }
-      return rank(left) === 2 ? right.sortTime - left.sortTime : left.sortTime - right.sortTime;
-    });
+    const merged = [...this.events, ...this.patchRows(), ...this.taskRows(true)].sort(sortFeed);
     const visible = merged.filter((event) =>
       this.filter === 'all' ? true : this.filter === 'pending' ? event.state === 'pending' : event.state === 'completed',
     );
     for (const event of visible) {
-      const row = document.createElement('div');
-      const classes = ['rail-event', event.state, event.kind];
-      if (event.conflicted) {
-        classes.push('conflicted');
-      }
-      if (event.state === 'completed' && event.outcome === 'denied') {
-        classes.push('denied');
-      }
-      row.className = classes.join(' ');
-      const body = document.createElement('div');
-      body.className = 'rail-event-body';
-      const title = document.createElement('div');
-      title.className = 'rail-event-title';
-      title.textContent = event.title;
-      const meta = document.createElement('div');
-      meta.className = 'rail-event-meta';
-      meta.textContent = event.state === 'completed' ? `${event.meta} · ${event.outcome}` : event.meta;
-      body.append(title, meta);
-      const time = document.createElement('span');
-      time.className = 'rail-event-time';
-      time.textContent = event.time;
-      row.append(body, time);
+      const row = this.buildRow(event, event.state === 'completed' ? `${event.meta} · ${event.outcome}` : event.meta);
       if (event.state === 'pending' && event.kind === 'approval') {
         row.title = 'Open the tab that holds the approval card.';
         row.addEventListener('click', () => {
@@ -357,7 +385,7 @@ export class AppRail {
       if (event.kind === 'task') {
         row.title = 'Open the task board.';
         row.addEventListener('click', () => {
-          this.deps.openTaskBoard();
+          this.deps.openTaskBoard(typeof event.id === 'string' ? event.id : null);
         });
       }
       // The right click of one event row offers its single deletion: one patch record, or one
@@ -420,6 +448,46 @@ export class AppRail {
     }
     const pendingCount = merged.filter((event) => event.state === 'pending').length;
     this.eventCount.textContent = pendingCount === 1 ? '1 pending' : `${pendingCount} pending`;
+  }
+
+  /** Renders the tasks panel and the waiting count. The rows are the task rows of the feed under
+   * the feed order: the waiting reviews pin to the top, oldest first, then the live records, then
+   * the settles, newest first. Every row opens the task board on its record, and the right click
+   * of one settle offers its removal. */
+  private renderTasks(): void {
+    this.taskList.replaceChildren();
+    const rows = this.taskRows(false).sort(sortFeed);
+    for (const event of rows) {
+      const row = this.buildRow(event, event.meta);
+      row.title = 'Open the task board on this record.';
+      row.addEventListener('click', () => {
+        this.deps.openTaskBoard(typeof event.id === 'string' ? event.id : null);
+      });
+      if (event.state === 'completed') {
+        row.addEventListener('contextmenu', (menu) => {
+          menu.preventDefault();
+          showContextMenu(menu.clientX, menu.clientY, [
+            {
+              label: 'Delete task record',
+              danger: true,
+              title: 'Deletes the record and its file.',
+              run: () => {
+                void this.deps.taskStore?.remove(String(event.id));
+              },
+            },
+          ]);
+        });
+      }
+      this.taskList.append(row);
+    }
+    if (rows.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'rail-empty';
+      empty.textContent = 'No task record exists.';
+      this.taskList.append(empty);
+    }
+    const waiting = rows.filter((event) => event.state === 'pending').length;
+    this.taskCount.textContent = waiting === 1 ? '1 in review' : `${waiting} in review`;
   }
 
   /**

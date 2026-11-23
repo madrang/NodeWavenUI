@@ -1,9 +1,11 @@
 /**
- * Specs for the shared permission pipeline: the defaults, the preauthorized lift, and the rule layer.
+ * Specs for the shared permission pipeline: the defaults, the preauthorized lift, the rule layer
+ * with its matcher, and the agent tool rule that reads the same matcher.
  */
 
 import { expect } from 'chai';
-import { decidePermission, outranks, principalLevel } from '../../dist/shared/permissions.js';
+import { decidePermission, matchingRule, outranks, principalLevel } from '../../dist/shared/permissions.js';
+import { agentToolRule } from '../../dist/renderer/agent-tools.js';
 import type { PermissionRule, PermissionTarget } from '../../dist/shared/permissions.js';
 
 /** One rule with test defaults, so each case states only what it varies. */
@@ -115,6 +117,35 @@ describe('the rule layer', () => {
     expect(decidePermission('agent', 'set', { kind: 'storage', storageId: 'vault', key: 'notes/a' }, rules)).to.equal('allow');
     expect(decidePermission('agent', 'set', { kind: 'storage', storageId: 'vault', key: 'secrets/a' }, rules)).to.equal('deny');
     expect(decidePermission('agent', 'set', storageTarget, rules)).to.equal('deny');
+  });
+
+  it('reads the first matching rule itself, or null when none matches', () => {
+    const pinned = rule({ actions: ['vault.search'] });
+    const every = rule({ id: 'rule-2' });
+    expect(matchingRule('agent', 'vault.search', { kind: 'tool', name: 'vault.search' }, [pinned, every])).to.equal(pinned);
+    expect(matchingRule('agent', 'vault.read', { kind: 'tool', name: 'vault.read' }, [pinned, every])).to.equal(every);
+    expect(matchingRule('agent', 'vault.read', { kind: 'tool', name: 'vault.read' }, [pinned])).to.equal(null);
+    // A tool rule matches no file target.
+    expect(matchingRule('agent', 'read', fileTarget, [rule()])).to.equal(null);
+  });
+});
+
+describe('the agent tool rule matcher', () => {
+  it('reads the same rule as the shared matcher of the permission model', () => {
+    const rules = [
+      rule({ enabled: false, effect: 'deny' }),
+      rule({ principal: 'mcp', effect: 'deny' }),
+      rule({ resource: 'window', effect: 'deny' }),
+      rule({ actions: ['vault.search'], effect: 'deny' }),
+      rule({ id: 'rule-5', effect: 'allow' }),
+    ];
+    for (const name of ['vault.search', 'vault.read']) {
+      const target: PermissionTarget = { kind: 'tool', name };
+      expect(agentToolRule(name, rules)).to.equal(matchingRule('agent', name, target, rules));
+    }
+    expect(agentToolRule('vault.search', rules)).to.equal(rules[3]);
+    expect(agentToolRule('vault.read', rules)).to.equal(rules[4]);
+    expect(agentToolRule('vault.read', [])).to.equal(null);
   });
 });
 

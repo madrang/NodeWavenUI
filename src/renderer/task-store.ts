@@ -188,6 +188,16 @@ export class TaskStore {
   }
 
   /**
+   * Reopens one settled record in the worker core: done, failed, or cancelled moves back to draft.
+   *
+   * @param id The record id.
+   * @returns The record, or null when the record is absent or still lives.
+   */
+  async reopen(id: string): Promise<TaskRecord | null> {
+    return (await this.request('task.reopen', { id })) as TaskRecord | null;
+  }
+
+  /**
    * Re-links the runtime chat id of one bound record after a restore. No status change.
    *
    * @param id The record id.

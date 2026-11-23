@@ -506,6 +506,15 @@ async function serveRequest(id: number, channel: string, payload: unknown): Prom
       replyValue(id, await tasks.returnToSession(call.id));
       return;
     }
+    case 'task.reopen': {
+      const call = readTaskStringIdPayload(payload);
+      if (!call || !tasks) {
+        replyError(id, 'The task.reopen call needs an open task store and a task id.');
+        return;
+      }
+      replyValue(id, await tasks.reopen(call.id));
+      return;
+    }
     case 'task.relink': {
       const call = readTaskRelinkPayload(payload);
       if (!call || !tasks) {

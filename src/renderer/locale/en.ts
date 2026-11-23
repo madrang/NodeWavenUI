@@ -17,11 +17,14 @@ export const EN = {
   rail: {
     events: 'Events',
     files: 'Files',
+    tasks: 'Tasks',
     all: 'All',
     pending: 'Pending',
     completed: 'Completed',
     clear: 'Clear',
     clearTitle: 'Clear the completed events and delete the resolved patches',
+    board: 'Open board',
+    boardTitle: 'Open the task board view in the center workspace',
     resizeTitle: 'Drag to resize the rail',
   },
   workarea: {
@@ -47,6 +50,7 @@ export const EN = {
     editTitlePlaceholder: 'Task title',
     editBriefPlaceholder: 'The brief the session agent reads. Fenced code blocks render highlighted.',
     editGoalPlaceholder: 'Goal: the completion test (optional)',
+    statusTitle: 'Sets the status of the record by hand. It applies on Save, whatever the state machine says.',
     save: 'Save',
     cancel: 'Cancel',
     edit: 'Edit',

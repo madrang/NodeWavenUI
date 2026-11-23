@@ -7,7 +7,7 @@
  */
 
 import type { AgentTool, AgentToolOutput } from './agent-tools.js';
-import { taskSettlesWaiter, type TaskDispatchMode, type TaskRecord, type TaskStatus } from '../shared/tasks.js';
+import { TASK_STATUSES, taskSettlesWaiter, type TaskDispatchMode, type TaskRecord, type TaskStatus } from '../shared/tasks.js';
 import type { TaskStore } from './task-store.js';
 
 /** The permission check shape the tool needs, kept local so the interface of agent-tools stays closed. */
@@ -167,9 +167,8 @@ async function runDispatch(deps: TaskToolDeps, args: Record<string, unknown>): P
 function runList(deps: TaskToolDeps, args: Record<string, unknown>): AgentToolOutput {
   const status = optionalString(args, 'status');
   const filter = (task: TaskRecord): boolean => !status || task.status === status;
-  const known: TaskStatus[] = ['draft', 'queued', 'running', 'review', 'done', 'failed', 'cancelled'];
-  if (status && !known.includes(status as TaskStatus)) {
-    throw new Error(`The status "${status}" is none of ${known.join(', ')}.`);
+  if (status && !TASK_STATUSES.includes(status as TaskStatus)) {
+    throw new Error(`The status "${status}" is none of ${TASK_STATUSES.join(', ')}.`);
   }
   const rows = deps.store.list().filter(filter).map(taskLine);
   return { text: rows.length > 0 ? rows.join('\n') : 'No task matches.' };
@@ -260,18 +259,37 @@ async function runCancel(deps: TaskToolDeps, args: Record<string, unknown>): Pro
   return { text: `Task ${id} cancelled.` };
 }
 
+/** Runs the reopen action: one settled task returns to draft for a new dispatch. The permission
+ * gate asks one card, unless an allow rule preauthorizes the tasks tool, and the session chat and
+ * the origin chat may ask it. */
+async function runReopen(deps: TaskToolDeps, args: Record<string, unknown>): Promise<AgentToolOutput> {
+  const id = requireId(args);
+  const record = recordOf(deps, id);
+  if (record.sessionChatId !== deps.chatId && record.originChatId !== deps.chatId) {
+    throw new Error(`The chat of this turn may not reopen task ${id}. Only its session and its origin chat may resubmit it.`);
+  }
+  if (!deps.dispatchAllowed()) {
+    await deps.check.check('agent', 'tasks', { kind: 'tool', name: 'tasks' }, `reopen task ${id} (${record.status}) as a draft`, deps.source);
+  }
+  const updated = await deps.store.reopen(id);
+  if (!updated) {
+    throw new Error(`The task ${id} cannot reopen from state ${record.status}. Only a failed, cancelled, or done task reopens.`);
+  }
+  return { text: `Task ${id} reopened as a draft: ${record.title}. The user dispatches it again from the task board.` };
+}
+
 /** Builds the `tasks` tool: the naming surface and the dispatchable records in one. */
 export function createTasksTool(deps: TaskToolDeps): AgentTool {
   return {
     name: 'tasks',
     description:
-      'Manages the tasks of the workspace. Action name titles the work of this chat: it renames the tab, groups the patch events, and feeds the later commit title. The other actions serve the dispatchable task records: create starts a draft (title, description, goal, parentTaskId, blockedBy), dispatch binds one to a chat session, list and read inspect them, send steers a task session, complete and fail settle the work of the session agent (only the session agent), wait blocks until review or a terminal state, and cancel stops a task of this chat. A task leaves the queue only when every blockedBy task reached done.',
+      'Manages the tasks of the workspace. Action name titles the work of this chat: it renames the tab, groups the patch events, and feeds the commit title. The other actions serve the dispatchable task records: create starts a draft (title, description, goal, parentTaskId, blockedBy), dispatch binds one to a chat session, list and read inspect them, send steers a task session, complete and fail settle the work of the session agent (only the session agent), wait blocks until review or a terminal state, cancel stops a task of this chat, and reopen returns one failed, cancelled, or done task of this chat to a draft that the user approves and dispatches again. A task leaves the queue only when every blockedBy task reached done.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['name', 'create', 'dispatch', 'list', 'read', 'send', 'complete', 'fail', 'wait', 'cancel'],
+          enum: ['name', 'create', 'dispatch', 'list', 'read', 'send', 'complete', 'fail', 'wait', 'cancel', 'reopen'],
           description: 'The task action to run.',
         },
         title: { type: 'string', description: 'The task title. Actions name and create.' },
@@ -325,6 +343,9 @@ export function createTasksTool(deps: TaskToolDeps): AgentTool {
       }
       if (action === 'cancel') {
         return runCancel(deps, args);
+      }
+      if (action === 'reopen') {
+        return runReopen(deps, args);
       }
       return runList(deps, args);
     },

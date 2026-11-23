@@ -268,8 +268,8 @@ export class MainApp implements McpSessionSink {
         void openPatchReviewView(this.patchStore!, id, separateTab);
       },
       taskStore: this.taskStore,
-      openTaskBoard: () => {
-        this.openTaskBoard();
+      openTaskBoard: (id) => {
+        this.openTaskBoard(id ?? undefined);
       },
       openFile: (path, separateTab) => {
         void openEditorView(

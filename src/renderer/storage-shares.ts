@@ -7,6 +7,8 @@
 
 import type { StorageSetup } from './plugins.js';
 import type { StorageBackend } from '../storage/storage.js';
+import { GuardedStorage, type StoragePermissionCheck } from '../storage/guarded.js';
+import { matchingRuleDecision, type PermissionRule } from '../shared/permissions.js';
 import {
   type SharedStorageEntry,
   type SharedStoragesRecord,
@@ -33,16 +35,44 @@ interface OpenEntry {
   error: string | null;
 }
 
-/** Owns the shared storages of the workspace and answers the read tool. */
+/** Builds the permission check of one shared storage: a rule that matches decides over the share,
+ * and the share grant alone serves reads. A write without an allow rule refuses, because the
+ * share record carries no write level. */
+export function createShareGuardCheck(rules: () => readonly PermissionRule[]): StoragePermissionCheck {
+  return {
+    check: async (principal, action, target) => {
+      const ruled = matchingRuleDecision(principal, action, target, rules());
+      if (ruled === 'deny') {
+        throw new Error(`A permission rule refuses the ${action} of the key "${target.key}".`);
+      }
+      if (!ruled && action === 'write') {
+        throw new Error('The storage share grants reads only. A permission rule may grant the write.');
+      }
+    },
+  };
+}
+
+/** Owns the shared storages of the workspace and answers the read tool. Every backend sits
+ * behind the guarded storage wrapper: the share record grants the access level, and the
+ * permission rules may still refuse a call that the share granted. */
 export class StorageShareRegistry {
   private settingsAccess: StorageAccess = 'none';
   private readonly opened = new Map<string, OpenEntry>();
+  private readonly guardedSettings: StorageBackend;
 
   constructor(
     private readonly settingsBackend: StorageBackend,
     private readonly resolveSetup: (setupId: string) => StorageSetup | undefined,
     private readonly directoryPath: string,
-  ) {}
+    private readonly rules: () => readonly PermissionRule[] = () => [],
+  ) {
+    this.guardedSettings = this.guard(settingsBackend);
+  }
+
+  /** Wraps one backend for the agent behind the share guard. */
+  private guard(backend: StorageBackend): StorageBackend {
+    return new GuardedStorage(backend, 'agent', createShareGuardCheck(this.rules));
+  }
 
   /**
    * Applies one record: every entry opens, whatever its access level, so a later access change needs no reopen.
@@ -84,11 +114,11 @@ export class StorageShareRegistry {
       return;
     }
     try {
-      open.backend = setup.open({
+      open.backend = this.guard(setup.open({
         directoryPath: this.directoryPath,
         config: entry.config,
         ...(entry.password ? { password: entry.password } : {}),
-      });
+      }));
       open.error = null;
     } catch (error) {
       open.backend = null;
@@ -140,7 +170,7 @@ export class StorageShareRegistry {
    */
   async readKey(storageId: string, key: string): Promise<string | null> {
     if (this.settingsSharedReadonly && storageId === this.settingsBackend.id) {
-      return this.settingsBackend.get(key);
+      return this.guardedSettings.get(key);
     }
     for (const open of this.opened.values()) {
       if (open.entry.uriId === storageId) {

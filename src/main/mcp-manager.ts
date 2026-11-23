@@ -4,7 +4,14 @@
  * The `native` mode surfaces its tools to the chat agent, prefixed with the sanitized endpoint label and a dot.
  */
 
-import { sanitizeEndpointLabel, type McpEndpoint, type McpEndpoints, type McpServerState, type McpNativeTool } from '../shared/mcp-endpoints.js';
+import {
+  endpointLabelCollisions,
+  sanitizeEndpointLabel,
+  type McpEndpoint,
+  type McpEndpoints,
+  type McpServerState,
+  type McpNativeTool,
+} from '../shared/mcp-endpoints.js';
 import type { McpResourceInfo, McpToolInfo } from './mcp-client.js';
 import type { McpCallResult } from '../shared/mcp-endpoints.js';
 import { McpServerClient } from './mcp-client.js';
@@ -49,6 +56,8 @@ export class McpClientManager {
   private readonly servers = new Map<string, ServerRecord>();
   private readonly runtimeEnabled = new Set<string>();
   private readonly changeListeners = new Set<() => void>();
+  /** The endpoints a label collision blocks, with the refusal message per endpoint id. */
+  private readonly labelBlocked = new Map<string, string>();
 
   /** The notification sink of the manager: chat messages, dispatches, and listener ids. */
   constructor(private readonly sink: McpNotificationSink) {}
@@ -85,9 +94,54 @@ export class McpClientManager {
         record.client?.close();
         this.servers.delete(id);
         this.runtimeEnabled.delete(id);
+        this.labelBlocked.delete(id);
       }
     }
+    this.applyLabelCollisions();
     this.notifyChange();
+  }
+
+  /** Applies the label collisions over the current records: a newly blocked endpoint closes and
+   * reads its refusal, and an endpoint whose collision cleared follows its mode again: it
+   * connects, or reads dormant when nothing enables it. */
+  private applyLabelCollisions(): void {
+    const collisions = endpointLabelCollisions([...this.servers.values()].map((record) => record.endpoint));
+    for (const [id, message] of collisions) {
+      if (this.labelBlocked.has(id)) {
+        continue;
+      }
+      const record = this.servers.get(id);
+      if (!record) {
+        continue;
+      }
+      this.labelBlocked.set(id, message);
+      record.client?.close();
+      record.client = null;
+      record.tools = [];
+      record.resources = [];
+      record.state = 'error';
+      record.error = message;
+      console.warn(`[NodeWavenUI] ${message}`);
+    }
+    for (const id of [...this.labelBlocked.keys()]) {
+      if (collisions.has(id)) {
+        continue;
+      }
+      this.labelBlocked.delete(id);
+      const record = this.servers.get(id);
+      if (!record) {
+        continue;
+      }
+      record.error = null;
+      // The collision can clear through a mode change. An endpoint that nothing enables reads
+      // dormant, the way a fresh apply leaves it.
+      if (!this.wantedConnected(record.endpoint)) {
+        record.state = 'dormant';
+        continue;
+      }
+      record.state = 'connecting';
+      void this.connect(record);
+    }
   }
 
   private replaceEndpoint(record: ServerRecord, endpoint: McpEndpoint): void {
@@ -124,6 +178,15 @@ export class McpClientManager {
           this.handleServerNotification(record, method, params);
         }),
       );
+      // A collision may have landed while the handshake ran: the connection closes unused, so
+      // no tool set of a blocked endpoint answers under the prefix of another.
+      const blocked = this.labelBlocked.get(endpoint.id);
+      if (blocked) {
+        client.close();
+        record.state = 'error';
+        record.error = blocked;
+        return;
+      }
       record.client = client;
       record.tools = await client.listTools();
       try {

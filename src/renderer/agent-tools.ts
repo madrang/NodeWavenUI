@@ -8,7 +8,7 @@
 
 import type { ChatImage, ToolDefinition } from '../providers/provider.js';
 import type { PermissionRule, PrincipalKind, PermissionTarget } from '../shared/permissions.js';
-import { CHAT_AGENT_SOURCE } from '../shared/permissions.js';
+import { CHAT_AGENT_SOURCE, matchingRule } from '../shared/permissions.js';
 import { readBridge } from '../shared/bridge.js';
 import type { PathRule } from '../shared/permissions.js';
 import { COMMAND_TOOL_DEFINITIONS } from '../shared/command-tool.js';
@@ -38,26 +38,15 @@ export { CHAT_AGENT_SOURCE };
 
 /**
  * Reads the first rule that governs one agent tool: resource `tool`, the agent principal, the tool name.
- * The rule list comes from the permission gate, so the matrix and the request cards write the same rules.
+ * The shared matcher of the permission model decides, and the rule list comes from the permission
+ * gate, so the matrix and the request cards read the rules the gate reads.
  *
  * @param name The tool name, for example `read` or `obsidian.read_note`.
  * @param rules The permission rules, in evaluation order.
  * @returns The rule, or null when none governs the tool, which leaves the tool on ask.
  */
 export function agentToolRule(name: string, rules: readonly PermissionRule[]): PermissionRule | null {
-  for (const rule of rules) {
-    if (!rule.enabled || rule.resource !== 'tool') {
-      continue;
-    }
-    if (rule.principal !== 'agent' && rule.principal !== '*') {
-      continue;
-    }
-    if (rule.actions !== '*' && !rule.actions.includes(name)) {
-      continue;
-    }
-    return rule;
-  }
-  return null;
+  return matchingRule('agent', name, { kind: 'tool', name }, rules);
 }
 
 /** True when a deny rule governs the tool, so the agent list hides it. */

@@ -7,6 +7,7 @@
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { asRecord } from '../shared/records.js';
+import { BodyLimitError, readRequestBody } from '../shared/http-body.js';
 import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
 import { createCommandTools } from './command-service.js';
 import { sessions, type WindowCaller } from './session-service.js';
@@ -14,6 +15,42 @@ import { callWorkspace, pushWorkspace } from './workspace-link.js';
 
 /** Every tool of the host acts as this principal. */
 const HOST_PRINCIPAL = 'mcp' as const;
+
+/** The session cap of the host. A client that sprays fresh session ids evicts the oldest, so
+ * every unknown id answers the same 404 that asks for a new initialize. */
+const MCP_HOST_SESSION_LIMIT = 64;
+
+/** The bounded session registry of the host: the known session ids, newest use last. */
+interface SessionRegistry {
+  /** Registers one fresh session id, and evicts the oldest ids past the cap. */
+  open(id: string): void;
+  /** Touches one known session id, so it reads as the newest. Returns false on an unknown id. */
+  touch(id: string): boolean;
+}
+
+/** Builds one bounded session registry over a plain map: the insertion order is the age. */
+function createSessionRegistry(limit: number): SessionRegistry {
+  const known = new Map<string, true>();
+  return {
+    open(id) {
+      known.set(id, true);
+      for (const oldest of known.keys()) {
+        if (known.size <= limit) {
+          break;
+        }
+        known.delete(oldest);
+      }
+    },
+    touch(id) {
+      if (!known.has(id)) {
+        return false;
+      }
+      known.delete(id);
+      known.set(id, true);
+      return true;
+    },
+  };
+}
 
 /** One content block of a tool result. */
 export interface McpContentBlock {
@@ -193,18 +230,11 @@ function jsonOfResult(result: McpToolResult): unknown {
   }
 }
 
-/** Reads the body of one request. */
-function readRequestBody(request: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve) => {
-    let body = '';
-    request.on('data', (chunk: string | Buffer) => {
-      body += typeof chunk === 'string' ? chunk : chunk.toString('utf-8');
-    });
-    request.on('end', () => {
-      resolve(body);
-    });
-  });
-}
+/** The body cap of one host request: a base64 image rides a tool-call body beside a full model
+ * turn, and the Venice chat ceilings put one turn near 2.25 MiB of UTF-8 at the worst token
+ * density. A user setting replaces the constant later, because the RAM budget of a setup
+ * differs. */
+const MCP_HOST_BODY_LIMIT = 16 * 1024 * 1024;
 
 /** Answers one request with plain text. */
 function respondPlainText(response: http.ServerResponse, status: number, text: string): void {
@@ -282,9 +312,9 @@ export async function startMcpHost(config: McpHostConfig): Promise<McpHostHandle
     await callWorkspace('mcp.token.save', token);
   }
   const tools = createTools();
-  const fallbackSessionId = crypto.randomUUID();
+  const registry = createSessionRegistry(MCP_HOST_SESSION_LIMIT);
   const server = http.createServer((request, response) => {
-    void handleMcpRequest(request, response, tools, token, fallbackSessionId);
+    void handleMcpRequest(request, response, tools, token, registry);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -306,12 +336,12 @@ export async function startMcpHost(config: McpHostConfig): Promise<McpHostHandle
   return runningHost;
 }
 
-/** Answers one MCP message. */
+/** Answers one MCP message. The session id names the client connection the message belongs to. */
 async function answer(
   message: unknown,
   tools: readonly McpToolDescriptor[],
   token: string,
-  fallbackSessionId: string,
+  sessionId: string,
   userAgent: string | null,
 ): Promise<unknown> {
   const record = asRecord(message);
@@ -321,6 +351,7 @@ async function answer(
   if (method === 'initialize') {
     pushWorkspace('mcp.sink', {
       kind: 'sessionOpened',
+      sessionId,
       info: {
         clientName: readStringField(params['clientInfo'], 'name'),
         clientVersion: readStringField(params['clientInfo'], 'version'),
@@ -346,7 +377,6 @@ async function answer(
       return { jsonrpc: '2.0', id, error: { code: -32602, message: `The tool "${name}" is unknown.` } };
     }
     const args = asRecord(params['arguments']) ?? {};
-    const sessionId = fallbackSessionId;
     const caller: WindowCaller = { principal: HOST_PRINCIPAL, source: sessionId };
     pushWorkspace('mcp.sink', { kind: 'toolCall', sessionId, toolName: name, args });
     let result: McpToolResult;
@@ -374,7 +404,7 @@ async function answer(
     return { jsonrpc: '2.0', id, error: { code: -32602, message: 'This server serves no resources.' } };
   }
   if (typeof method === 'string' && method.length > 0 && !('id' in (record ?? {}))) {
-    pushWorkspace('mcp.sink', { kind: 'clientNotification', sessionId: fallbackSessionId, method, params: record?.['params'] ?? null });
+    pushWorkspace('mcp.sink', { kind: 'clientNotification', sessionId, method, params: record?.['params'] ?? null });
     return null;
   }
   return { jsonrpc: '2.0', id, error: { code: -32601, message: `The method "${String(method)}" is unknown.` } };
@@ -386,7 +416,7 @@ async function handleMcpRequest(
   response: http.ServerResponse,
   tools: readonly McpToolDescriptor[],
   token: string,
-  fallbackSessionId: string,
+  registry: SessionRegistry,
 ): Promise<void> {
   if (request.method !== 'POST') {
     respondPlainText(response, 405, 'The MCP host serves POST requests only.');
@@ -397,7 +427,21 @@ async function handleMcpRequest(
     respondPlainText(response, 401, 'The bearer token is missing or wrong.');
     return;
   }
-  const body = await readRequestBody(request);
+  let body: string;
+  try {
+    body = await readRequestBody(request, MCP_HOST_BODY_LIMIT);
+  } catch (error) {
+    if (error instanceof BodyLimitError && !response.destroyed) {
+      // The unread rest of the body rides the socket after the refusal; the destroy on the
+      // flush closes it.
+      response.once('finish', () => {
+        request.destroy();
+      });
+      respondPlainText(response, error.status, error.text);
+      return;
+    }
+    throw error;
+  }
   let message: unknown;
   try {
     message = JSON.parse(body);
@@ -405,12 +449,39 @@ async function handleMcpRequest(
     respondPlainText(response, 400, 'The request body holds no valid JSON.');
     return;
   }
+  // The initialize call mints the session id of the connection. Every other message names its
+  // session through the header: a missing header answers 400, and an unknown or evicted id
+  // answers the 404 that asks for a fresh initialize.
+  const fresh = asRecord(message)?.['method'] === 'initialize';
+  let sessionId: string;
+  if (fresh) {
+    sessionId = crypto.randomUUID();
+    registry.open(sessionId);
+  } else {
+    const presented = typeof request.headers['mcp-session-id'] === 'string' ? request.headers['mcp-session-id'] : '';
+    if (!presented) {
+      respondPlainText(response, 400, 'Mcp-Session-Id header is required.');
+      return;
+    }
+    if (!registry.touch(presented)) {
+      respondPlainText(response, 404, 'The MCP session is unknown. Initialize again.');
+      return;
+    }
+    sessionId = presented;
+  }
   const userAgent = typeof request.headers['user-agent'] === 'string' ? (request.headers['user-agent'] as string) : null;
-  const reply = await answer(message, tools, token, fallbackSessionId, userAgent);
+  const reply = await answer(message, tools, token, sessionId, userAgent);
   if (!reply) {
-    response.writeHead(202);
+    if (fresh) {
+      response.writeHead(202, { 'Mcp-Session-Id': sessionId });
+    } else {
+      response.writeHead(202);
+    }
     response.end();
     return;
+  }
+  if (fresh) {
+    response.setHeader('Mcp-Session-Id', sessionId);
   }
   response.writeHead(200, { 'Content-Type': 'application/json' });
   response.end(JSON.stringify(reply));

@@ -460,167 +460,6 @@ body.resizing-column {
   border-color: var(--border);
 }
 
-/* The markdown body of an assistant reply: blocks, inline runs, and highlighted code. */
-.md-body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.md-paragraph {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.md-heading {
-  margin: 4px 0 0;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.md-level-1 {
-  font-size: 15px;
-}
-
-.md-level-2 {
-  font-size: 14px;
-}
-
-.md-level-3,
-.md-level-4,
-.md-level-5,
-.md-level-6 {
-  font-size: 13px;
-}
-
-.md-list {
-  margin: 0;
-  padding-left: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.md-quote {
-  margin: 0;
-  padding: 2px 0 2px 10px;
-  border-left: 2px solid var(--border);
-  color: var(--muted);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.md-inline-code {
-  font-family: ui-monospace, 'JetBrains Mono', monospace;
-  font-size: 12px;
-  background: color-mix(in srgb, var(--surface) 70%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 0 4px;
-}
-
-.md-strong {
-  font-weight: 600;
-}
-
-.md-link {
-  color: var(--accent);
-  text-decoration: underline;
-  cursor: help;
-}
-
-/* One fenced code block: the quiet language label and the monospace body. */
-.md-code {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--surface) 55%, var(--bg));
-  overflow: hidden;
-}
-
-.md-code-label {
-  padding: 3px 10px;
-  font-size: 11px;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
-}
-
-.md-code-body {
-  display: block;
-  padding: 8px 10px;
-  overflow-x: auto;
-  font-family: ui-monospace, 'JetBrains Mono', monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre;
-}
-
-/* The Prism token colors read the theme palette, so every theme colors code without its own rules. */
-.token.comment,
-.token.prolog,
-.token.doctype,
-.token.cdata {
-  color: var(--muted);
-  font-style: italic;
-}
-
-.token.punctuation {
-  color: color-mix(in srgb, var(--text) 65%, var(--muted));
-}
-
-.token.keyword,
-.token.tag,
-.token.deleted {
-  color: var(--chart-4);
-}
-
-.token.string,
-.token.char,
-.token.attr-value,
-.token.inserted {
-  color: var(--chart-2);
-}
-
-.token.number,
-.token.boolean {
-  color: var(--chart-3);
-}
-
-.token.function,
-.token.class-name {
-  color: var(--chart-5);
-}
-
-.token.operator,
-.token.entity,
-.token.url {
-  color: var(--chart-6);
-}
-
-.token.attr-name,
-.token.property,
-.token.constant,
-.token.symbol {
-  color: var(--chart-1);
-}
-
-.token.regex,
-.token.important,
-.token.variable {
-  color: var(--chart-3);
-}
-
-.token.bold {
-  font-weight: 600;
-}
-
-.token.italic {
-  font-style: italic;
-}
-
 /* The reusable context menu: one floating action list at the pointer, above every surface. */
 .context-menu {
   position: fixed;
@@ -658,7 +497,7 @@ body.resizing-column {
   background: color-mix(in srgb, var(--error) 16%, transparent);
 }
 
-/* The review view of one patch: the facts, the answers, and the colored diff lines. */
+/* The review view of one patch: the facts and the answers. The diff lines style through the shared text sheet. */
 .review-view {
   flex: 1;
   min-height: 0;
@@ -705,7 +544,7 @@ body.resizing-column {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border-bottom: 1px solid var(--border);
+  border-top: 1px solid var(--border);
 }
 
 .review-comment {
@@ -754,73 +593,6 @@ body.resizing-column {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-}
-
-.review-diff {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 8px 0 14px;
-  font-family: ui-monospace, 'JetBrains Mono', monospace;
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.review-file {
-  padding: 6px 14px;
-  font-weight: 600;
-  color: var(--text);
-  word-break: break-all;
-}
-
-.review-hunk {
-  padding: 3px 14px;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--surface) 55%, transparent);
-}
-
-.review-mark {
-  display: inline-block;
-  width: 18px;
-  flex: none;
-  color: var(--muted);
-  user-select: none;
-}
-
-.review-add,
-.review-remove,
-.review-context,
-.review-note {
-  display: flex;
-  padding: 0 14px;
-  white-space: pre;
-}
-
-.review-add {
-  background: color-mix(in srgb, #3fb26a 16%, transparent);
-  color: var(--text);
-}
-
-.review-add .review-mark {
-  color: #3fb26a;
-}
-
-.review-remove {
-  background: color-mix(in srgb, #e05252 16%, transparent);
-  color: var(--text);
-}
-
-.review-remove .review-mark {
-  color: #e05252;
-}
-
-.review-context {
-  color: var(--muted);
-}
-
-.review-note {
-  color: var(--muted);
-  font-style: italic;
 }
 
 .rail-event-body {

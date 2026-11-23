@@ -107,7 +107,7 @@ export interface BridgePermissionCheck {
 
 /** One MCP session event the main process pushes into the host tab. */
 export type BridgeMcpSinkEvent =
-  | { readonly kind: 'sessionOpened'; readonly info: unknown } |
+  | { readonly kind: 'sessionOpened'; readonly sessionId: string; readonly info: unknown } |
   { readonly kind: 'toolCall'; readonly sessionId: string; readonly toolName: string; readonly args: unknown } |
   {
     readonly kind: 'toolResult';

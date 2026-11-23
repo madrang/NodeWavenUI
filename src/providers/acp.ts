@@ -13,6 +13,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { isRecord } from '../shared/records.js';
+import { PendingCalls } from '../shared/pending-calls.js';
 import {
   ProviderError,
   type ChatMessage,
@@ -268,17 +269,41 @@ class WebSocketAcpTransport implements AcpTransport {
   }
 }
 
-/** One pending JSON-RPC call. */
-interface PendingCall {
-  readonly resolve: (value: unknown) => void;
-  readonly reject: (error: unknown) => void;
+/** The cap of the transport open and the initialize handshake. A hung agent must not hang the
+ * provider call that started it. */
+export const ACP_HANDSHAKE_TIMEOUT_MS = 30_000;
+
+/** The cap of one ordinary call, for example session/new. */
+export const ACP_REQUEST_TIMEOUT_MS = 60_000;
+
+/** The cap of one session turn. A turn is inference-paced, so the cap matches the inference
+ * budget of a chat call: several minutes. */
+export const ACP_TURN_TIMEOUT_MS = 900_000;
+
+/** Rejects one promise with a ProviderError when the cap passes first. The underlying promise
+ * keeps running, so the caller closes the transport on the refusal. */
+function cap<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new ProviderError(`The ACP agent did not answer within ${timeoutMs} ms.`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /** Drives one ACP agent connection: lifecycle, calls, and inbound traffic. */
 class AcpAgent {
   private readonly transport: AcpTransport;
-  private nextMessageId = 1;
-  private readonly pending = new Map<number, PendingCall>();
+  private readonly pending = new PendingCalls();
   private updateListener: ((params: Record<string, unknown>) => void) | null = null;
   /** Name of the agent, from the initialize response. */
   agentName: string | null = null;
@@ -288,24 +313,24 @@ class AcpAgent {
   }
 
   /**
-   * Opens the transport and runs the ACP initialize handshake.
+   * Opens the transport and runs the ACP initialize handshake, both under the handshake cap.
    *
-   * @throws ProviderError when the transport fails or the agent rejects the handshake.
+   * @throws ProviderError when the transport fails, the cap passes, or the agent rejects the handshake.
    */
   async connect(): Promise<void> {
-    await this.transport.connect();
-    this.transport.onMessage((message) => {
-      this.handleMessage(message);
-    });
-    this.transport.onClose(() => {
-      this.failPending();
-    });
     try {
+      await cap(this.transport.connect(), ACP_HANDSHAKE_TIMEOUT_MS);
+      this.transport.onMessage((message) => {
+        this.handleMessage(message);
+      });
+      this.transport.onClose(() => {
+        this.failPending();
+      });
       const result = await this.call('initialize', {
         protocolVersion: 1,
         clientCapabilities: {},
         clientInfo: { name: 'NodeWavenUI', version: '0.2.0' },
-      });
+      }, ACP_HANDSHAKE_TIMEOUT_MS);
       if (isRecord(result) && isRecord(result.agentInfo) && typeof result.agentInfo.name === 'string') {
         this.agentName = result.agentInfo.name;
       }
@@ -321,16 +346,18 @@ class AcpAgent {
    *
    * @param method The ACP method name.
    * @param params The parameters of the call.
+   * @param timeoutMs The reply cap. The cap drops the waiting entry, so a late reply of a
+   * stuck agent resolves nothing.
    * @returns The result of the call.
-   * @throws ProviderError when the agent answers an error or the connection closes first.
+   * @throws ProviderError when the agent answers an error, the cap passes, or the connection closes first.
    */
-  call(method: string, params: unknown): Promise<unknown> {
-    const id = this.nextMessageId;
-    this.nextMessageId += 1;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.transport.send({ jsonrpc: '2.0', id, method, params });
-    });
+  call(method: string, params: unknown, timeoutMs = ACP_REQUEST_TIMEOUT_MS): Promise<unknown> {
+    const { id, promise } = this.pending.open(
+      timeoutMs,
+      () => new ProviderError(`The ACP call "${method}" timed out after ${timeoutMs} ms.`),
+    );
+    this.transport.send({ jsonrpc: '2.0', id, method, params });
+    return promise;
   }
 
   /** Sends one JSON-RPC notification. */
@@ -350,10 +377,7 @@ class AcpAgent {
   }
 
   private failPending(): void {
-    for (const call of this.pending.values()) {
-      call.reject(new ProviderError('The ACP connection closed before the agent answered.'));
-    }
-    this.pending.clear();
+    this.pending.rejectAll(() => new ProviderError('The ACP connection closed before the agent answered.'));
   }
 
   private handleMessage(message: unknown): void {
@@ -371,16 +395,14 @@ class AcpAgent {
     if (typeof message.id !== 'number') {
       return;
     }
-    const call = this.pending.get(message.id);
-    if (!call) {
+    if (!this.pending.has(message.id)) {
       return;
     }
-    this.pending.delete(message.id);
     if (isRecord(message.error) && typeof message.error.message === 'string') {
-      call.reject(new ProviderError(`The ACP agent answered an error for "${message.method ?? message.id}": ${message.error.message}`));
+      this.pending.reject(message.id, new ProviderError(`The ACP agent answered an error for "${message.method ?? message.id}": ${message.error.message}`));
       return;
     }
-    call.resolve(message.result);
+    this.pending.resolve(message.id, message.result);
   }
 
   private handleAgentRequest(id: number, method: string, params: unknown): void {
@@ -465,7 +487,7 @@ export class AcpInferenceProvider implements InferenceProvider {
       const result: unknown = await agent.call('session/prompt', {
         sessionId,
         prompt: [{ type: 'text', text: buildPromptText(request.messages) }],
-      });
+      }, ACP_TURN_TIMEOUT_MS);
       const stopReason = readStopReason(result);
       if (stopReason !== 'end_turn') {
         throw new ProviderError(`The ACP agent "${this.id}" ended the turn with reason "${stopReason}".`);

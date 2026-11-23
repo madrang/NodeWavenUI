@@ -4,8 +4,15 @@
  */
 
 import { asRecord } from '../shared/records.js';
+import { retry } from '../shared/retry.js';
 import type { McpCallResult, McpEndpoint, McpImage } from '../shared/mcp-endpoints.js';
-import type { McpTransport } from './mcp-transport.js';
+import { HttpMcpTransport, MCP_HANDSHAKE_TIMEOUT_MS, McpNetworkError, type McpTransport } from './mcp-transport.js';
+
+/** The attempts of one endpoint connect, the first try included. The values mirror the connect
+ * retry of a chat provider: a stalled connect retries, a running call never does. */
+const CONNECT_ATTEMPTS = 4;
+/** The wait before the first connect retry. Every later retry doubles it: 4s, 8s, 16s. */
+const CONNECT_BASE_DELAY_MS = 4000;
 
 /** The protocol version the client speaks, the same as the app's own MCP host. */
 const PROTOCOL_VERSION = '2025-06-18';
@@ -117,18 +124,23 @@ export class McpServerClient {
   ) {}
 
   /**
-   * Connects one endpoint: opens the transport and runs the initialize handshake.
+   * Connects one endpoint: opens the transport and runs the initialize handshake. A connect-class
+   * failure retries with a backoff, because the server ran nothing. A server-answered failure —
+   * an HTTP error or a JSON-RPC error reply — fails at once, because the retry would ask a live
+   * server the same question again.
    *
    * @param endpoint The configured endpoint.
    * @param transport The transport that carries the messages.
    * @throws Error when the handshake fails or the server answers no valid initialize result.
    */
   static async connect(endpoint: McpEndpoint, transport: McpTransport): Promise<McpServerClient> {
-    const result = await transport.request('initialize', {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: { name: 'nodewavenui', version: '0.2.0' },
-    });
+    let result: unknown;
+    try {
+      result = await McpServerClient.handshake(endpoint, transport);
+    } catch (error) {
+      transport.close();
+      throw error;
+    }
     const record = asRecord(result);
     if (!record) {
       transport.close();
@@ -136,29 +148,62 @@ export class McpServerClient {
     }
     const serverInfo = asRecord(record.serverInfo);
     transport.notify('notifications/initialized', {});
-    return new McpServerClient(endpoint, transport, readString(serverInfo?.name, endpoint.label));
+    const client = new McpServerClient(endpoint, transport, readString(serverInfo?.name, endpoint.label));
+    // A lost session answers 404: the transport then re-runs the handshake and replays the call.
+    if (transport instanceof HttpMcpTransport) {
+      transport.recoverSessions(async () => {
+        await McpServerClient.handshake(endpoint, transport);
+        transport.notify('notifications/initialized', {});
+      });
+    }
+    return client;
   }
 
-  /** Lists the tools of the server, every page. */
-  async listTools(): Promise<readonly McpToolInfo[]> {
-    const tools: McpToolInfo[] = [];
+  /** Runs the initialize handshake under its short cap, and retries the connect-class failures. */
+  private static handshake(endpoint: McpEndpoint, transport: McpTransport): Promise<unknown> {
+    return retry(
+      () => transport.request(
+        'initialize',
+        { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: 'nodewavenui', version: '0.2.0' } },
+        MCP_HANDSHAKE_TIMEOUT_MS,
+      ),
+      {
+        attempts: CONNECT_ATTEMPTS,
+        baseDelayMs: CONNECT_BASE_DELAY_MS,
+        retryOn: (error) => error instanceof McpNetworkError,
+      },
+    );
+  }
+
+  /** Lists every page of one list call of the server. The entries that fail coercion are
+   * skipped, and a broken cursor loop stops at the page cap. */
+  private async listPages<T>(
+    method: string,
+    coerce: (value: unknown) => unknown,
+    entryKind: string,
+  ): Promise<readonly T[]> {
+    const entries: T[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
       const params: Record<string, unknown> = {};
       if (cursor) {
         params.cursor = cursor;
       }
-      const result = await this.transport.request('tools/list', params);
-      const listPage = readListPage(result, McpServerClient.coerceTool, 'tools');
+      const listPage = readListPage(await this.transport.request(method, params), coerce, entryKind);
       for (const entry of listPage.entries) {
-        tools.push(entry as McpToolInfo);
+        entries.push(entry as T);
       }
       if (!listPage.nextCursor) {
         break;
       }
       cursor = listPage.nextCursor;
     }
-    return tools;
+    return entries;
+  }
+
+  /** Lists the tools of the server, every page. */
+  listTools(): Promise<readonly McpToolInfo[]> {
+    return this.listPages<McpToolInfo>('tools/list', McpServerClient.coerceTool, 'tools');
   }
 
   private static coerceTool(value: unknown): unknown {
@@ -179,48 +224,14 @@ export class McpServerClient {
     return renderCallContent(result);
   }
 
-  /** Lists the resources and the resource templates of the server. */
-  async listResources(): Promise<readonly McpResourceInfo[]> {
-    const resources: McpResourceInfo[] = [];
-    let cursor: string | null = null;
-    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const params: Record<string, unknown> = {};
-      if (cursor) {
-        params.cursor = cursor;
-      }
-      const result = await this.transport.request('resources/list', params);
-      const listPage = readListPage(result, McpServerClient.coerceResource, 'resources');
-      for (const entry of listPage.entries) {
-        resources.push(entry as McpResourceInfo);
-      }
-      if (!listPage.nextCursor) {
-        break;
-      }
-      cursor = listPage.nextCursor;
-    }
-    return resources;
+  /** Lists the resources of the server, every page. */
+  listResources(): Promise<readonly McpResourceInfo[]> {
+    return this.listPages<McpResourceInfo>('resources/list', McpServerClient.coerceResource, 'resources');
   }
 
-  /** Lists the concrete and template resource URIs, merged into one scheme map helper list. */
-  async listResourceTemplates(): Promise<readonly McpResourceInfo[]> {
-    const templates: McpResourceInfo[] = [];
-    let cursor: string | null = null;
-    for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
-      const params: Record<string, unknown> = {};
-      if (cursor) {
-        params.cursor = cursor;
-      }
-      const result = await this.transport.request('resources/templates/list', params);
-      const listPage = readListPage(result, McpServerClient.coerceTemplate, 'resourceTemplates');
-      for (const entry of listPage.entries) {
-        templates.push(entry as McpResourceInfo);
-      }
-      if (!listPage.nextCursor) {
-        break;
-      }
-      cursor = listPage.nextCursor;
-    }
-    return templates;
+  /** Lists the resource templates of the server, every page. */
+  listResourceTemplates(): Promise<readonly McpResourceInfo[]> {
+    return this.listPages<McpResourceInfo>('resources/templates/list', McpServerClient.coerceTemplate, 'resourceTemplates');
   }
 
   private static coerceResource(value: unknown): unknown {
