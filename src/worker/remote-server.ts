@@ -459,13 +459,18 @@ export class RemoteServer {
     return text.length === 0 ? null : JSON.parse(text);
   }
 
-  /** Serves one static file of the phone page. The `text`, `libs`, and `themes` folders of the
-   * renderer build join the page folder, so the phone carries the text stack, Prism, and the
-   * default theme like the app. */
+  /** Serves one static file of the phone page. The `text`, `chat-cards`, `libs`, and `themes`
+   * folders of the renderer build join the page folder, with the json-viewer element module, so
+   * the phone carries the text stack, the chat cards, Prism, and the default theme like the app. */
   private serveStatic(urlPath: string, response: ServerResponse): boolean {
     const relative = urlPath === '/' ? 'index.html' : urlPath.slice(1);
     const base = join(this.appRoot, 'dist', 'renderer', 'remote');
-    const shared = relative.startsWith('text/') || relative.startsWith('libs/') || relative.startsWith('themes/');
+    const shared =
+      relative.startsWith('text/') ||
+      relative.startsWith('chat-cards/') ||
+      relative.startsWith('libs/') ||
+      relative.startsWith('themes/') ||
+      relative === 'json-viewer-element.js';
     const root = shared ? join(this.appRoot, 'dist', 'renderer') : base;
     const resolved = normalize(join(root, relative));
     if (!resolved.startsWith(`${root}/`) || !existsSync(resolved)) {

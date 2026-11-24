@@ -1,15 +1,30 @@
 /**
  * The message list of the chat column: groups the entries of one chat into message bubbles,
  * tool cards, and agent turn rails, and renders them into the ordered list element.
- * The chat actions behind the bubbles stay with the main app and arrive as callbacks.
+ * The cards come from the shared chat card stack (`./chat-cards/render.js`), which the phone page
+ * of the remote control renders too. The chat actions behind the bubbles stay with the main app
+ * and arrive as callbacks.
  */
 
 import type { ChatImage, ThinkingLevel } from '../providers/provider.js';
 import type { ChatEntry, StoredSystemPrompt } from './chat-sessions.js';
 import type { SystemPromptSetup } from './plugins.js';
 import { readBridge } from '../shared/bridge.js';
-import type { JsonViewerElement } from './json-viewer-element.js';
-import { appendCodeRuns, renderMarkdown } from './text/render.js';
+import {
+  appendAnswer,
+  appendReasoning,
+  appendToolCalls,
+  buildImageStrip,
+  buildToolPair,
+  buildToolReplyCard,
+  type EntrySlot,
+  fillEntryText,
+  groupChatEntries,
+  type MessageGroup,
+  replyBubbleClass,
+  type ToolPairChips,
+} from './chat-cards/render.js';
+import { renderMarkdown } from './text/render.js';
 import { NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
 import type { TaskRecord } from '../shared/tasks.js';
 import { translateMessage } from './locale/index.js';
@@ -79,19 +94,6 @@ export interface ChatEditState {
   readonly images?: readonly ChatImage[];
 }
 
-/** One render slot: an entry with its list index, the key of the reasoning open-state. */
-interface EntrySlot {
-  readonly index: number;
-  readonly entry: ChatEntry;
-}
-
-/** One render group of the message list: one entry, an MCP request with its reply, or one agent
- * turn: the tool calls of an assistant reply with the tool results that answer them. */
-type MessageGroup =
-  | { readonly kind: 'single'; readonly slot: EntrySlot } |
-  { readonly kind: 'pair'; readonly request: EntrySlot; readonly reply: EntrySlot | null } |
-  { readonly kind: 'agent'; readonly request: EntrySlot; readonly replies: readonly EntrySlot[] };
-
 /** The chat state and actions the message list renders from and calls back into. */
 export interface ChatRendererContext {
   /** Reads the chat the message list renders. */
@@ -138,89 +140,6 @@ export class ChatRenderer {
     this.context = context;
   }
 
-  /** Groups the entries of one chat for the message list: an MCP request pairs with the reply that
-   * follows it, and the tool calls of one agent turn pair with the tool results that answer them.
-   * A request still in flight, or brushed aside by an unrelated entry, renders with the wait hint. */
-  private groupChatEntries(chat: Chat): readonly MessageGroup[] {
-    const groups: MessageGroup[] = [];
-    // A message queued while a turn runs stays pinned at the bottom, under the running output.
-    const queuedSlots: EntrySlot[] = [];
-    let open: EntrySlot | null = null;
-    const flush = (): void => {
-      if (open) {
-        groups.push({ kind: 'pair', request: open, reply: null });
-        open = null;
-      }
-    };
-    for (let index = 0; index < chat.entries.length; index += 1) {
-      const entry = chat.entries[index];
-      if (!entry) {
-        continue;
-      }
-      const slot: EntrySlot = { index, entry };
-      if (entry.queued) {
-        queuedSlots.push(slot);
-        continue;
-      }
-      if (entry.role === 'user' && entry.json && entry.toolName) {
-        // A second request while one waits in flight closes the waiting one as unanswered.
-        flush();
-        open = slot;
-      } else if (entry.role !== 'user' && entry.role !== 'tool' && entry.toolName) {
-        if (open) {
-          groups.push({ kind: 'pair', request: open, reply: slot });
-          open = null;
-        } else {
-          groups.push({ kind: 'single', slot });
-        }
-      } else if (entry.role === 'assistant' && entry.toolCalls && entry.toolCalls.length > 0) {
-        flush();
-        // The tool results follow the assistant reply in call order, until a different role speaks.
-        const replies: EntrySlot[] = [];
-        let cursor = index + 1;
-        while (cursor < chat.entries.length) {
-          const candidate = chat.entries[cursor];
-          if (!candidate || candidate.role !== 'tool') {
-            break;
-          }
-          replies.push({ index: cursor, entry: candidate });
-          cursor += 1;
-        }
-        groups.push({ kind: 'agent', request: slot, replies });
-        index = cursor - 1;
-      } else {
-        flush();
-        groups.push({ kind: 'single', slot });
-      }
-    }
-    flush();
-    for (const slot of queuedSlots) {
-      groups.push({ kind: 'single', slot });
-    }
-    return groups;
-  }
-
-  /** Builds the reasoning disclosure of one assistant entry, empty until reasoning arrives. */
-  private buildReasoningDisclosure(index: number, openReasoning: ReadonlySet<string>): {
-    disclosure: HTMLDetailsElement;
-    body: HTMLDivElement;
-  } {
-    const disclosure = document.createElement('details');
-    disclosure.className = 'reasoning';
-    disclosure.open = openReasoning.has(String(index));
-    const summary = document.createElement('summary');
-    const label = document.createElement('span');
-    label.textContent = 'Reasoning';
-    // The collapsed tail carries the latest reasoning words while they stream, and clears when they stop.
-    const tail = document.createElement('span');
-    tail.className = 'reasoning-tail';
-    summary.append(label, tail);
-    const body = document.createElement('div');
-    body.className = 'reasoning-body';
-    disclosure.append(summary, body);
-    return { disclosure, body };
-  }
-
   /** Builds one message item of a single entry: the bubble, the tool cards, or the reasoning disclosure.
    * The user, assistant, and error bubbles carry the action zone at their bottom right.
    * Returns null for one error entry the empty slot before it already rendered as its bubble body. */
@@ -238,18 +157,15 @@ export class ChatRenderer {
     const item = document.createElement('li');
     item.dataset.entryIndex = String(index);
     if (entry.role === 'tool' || (entry.toolName && entry.role !== 'user')) {
-      item.append(this.buildToolReplyCard(entry));
+      item.append(buildToolReplyCard(entry));
       return item;
     }
     if (entry.role === 'assistant' && entry.reasoning) {
-      // The disclosure mounts with the first reasoning piece, never before it.
-      item.className = 'message assistant';
-      const { disclosure, body } = this.buildReasoningDisclosure(index, openReasoning);
-      body.textContent = entry.reasoning;
-      const text = document.createElement('span');
-      text.className = 'message-text';
-      this.fillEntryText(text, entry);
-      item.append(disclosure, text);
+      // The disclosure mounts with the first reasoning piece, never before it. A reply that holds
+      // its reasoning and no answer reads as a small card, like the system prompt.
+      item.className = replyBubbleClass('message assistant', entry);
+      appendReasoning(item, entry, openReasoning.has(String(index)));
+      appendAnswer(item, entry);
       const actions = this.buildMessageActions(chat, slot);
       if (actions) {
         item.append(actions);
@@ -294,7 +210,7 @@ export class ChatRenderer {
       return item;
     }
     item.className = `message ${entry.role}${entry.queued ? ' queued' : ''}`;
-    this.fillEntryText(item, entry);
+    fillEntryText(item, entry);
     if (entry.queued) {
       const marker = document.createElement('span');
       marker.className = 'queued-marker';
@@ -311,24 +227,13 @@ export class ChatRenderer {
       item.append(marker);
     }
     if (entry.images && entry.images.length > 0) {
-      item.append(this.buildImageStrip(entry.images));
+      item.append(buildImageStrip(entry.images));
     }
     const actions = this.buildMessageActions(chat, slot);
     if (actions) {
       item.append(actions);
     }
     return item;
-  }
-
-  /** Fills one message text element: an assistant reply renders as markdown with highlighted
-   * code, every other role renders as plain text. */
-  fillEntryText(target: HTMLElement, entry: ChatEntry): void {
-    if (entry.role === 'assistant') {
-      target.classList.add('md-body');
-      renderMarkdown(target, entry.content);
-      return;
-    }
-    target.textContent = entry.content;
   }
 
   /** Reads the tracked page titles over the bridge and re-renders when one changed. A failed
@@ -522,179 +427,28 @@ export class ChatRenderer {
     editor.style.height = `${editor.scrollHeight}px`;
   }
 
-  /** The text body of one tool reply: a pre when the content carries new lines, so its formatting
-   * survives the page layout, a span for a single line. */
-  private buildToolText(content: string): HTMLElement {
-    const body = document.createElement(content.includes('\n') ? 'pre' : 'span');
-    body.className = 'tool-reply-text';
-    body.textContent = content;
-    return body;
-  }
-
-  /** One request/response pair: the framed group card with the labeled request section over the
-   * labeled reply section. A missing reply shows the wait hint. */
-  private buildToolPair(toolName: string, args: unknown, reply: ChatEntry | null, session?: string): HTMLElement {
-    const item = document.createElement('li');
-    item.className = 'tool-pair';
-    const requestTitle = document.createElement('p');
-    requestTitle.className = 'tool-pair-title';
-    const requestBadge = document.createElement('span');
-    requestBadge.className = 'tool-badge request';
-    requestBadge.textContent = '→ Request';
-    const nameLabel = document.createElement('span');
-    nameLabel.className = 'tool-pair-tool';
-    nameLabel.textContent = toolName;
-    requestTitle.append(requestBadge, nameLabel);
-    // A call that names a page carries its title, so the head reads where the call went.
-    const pageTarget = this.pageTargetOf(args);
-    if (pageTarget) {
-      const targetChip = document.createElement('span');
-      targetChip.className = 'tool-pair-target';
-      targetChip.textContent = pageTarget;
-      requestTitle.append(targetChip);
-    }
-    if (session) {
-      const sessionChip = document.createElement('span');
-      sessionChip.className = 'tool-pair-session';
-      sessionChip.textContent = session;
-      requestTitle.append(sessionChip);
-    }
-    const requestSection = document.createElement('div');
-    requestSection.className = 'tool-pair-section';
-    requestSection.append(this.buildToolRequestSection(toolName, args));
-    const replyTitle = document.createElement('p');
-    replyTitle.className = 'tool-pair-title';
-    const replyBadge = document.createElement('span');
-    replyBadge.className = reply && reply.role === 'error' ? 'tool-badge reply error' : 'tool-badge reply';
-    replyBadge.textContent = '← Reply';
-    replyTitle.append(replyBadge);
-    item.append(requestTitle, requestSection, replyTitle);
-    if (reply) {
-      const replySection = document.createElement('div');
-      replySection.className = reply.role === 'error' ? 'tool-pair-section error' : 'tool-pair-section';
-      if (reply.json) {
-        const replyViewer = document.createElement('json-viewer') as JsonViewerElement;
-        replyViewer.value = reply.json;
-        replySection.append(replyViewer);
-      } else {
-        replySection.append(this.buildToolText(reply.content));
-      }
-      if (reply.images && reply.images.length > 0) {
-        replySection.append(this.buildImageStrip(reply.images));
-      }
-      item.append(replySection);
-    } else {
-      const pending = document.createElement('p');
-      pending.className = 'tool-pair-pending';
-      pending.textContent = 'waiting for the reply…';
-      item.append(pending);
-    }
-    return item;
-  }
-
-  /** Builds the request section of one tool call: an evaluate call shows its expression as
-   * highlighted JavaScript, every other call shows the JSON viewer of its arguments. */
-  private buildToolRequestSection(toolName: string, args: unknown): HTMLElement {
-    const expression = toolName === 'evaluate' ? (args as Record<string, unknown> | null)?.['expression'] : undefined;
-    if (typeof expression === 'string') {
-      const code = document.createElement('div');
-      code.className = 'md-code';
-      const label = document.createElement('span');
-      label.className = 'md-code-label';
-      label.textContent = 'javascript';
-      const body = document.createElement('code');
-      body.className = 'md-code-body';
-      appendCodeRuns(body, expression, 'javascript');
-      code.append(label, body);
-      return code;
-    }
-    const viewer = document.createElement('json-viewer') as JsonViewerElement;
-    viewer.value = args;
-    return viewer;
-  }
-
-  /** The reply half of a pair, or a standalone tool reply: the tool name head over the text or viewer. */
-  private buildToolReplyCard(entry: ChatEntry): HTMLElement {
-    const card = document.createElement('div');
-    card.className = entry.role === 'error' ? 'message tool-result tool-error' : 'message tool-result';
-    const head = document.createElement('p');
-    head.className = 'tool-result-name';
-    head.textContent = entry.toolName ?? 'tool';
-    card.append(head);
-    if (entry.json) {
-      const viewer = document.createElement('json-viewer') as JsonViewerElement;
-      viewer.value = entry.json;
-      card.append(viewer);
-    } else {
-      card.append(this.buildToolText(entry.content));
-    }
-    if (entry.images && entry.images.length > 0) {
-      card.append(this.buildImageStrip(entry.images));
-    }
-    return card;
-  }
-
-  /** Builds the thumbnail strip of one entry: one small image per attached picture. */
-  private buildImageStrip(images: readonly ChatImage[]): HTMLElement {
-    const strip = document.createElement('div');
-    strip.className = 'image-strip';
-    for (const image of images) {
-      const thumbnail = document.createElement('img');
-      thumbnail.src = `data:${image.mimeType};base64,${image.data}`;
-      thumbnail.alt = 'image';
-      strip.append(thumbnail);
-    }
-    return strip;
+  /** The chips of the pair cards of the workspace list: a call that names a page carries its
+   * tracked title, and an MCP request carries the short id of its connection. */
+  private pairChips(session?: string): ToolPairChips {
+    return { ...(session ? { session } : {}), pageTargetOf: (args) => this.pageTargetOf(args) };
   }
 
   /** Appends one agent turn: the intro bubble of the assistant reply, one request/response rail per
    * tool call — paired over the tool call id — and any result that lost its call. */
   private appendAgentTurn(group: Extract<MessageGroup, { kind: 'agent' }>, openReasoning: ReadonlySet<string>): void {
-    const entry = group.request.entry;
-    if (entry.reasoning || entry.content.length > 0) {
+    const { index, entry } = group.request;
+    if (entry.reasoning || entry.content) {
       const intro = document.createElement('li');
-      intro.dataset.entryIndex = String(group.request.index);
-      intro.className = 'message assistant';
-      if (entry.reasoning) {
-        // The reasoning of a tool-calling reply stays visible once the turn completes.
-        const { disclosure, body } = this.buildReasoningDisclosure(group.request.index, openReasoning);
-        body.textContent = entry.reasoning;
-        intro.append(disclosure);
-      }
-      if (entry.content.length > 0) {
-        const text = document.createElement('span');
-        text.className = 'message-text';
-        this.fillEntryText(text, entry);
-        intro.append(text);
+      intro.dataset.entryIndex = String(index);
+      // The reasoning of a tool-calling reply stays visible once the turn completes.
+      intro.className = replyBubbleClass('message assistant', entry);
+      appendReasoning(intro, entry, openReasoning.has(String(index)));
+      if (entry.content) {
+        appendAnswer(intro, entry);
       }
       this.chatMessages.append(intro);
     }
-    const calls = entry.toolCalls ?? [];
-    const callIds = new Set(calls.map((call) => call.id));
-    const replies = new Map<string, EntrySlot>();
-    for (const slot of group.replies) {
-      if (slot.entry.toolCallId) {
-        replies.set(slot.entry.toolCallId, slot);
-      }
-    }
-    for (const call of calls) {
-      let args: unknown;
-      try {
-        args = JSON.parse(call.arguments);
-      } catch {
-        args = call.arguments;
-      }
-      const reply = replies.get(call.id);
-      this.chatMessages.append(this.buildToolPair(call.name, args, reply ? reply.entry : null));
-    }
-    for (const slot of group.replies) {
-      if (slot.entry.toolCallId && callIds.has(slot.entry.toolCallId)) {
-        continue;
-      }
-      const item = document.createElement('li');
-      item.append(this.buildToolReplyCard(slot.entry));
-      this.chatMessages.append(item);
-    }
+    appendToolCalls(this.chatMessages, entry, group.replies.map((slot) => slot.entry), 'li', this.pairChips());
   }
 
   /** Rebuilds the message list of the active chat. Open reasoning disclosures and the open system
@@ -736,7 +490,7 @@ export class ChatRenderer {
         }
       }
     }
-    for (const group of this.groupChatEntries(chat)) {
+    for (const group of groupChatEntries(chat.entries)) {
       if (group.kind === 'single') {
         const item = this.buildMessageItem(chat, group.slot, openReasoning, group.slot.index === streamingIndex);
         if (item) {
@@ -748,13 +502,14 @@ export class ChatRenderer {
         this.appendAgentTurn(group, openReasoning);
         continue;
       }
-      const reply = group.reply ? group.reply.entry : null;
+      const request = group.request.entry;
       this.chatMessages.append(
-        this.buildToolPair(
-          group.request.entry.toolName ?? group.request.entry.content,
-          group.request.entry.json,
-          reply,
-          group.request.entry.mcpSession,
+        buildToolPair(
+          'li',
+          request.toolName ?? request.content,
+          request.json,
+          group.reply?.entry ?? null,
+          this.pairChips(request.mcpSession),
         ),
       );
     }
@@ -789,8 +544,9 @@ export class ChatRenderer {
       label.textContent = bound.title;
       summary.append(label);
       const body = document.createElement('div');
-      body.className = 'system-prompt-body';
-      body.textContent = bound.text;
+      // The prompt text renders as markdown with highlighted code, like a reply.
+      body.className = 'system-prompt-body md-body';
+      renderMarkdown(body, bound.text);
       disclosure.append(summary, body);
       item.append(disclosure);
       this.chatMessages.append(item);

@@ -1,6 +1,8 @@
 /* The chat view: the tab strip header, the column box, and the message area with its composer.
    The shell sheet keeps the shared pieces the column leans on: the tab vocabulary, the pane
-   frame, the column resizer, and the markdown body rules. */
+   frame, the column resizer, and the markdown body rules. The reasoning disclosure, the tool
+   cards, the JSON viewer, and the image strips live in the shared chat card stack
+   (`src/renderer/chat-cards/`), which the phone page of the remote control renders too. */
 
 
 /* The chat tab strip: the header of the right column. The tabs stand on its bottom edge, and the
@@ -78,16 +80,32 @@
   word-break: break-word;
 }
 
+/* The request and reply bubbles span the full width of the list: a reply is a wall of text, so
+   it takes every column. The other message kinds keep the cap of `.message`. */
 .message.user {
-  align-self: flex-end;
+  align-self: stretch;
+  max-width: none;
   background: var(--accent-strong);
   color: var(--on-accent);
 }
 
 .message.assistant {
-  align-self: flex-start;
+  align-self: stretch;
+  max-width: none;
   background: var(--surface);
   color: var(--text);
+}
+
+/* A reply that holds its reasoning and no answer reads like the system prompt card: a small
+   bubble while the disclosure stays closed, the full width while it stands open. */
+.message.assistant.reasoning-only {
+  align-self: flex-start;
+  max-width: 80%;
+}
+
+.message.assistant.reasoning-only:has(> .reasoning[open]) {
+  align-self: stretch;
+  max-width: none;
 }
 
 .message.notice {
@@ -266,6 +284,12 @@ li:focus-within > .message-actions {
   background: var(--surface);
 }
 
+/* An open bound prompt spans the full width like a reply: its markdown body is a wall of text. */
+.system-prompt-item:has(> .system-prompt[open]) {
+  align-self: stretch;
+  max-width: none;
+}
+
 .system-prompt-menu-label {
   color: var(--muted);
   font-size: 11px;
@@ -347,6 +371,7 @@ li:focus-within > .message-actions {
   white-space: nowrap;
 }
 
+/* The prompt text under the rule renders as markdown with highlighted code, like a reply. */
 .system-prompt-body {
   margin: 4px 0 2px;
   padding-left: 10px;
@@ -420,295 +445,6 @@ li:focus-within > .message-actions {
 .system-prompt-menu:has(+ .task-chat-item) {
   margin-top: 0;
   margin-bottom: 0;
-}
-
-/* The reasoning disclosure of an assistant reply: collapsed until the user opens it.
-   The summary spans the full row, so the click target stays comfortable. */
-.reasoning {
-  margin: 0 0 4px;
-}
-
-.reasoning > summary {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px 4px 2px;
-  margin-left: -8px;
-  color: var(--muted);
-  font-size: 11px;
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-
-.reasoning > summary:hover {
-  color: var(--text);
-}
-
-/* The collapsed activity tail: the latest reasoning words, faded, clipped to one line. */
-.reasoning-tail {
-  flex: 1;
-  min-width: 0;
-  margin-left: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: color-mix(in srgb, var(--muted) 85%, transparent);
-}
-
-/* An open disclosure shows the full reasoning, so the tail hides. */
-.reasoning[open] > summary .reasoning-tail {
-  display: none;
-}
-
-.reasoning > summary::-webkit-details-marker {
-  display: none;
-}
-
-/* The disclosure chevron turns from the closed to the open direction. */
-.reasoning > summary::before {
-  content: '▸';
-  display: inline-block;
-  color: var(--muted);
-  font-size: 10px;
-  margin-right: 4px;
-}
-
-.reasoning[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-.reasoning-body {
-  margin: 2px 0 4px;
-  padding-left: 10px;
-  border-left: 2px solid var(--border);
-  color: var(--muted);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* One request/response pair: one framed group card holds the labeled request section and the
-   labeled reply section, so the two never read as loose messages. */
-.tool-pair {
-  align-self: stretch;
-  max-width: none;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-}
-
-/* The session chip of one MCP request card: the short id of the connection that made the call. */
-.tool-pair-session {
-  padding: 0 6px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-/* The page a tool call targets: the tracked title of its pageId, after the tool name. */
-.tool-pair-target {
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.tool-pair-target::before {
-  content: '·';
-  margin-right: 6px;
-}
-
-.tool-pair-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 0 0 4px;
-}
-
-.tool-pair-tool {
-  font-weight: 600;
-  font-size: 12px;
-}
-
-.tool-badge {
-  flex: none;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  padding: 1px 8px;
-  border-radius: 999px;
-}
-
-/* The filled badge marks the request; the outlined one marks the reply. */
-.tool-badge.request {
-  background: var(--accent-strong);
-  color: var(--on-accent);
-}
-
-.tool-badge.reply {
-  background: none;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-}
-
-.tool-badge.reply.error {
-  border-color: var(--error);
-  color: var(--error);
-}
-
-/* The payload sections sit on the dark field inside the group card. */
-.tool-pair-section {
-  border-radius: 6px;
-  padding: 6px 8px;
-  background: var(--field);
-  font-size: 12px;
-  color: var(--text);
-}
-
-.tool-pair-section.error {
-  color: var(--error);
-}
-
-/* The text body of a tool reply. A pre keeps the new lines and spacing of the reply, and the wrap
-   keeps overlong lines inside the card. */
-.tool-reply-text {
-  margin: 0;
-  font: inherit;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-}
-
-/* The group card is the frame, so the viewer drops its own. */
-.tool-pair-section json-viewer {
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  background: none;
-}
-
-.tool-pair-pending {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  font-style: italic;
-}
-
-/* One tool reply, of the chat agent or of an MCP session tab: the tool name head over the result
-   text, or over the json-viewer when the reply carries a JSON object. The dim accent edge keeps the
-   reply in the pair family under the full accent of the request. */
-.message.tool-result {
-  align-self: flex-start;
-  max-width: 80%;
-  background: var(--surface);
-  color: var(--text);
-  font-size: 12px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-}
-
-.tool-result-name {
-  margin: 0 0 6px;
-  font-weight: 600;
-  font-size: 12px;
-}
-
-/* A failed reply carries the error tint on its frame and head. */
-.message.tool-result.tool-error {
-  border: 1px solid color-mix(in srgb, var(--error) 60%, var(--border));
-}
-
-.message.tool-result.tool-error .tool-result-name {
-  color: var(--error);
-}
-
-/* A standalone tool reply keeps its own frame and the quiet ← marker in its head. */
-.tool-result-name::before {
-  content: '← ';
-  color: var(--muted);
-  font-weight: 400;
-}
-
-/* The json-viewer custom element: one collapsible JSON display.
-   The token colors derive from the theme palette, so every theme carries the viewer. */
-json-viewer {
-  display: block;
-  font: 12px/1.5 ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
-  background: var(--field);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
-}
-
-.json-node > summary {
-  cursor: pointer;
-  list-style: none;
-}
-
-.json-node > summary::-webkit-details-marker {
-  display: none;
-}
-
-/* The disclosure chevron turns from the closed to the open direction. */
-.json-node > summary::before {
-  content: '▸';
-  display: inline-block;
-  color: var(--muted);
-  font-size: 10px;
-  margin-right: 4px;
-}
-
-.json-node[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-/* The open brace of the summary keeps its closing partner only while the node stays collapsed. */
-.json-node[open] > summary .json-closed {
-  display: none;
-}
-
-.json-children {
-  padding-left: 14px;
-}
-
-/* Every child except the last carries the separator comma of formatted JSON. */
-.json-children > :not(:last-child)::after {
-  content: ',';
-  color: var(--muted);
-}
-
-.json-key {
-  color: var(--accent);
-}
-
-.json-string {
-  color: color-mix(in srgb, var(--accent) 30%, var(--text));
-  /* String values keep their inner spacing and still wrap inside a narrow pane. */
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.json-number {
-  color: color-mix(in srgb, var(--error) 50%, var(--text));
-}
-
-.json-boolean,
-.json-null {
-  color: var(--muted);
-  font-style: italic;
-}
-
-.json-punct,
-.json-count {
-  color: var(--muted);
-}
-
-.json-count {
-  margin: 0 4px;
 }
 
 #permission-requests {
@@ -916,22 +652,6 @@ permission-request {
 
 .attachment-chip button:hover {
   color: var(--text);
-}
-
-/* The image thumbnails of a message bubble or a tool card. */
-.image-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.image-strip img {
-  display: block;
-  max-width: 180px;
-  max-height: 120px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 #chat-form {

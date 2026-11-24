@@ -3,13 +3,30 @@
  * manual entry, keeps the bearer in the local storage, renders the permission asks, the patch
  * proposals, the task reviews, and the chat sessions, and answers through the API of the worker
  * core. The event stream rides a fetch stream with the authorization header, so no credential
- * lands in a URL. The replies and the patch diffs render through the shared text stack of the app.
+ * lands in a URL. The replies and the patch diffs render through the shared text stack of the app,
+ * and the chats render their cards through the shared chat card stack of the app, so the phone
+ * shows the reasoning and the tool calls like the workspace chat.
  * The tabs sit under the top bar, and both leave while a tab scrolls down.
  * A chat that sent nothing carries a setup card: the provider, the model, and the system prompt
  * source of its first message, and the card of the task it waits for. The tasks tab opens such a
  * chat for a draft task.
  */
 
+import { JsonViewerElement } from '../json-viewer-element.js';
+import {
+  appendAnswer,
+  appendReasoning,
+  appendToolCalls,
+  buildImageStrip,
+  buildToolPair,
+  buildToolReplyCard,
+  type EntrySlot,
+  groupChatEntries,
+  type MessageGroup,
+  replyBubbleClass,
+  type ToolPairChips,
+} from '../chat-cards/render.js';
+import type { CoreChatEntry } from '../../shared/core-api.js';
 import { buildDiff, renderMarkdown } from '../text/render.js';
 
 interface PendingAsk {
@@ -45,7 +62,9 @@ interface ChatSessionDto {
   readonly id: string;
   readonly title: string;
   readonly createdAt: string;
-  readonly entries: { role: string; content: string }[];
+  /** The entries of the chat in the shape the engine stores them: a reply carries its reasoning
+   * and its tool calls, and a tool result carries the call it answers. */
+  readonly entries: readonly CoreChatEntry[];
   /** The system prompt the chat bound on its first message, when it sent one. */
   readonly systemPrompt?: { sourceId: string; title: string; text: string };
   /** The draft task the chat waits for. Its first send dispatches the task into the chat. */
@@ -116,6 +135,13 @@ const loginStatus = document.querySelector<HTMLElement>('#login-status');
 let bearer = '';
 let streamAbort: AbortController | null = null;
 let activeChat: ChatSessionDto | null = null;
+/** The entry indexes of the reasoning disclosures the user opened in the active chat, so they stay
+ * open across the re-renders of the chat. */
+const openReasoning = new Set<string>();
+/** True while the bound prompt of the active chat stands open, so it stays open across its re-renders. */
+let promptOpen = false;
+/** The id of the chat the open disclosures belong to. Another chat renders with every one closed. */
+let disclosedChatId: string | null = null;
 const state = {
   permission: { pending: [] as PendingAsk[], rules: [] as unknown[] },
   patches: { patches: [] as PatchItem[], tasks: [] as { id: number; title: string; closedAt: string | null }[] },
@@ -740,9 +766,9 @@ function appendSetupCard(scroll: HTMLElement, session: ChatSessionDto): SetupCon
   return { provider, model, prompt };
 }
 
-/** Places the line of the connection one chat bound on its first message: the provider and the
-   model, as one quiet line like the locked labels of the app. Nothing renders while the chat bound
-   no provider. */
+/** Places the line of the connection one chat bound on its first message, first in its message
+ * area: the provider and the model, as one quiet line like the locked labels of the app. Nothing
+ * renders while the chat bound no provider. */
 function appendBoundConnection(scroll: HTMLElement, session: ChatSessionDto): void {
   if (!session.boundProviderId) {
     return;
@@ -756,7 +782,8 @@ function appendBoundConnection(scroll: HTMLElement, session: ChatSessionDto): vo
 }
 
 /** Places the system prompt one chat bound on its first message: a collapsed bubble on the
-   assistant side. A bound prompt without text, the none source, renders nothing. */
+ * assistant side, open again when the user left it open. A bound prompt without text, the none
+ * source, renders nothing. */
 function appendBoundPrompt(scroll: HTMLElement, session: ChatSessionDto): void {
   const bound = session.systemPrompt;
   if (!bound || bound.text.length === 0) {
@@ -766,13 +793,15 @@ function appendBoundPrompt(scroll: HTMLElement, session: ChatSessionDto): void {
   item.className = 'entry assistant system-prompt-item';
   const disclosure = document.createElement('details');
   disclosure.className = 'system-prompt';
+  disclosure.open = promptOpen;
   const summary = document.createElement('summary');
   const label = document.createElement('span');
   label.className = 'system-prompt-title';
   label.textContent = bound.title;
   const body = document.createElement('div');
-  body.className = 'system-prompt-body';
-  body.textContent = bound.text;
+  // The prompt text renders as markdown with highlighted code, like a reply.
+  body.className = 'system-prompt-body md-body';
+  renderMarkdown(body, bound.text);
   summary.append(label);
   disclosure.append(summary, body);
   item.append(disclosure);
@@ -780,8 +809,8 @@ function appendBoundPrompt(scroll: HTMLElement, session: ChatSessionDto): void {
 }
 
 /** Places the setup of one chat first in its message area. A chat that sent nothing and bound
-   nothing gets its setup card. A chat past that point gets the line of the connection it bound,
-   then its collapsed bound prompt. Answers the live selects while the card shows. */
+ * nothing gets its setup card. A chat past that point gets the line of the connection it bound,
+ * then its collapsed bound prompt. Answers the live selects while the card shows. */
 function appendChatSetup(scroll: HTMLElement, session: ChatSessionDto): SetupControls {
   const sent = session.entries.some((entry) => entry.role === 'user' || entry.role === 'assistant');
   if (!sent && !session.systemPrompt && !session.boundProviderId) {
@@ -814,39 +843,125 @@ function appendTaskCard(scroll: HTMLElement, task: TaskItem): void {
   scroll.append(card);
 }
 
+/** Places one entry of one chat: the bubble of a request, a reply, or a quiet line, or the card of
+ * a tool reply that lost its call. A reply carries its reasoning disclosure and its answer like the
+ * app. A persisted empty reply renders nothing. */
+function appendEntry(scroll: HTMLElement, slot: EntrySlot): void {
+  const { index, entry } = slot;
+  if (entry.role === 'tool' || (entry.toolName && entry.role !== 'user')) {
+    scroll.append(buildToolReplyCard(entry));
+    return;
+  }
+  if (entry.role === 'assistant') {
+    if (!entry.content && !entry.reasoning) {
+      return;
+    }
+    const reply = document.createElement('div');
+    reply.dataset.entryIndex = String(index);
+    reply.className = replyBubbleClass('entry assistant', entry);
+    appendReasoning(reply, entry, openReasoning.has(String(index)));
+    if (entry.content) {
+      appendAnswer(reply, entry);
+    }
+    scroll.append(reply);
+    return;
+  }
+  const line = document.createElement('div');
+  line.className = `entry ${entry.role}`;
+  line.textContent = entry.content;
+  if (entry.images && entry.images.length > 0) {
+    line.append(buildImageStrip(entry.images));
+  }
+  scroll.append(line);
+}
+
+/** Places one agent turn like the app: the intro bubble of the reply with its reasoning
+ * disclosure, then one pair card per tool call and every result that lost its call. */
+function appendAgentTurn(scroll: HTMLElement, group: Extract<MessageGroup, { kind: 'agent' }>): void {
+  const { index, entry } = group.request;
+  if (entry.reasoning || entry.content) {
+    const intro = document.createElement('div');
+    intro.dataset.entryIndex = String(index);
+    intro.className = replyBubbleClass('entry assistant', entry);
+    appendReasoning(intro, entry, openReasoning.has(String(index)));
+    if (entry.content) {
+      appendAnswer(intro, entry);
+    }
+    scroll.append(intro);
+  }
+  appendToolCalls(scroll, entry, group.replies.map((slot) => slot.entry), 'div');
+}
+
+/** Places the entries of one chat, grouped like the message list of the app: one entry, an MCP
+ * request with its reply in one pair card, or one agent turn. The chat shows its last forty
+ * entries, so a group that starts before them stays out. */
+function appendEntries(scroll: HTMLElement, session: ChatSessionDto): void {
+  const first = Math.max(0, session.entries.length - 40);
+  for (const group of groupChatEntries(session.entries)) {
+    const index = group.kind === 'single' ? group.slot.index : group.request.index;
+    if (index < first) {
+      continue;
+    }
+    if (group.kind === 'single') {
+      appendEntry(scroll, group.slot);
+    } else if (group.kind === 'agent') {
+      appendAgentTurn(scroll, group);
+    } else {
+      const request = group.request.entry;
+      const chips: ToolPairChips = { ...(request.mcpSession ? { session: request.mcpSession } : {}) };
+      scroll.append(
+        buildToolPair('div', request.toolName ?? request.content, request.json, group.reply?.entry ?? null, chips),
+      );
+    }
+  }
+}
+
 /** Renders the active chat with its send box, under the session drop-down of the view. */
 function renderChat(session: ChatSessionDto): void {
   const view = document.querySelector<HTMLElement>('#view-chats');
   if (!view) {
     return;
   }
+  // The open disclosures belong to one chat: another chat renders with every one closed.
+  if (session.id !== disclosedChatId) {
+    openReasoning.clear();
+    promptOpen = false;
+    disclosedChatId = session.id;
+  }
   const card = document.createElement('div');
   card.className = 'chat-view';
   const scroll = document.createElement('div');
   scroll.className = 'chat-scroll';
+  // The toggle event of a disclosure does not bubble, so the capture phase of the area catches it.
+  scroll.addEventListener(
+    'toggle',
+    (event) => {
+      const disclosure = event.target;
+      if (!(disclosure instanceof HTMLDetailsElement)) {
+        return;
+      }
+      if (disclosure.classList.contains('system-prompt')) {
+        promptOpen = disclosure.open;
+        return;
+      }
+      const key = disclosure.closest<HTMLElement>('[data-entry-index]')?.dataset.entryIndex;
+      if (!key) {
+        return;
+      }
+      if (disclosure.open) {
+        openReasoning.add(key);
+      } else {
+        openReasoning.delete(key);
+      }
+    },
+    true,
+  );
   const setup = appendChatSetup(scroll, session);
   const task = waitingTask(session);
   if (task) {
     appendTaskCard(scroll, task);
   }
-  for (const entry of session.entries.slice(-40)) {
-    // A persisted empty reply renders nothing, like the app.
-    if (entry.role === 'assistant' && entry.content.length === 0) {
-      continue;
-    }
-    const line = document.createElement('div');
-    line.className = `entry ${entry.role}`;
-    // The replies carry markdown like the app; the user lines stay plain text.
-    if (entry.role === 'assistant') {
-      const body = document.createElement('div');
-      body.className = 'md-body';
-      renderMarkdown(body, entry.content);
-      line.append(body);
-    } else {
-      line.textContent = entry.content;
-    }
-    scroll.append(line);
-  }
+  appendEntries(scroll, session);
   card.append(scroll);
   const form = document.createElement('form');
   form.id = 'chat-send';
@@ -997,6 +1112,9 @@ loginForm?.addEventListener('submit', async (event) => {
     showError(error);
   }
 });
+
+// The tool cards of the chats hold the JSON viewer, so the element registers before the first render.
+JsonViewerElement.define();
 
 // The boot: the fragment token pairs at once, a stored bearer tries the stream.
 void (async () => {

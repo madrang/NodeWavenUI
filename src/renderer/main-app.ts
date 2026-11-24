@@ -31,6 +31,7 @@ import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
 import { requireElement } from './dom.js';
 import { ChatRenderer, type Chat, type ChatEditState } from './chat-render.js';
+import { fillEntryText } from './chat-cards/render.js';
 import type { ChatEntry } from './chat-sessions.js';
 import type { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import type { StorageShareRegistry } from '../storage/share-registry.js';
@@ -814,7 +815,9 @@ export class MainApp implements McpSessionSink {
       this.messages.render();
       return;
     }
-    this.messages.fillEntryText(text, entry);
+    // The first answer piece turns the small reasoning card into a full width reply.
+    item.classList.toggle('reasoning-only', !entry.content);
+    fillEntryText(text, entry);
     const reasoning = entry.reasoning ?? '';
     body.textContent = reasoning;
     const tail = item.querySelector(':scope > details.reasoning > summary > .reasoning-tail');

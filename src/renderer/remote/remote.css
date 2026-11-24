@@ -346,7 +346,7 @@ main#remote > section {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
+  padding: var(--inset);
 }
 
 /* One entry: the message bubble shape of the app. */
@@ -357,16 +357,32 @@ main#remote > section {
   word-break: break-word;
 }
 
+/* The request and reply bubbles span the full width of the message area, like the app. The other
+   entry kinds keep the cap of `.entry`. */
 .entry.user {
-  align-self: flex-end;
+  align-self: stretch;
+  max-width: none;
   background: var(--accent-strong);
   color: var(--on-accent);
   white-space: pre-wrap;
 }
 
 .entry.assistant {
-  align-self: flex-start;
+  align-self: stretch;
+  max-width: none;
   background: var(--surface);
+}
+
+/* A reply that holds its reasoning and no answer reads like the system prompt card: a small
+   bubble while the disclosure stays closed, the full width while it stands open. */
+.entry.assistant.reasoning-only {
+  align-self: flex-start;
+  max-width: 85%;
+}
+
+.entry.assistant.reasoning-only:has(> .reasoning[open]) {
+  align-self: stretch;
+  max-width: none;
 }
 
 /* The quiet centered lines: the notices, the tool cards, and the errors of the app. */
@@ -387,9 +403,18 @@ main#remote > section {
   background: none;
 }
 
-/* The collapsed bound prompt sits in a bubble on the assistant side, like the app. */
-.system-prompt-item {
+/* The collapsed bound prompt sits in a capped bubble on the assistant side, like the app, while
+   the reply bubbles under it span the full width. */
+.entry.assistant.system-prompt-item {
+  align-self: flex-start;
+  max-width: 85%;
   min-width: 0;
+}
+
+/* An open bound prompt spans the full width like a reply: its markdown body is a wall of text. */
+.entry.assistant.system-prompt-item:has(> .system-prompt[open]) {
+  align-self: stretch;
+  max-width: none;
 }
 
 /* The setup card of a chat that sent nothing: the provider, the model, and the system prompt
@@ -446,8 +471,13 @@ main#remote > section {
   margin-bottom: 0;
 }
 
-/* The line of the connection one chat bound on its first message: a quiet centered line. */
+/* The line of the connection one chat bound on its first message: a quiet centered line, first in
+   the message area. Its top margin cancels the padding of the area, so no gap sits above it. The
+   clip of the line makes it shrinkable in the column of the area, so it keeps its height in a long
+   chat. */
 .chat-bound-connection {
+  flex: none;
+  margin-top: calc(-1 * var(--inset));
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -545,6 +575,7 @@ main#remote > section {
   white-space: nowrap;
 }
 
+/* The prompt text under the rule renders as markdown with highlighted code, like a reply. */
 .system-prompt-body {
   margin: 4px 0 2px;
   padding-left: 10px;

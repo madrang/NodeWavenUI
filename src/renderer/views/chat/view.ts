@@ -21,7 +21,8 @@ export async function mountChatView(): Promise<void> {
   const column = requireElement<HTMLElement>('#chat-column');
   await Promise.all([
     loadTemplate('views/chat/template.html'),
-    adoptStyles('views/chat/styles.css'),
+    // The shared chat card sheet adopts first, so the view sheet wins a tie against it.
+    adoptStyles('chat-cards/styles.css').then(() => adoptStyles('views/chat/styles.css')),
   ]).then(async ([template]) => {
     localizeHTML(template.content);
     column.append(template.content);
