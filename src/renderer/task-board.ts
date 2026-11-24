@@ -15,6 +15,8 @@ export interface TaskBoardDeps {
   readonly store: TaskStore;
   /** Dispatches one task, through the same path the tasks tool takes. Answers the outcome text. */
   readonly dispatch: (id: string, mode: TaskDispatchMode, sessionFileId: string | null) => Promise<string>;
+  /** Opens a new chat that waits for one draft task. The send of that chat dispatches the task. */
+  readonly openTaskChat: (taskId: string) => void;
   /** Activates the chat tab of one session, so Open session jumps to the conversation. */
   readonly openSession: (chatId: number) => void;
   /** Reads the chat sessions a dispatch can bind: file id and title pairs. */
@@ -91,8 +93,12 @@ function buildDispatch(deps: TaskBoardDeps, task: TaskRecord, actions: HTMLEleme
     select.append(option);
   }
   const run = async (): Promise<void> => {
-    const mode: TaskDispatchMode = select.value ? 'session' : 'new-session';
-    await deps.dispatch(task.id, mode, select.value || null);
+    if (!select.value) {
+      // A new session opens as a chat that waits for the task. Its send dispatches the task with the picks of that tab.
+      deps.openTaskChat(task.id);
+      return;
+    }
+    await deps.dispatch(task.id, 'session', select.value);
   };
   actions.append(label, select);
   return button(translateMessage('tasks', 'dispatch'), () => {

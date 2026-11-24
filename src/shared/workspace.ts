@@ -197,6 +197,11 @@ export function modelVision(account: ProviderAccount, modelId: string | null): b
   return account.models.find((model) => model.id === modelId)?.vision ?? false;
 }
 
+/** Reads the display label of one model of an account: the id, plus the vision marker when the model sees images. */
+export function modelDisplayName(account: ProviderAccount, modelId: string): string {
+  return modelVision(account, modelId) ? `${modelId} · vision` : modelId;
+}
+
 /** Reads one stored model entry: the current object form, or a plain id string from before the vision flag. */
 function readModelEntry(value: unknown): ModelEntry | null {
   if (typeof value === 'string' && value.length > 0) {

@@ -11,7 +11,7 @@ import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { endpointLabelCollisions, sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { PATH_RULE_MODES, type PathRule, type PathRuleMode } from '../shared/permissions.js';
 import type { ModelEntry, ProviderAccount, ProviderRegistry } from '../shared/workspace.js';
-import { effectiveDefaultAccount, effectiveDefaultModel, emptyProviderRegistry, modelVision } from '../shared/workspace.js';
+import { effectiveDefaultAccount, effectiveDefaultModel, emptyProviderRegistry } from '../shared/workspace.js';
 import { PROVIDER_PRESETS } from '../shared/provider-presets/index.js';
 import { readBridge, type NodeWavenBridge } from '../shared/bridge.js';
 import type { CoreAgentToolInfo } from '../shared/core-api.js';
@@ -53,9 +53,7 @@ function splitCommandLine(line: string): { readonly command: string; readonly ar
 }
 
 /** The status-bar display name of one model: the id, plus the vision marker when the model sees images. */
-export function modelDisplayName(account: ProviderAccount, modelId: string): string {
-  return modelVision(account, modelId) ? `${modelId} · vision` : modelId;
-}
+export { modelDisplayName } from '../shared/workspace.js';
 
 /** The services and callbacks the settings view works with. The chat reacts to registry changes,
  * and the agent tool listing reads the tool list of the chat engine. */

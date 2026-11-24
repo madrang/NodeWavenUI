@@ -24,7 +24,7 @@ import { ChatSessionStore } from './chat-sessions.js';
 import { ChatEngine, type EngineMainCalls } from './chat-engine.js';
 import { workerSystemPromptSources } from './system-prompts.js';
 import { readTextFile } from './node-file-system.js';
-import { RemoteServer } from './remote-server.js';
+import { RemoteServer, type RemoteChatSession } from './remote-server.js';
 import type { RemoteServerConfig } from '../storage/settings-store.js';
 import selfsigned from 'selfsigned';
 import QRCode from 'qrcode';
@@ -34,6 +34,7 @@ import { isRecord } from '../shared/records.js';
 import type { McpCallResult, McpNativeTool } from '../shared/mcp-endpoints.js';
 import type { McpToolResult } from '../shared/window-tools.js';
 import {
+  readChatCreatePayload,
   readChatEditPayload,
   readChatIdPayload,
   readChatIndexPayload,
@@ -61,6 +62,7 @@ import {
   readTaskUpdatePayload,
   readWorkerStart,
   WORKER_STORAGE_IDS,
+  type CoreChat,
   type CoreChatState,
   type CorePatchState,
   type CorePermissionState,
@@ -112,6 +114,9 @@ let storageShares: StorageShareRegistry | null = null;
 
 /** The remote control server of the workspace. Null until the start message opened the storage. */
 let remote: RemoteServer | null = null;
+
+/** The display name of the workspace. Empty until the start message named it. */
+let workspaceName = '';
 
 /** The calls the worker waits an answer for from the main process, keyed by call id. */
 const mainCalls = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
@@ -241,6 +246,7 @@ async function refreshStorageShares(): Promise<void> {
  * @param start The validated start data.
  */
 async function openStorage(start: WorkerStart): Promise<void> {
+  workspaceName = start.name;
   if (!WORKER_STORAGE_IDS.includes(start.storageId)) {
     throw new Error(`The storage "${start.storageId}" of this workspace cannot open in the worker core.`);
   }
@@ -328,12 +334,18 @@ async function openStorage(start: WorkerStart): Promise<void> {
     start.directoryPath,
     start.appRoot,
     {
+      workspaceName: () => workspaceName,
       permission: () =>
         gate ? { pending: gate.pendingRequests(), rules: gate.listRules() } : { pending: [], rules: [] },
       patches: () =>
         patches ? { patches: patches.listPatches(), tasks: patches.listTasks() } : { patches: [], tasks: [] },
       tasks: () => (tasks ? { records: tasks.list() } : { records: [] }),
-      chatSessions: () => chatSessions?.loadSessions() ?? Promise.resolve([]),
+      // The phone lists the chats of the engine, so a fresh chat shows before its file lands and a
+      // closed chat leaves the list.
+      chatSessions: () => Promise.resolve((engine?.list() ?? []).map(remoteChatSession)),
+      createChat: (taskId) => remoteChatSession(requireEngine().create(taskId)),
+      chatPromptSources: () => requireEngine().promptSources(),
+      chatConnections: () => requireEngine().connectionMenu(),
       resolvePermission: (id, approve, remember) => requireGate().resolveRequest(id, approve, remember),
       applyPatch: (id) => requirePatches().apply(id),
       denyPatch: (id, comment) => requirePatches().deny(id, comment),
@@ -342,8 +354,12 @@ async function openStorage(start: WorkerStart): Promise<void> {
       returnTask: (id) => requireTasks().returnToSession(id),
       cancelTask: (id) => requireTasks().cancel(id, null),
       // The phone sends into the chat engine of this core, the same engine the workspace page uses.
-      sendChat: (fileId, text) => {
-        requireEngine().remoteSend(fileId, text);
+      sendChat: (fileId, text, picks) => {
+        requireEngine().remoteSend(fileId, text, picks);
+      },
+      // The phone closes a chat the same way: the chat of the session file leaves the engine.
+      closeChat: (fileId) => {
+        requireEngine().remoteClose(fileId);
       },
     },
     async (addresses) => {
@@ -399,6 +415,20 @@ function requireEngine(): ChatEngine {
     throw new Error('The worker core holds no open storage.');
   }
   return engine;
+}
+
+/** Reads one chat of the engine in the session shape the phone page reads. */
+function remoteChatSession(chat: CoreChat): RemoteChatSession {
+  return {
+    id: chat.fileId,
+    title: chat.title,
+    createdAt: chat.createdAt,
+    entries: chat.entries,
+    ...(chat.waitingTaskId ? { waitingTaskId: chat.waitingTaskId } : {}),
+    ...(chat.boundProviderId ? { boundProviderId: chat.boundProviderId } : {}),
+    ...(chat.boundModel ? { boundModel: chat.boundModel } : {}),
+    ...(chat.systemPrompt ? { systemPrompt: chat.systemPrompt } : {}),
+  };
 }
 
 /** Handles one request message against the opened storage. */
@@ -745,7 +775,12 @@ async function serveRequest(id: number, channel: string, payload: unknown): Prom
       return;
     }
     case 'chat.create': {
-      replyValue(id, requireEngine().create());
+      const call = readChatCreatePayload(payload);
+      if (!call) {
+        replyError(id, 'The chat.create call needs no payload, or a task id of the string shape.');
+        return;
+      }
+      replyValue(id, requireEngine().create(call.taskId));
       return;
     }
     case 'chat.close': {

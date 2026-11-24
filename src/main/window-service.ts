@@ -227,11 +227,12 @@ export function registerWindowService(): void {
     // this workspace reach it through the core slice of the bridge, never through a local backend.
     const launch = handoff as {
       directory: { path: string };
-      settings?: { storageId?: unknown; storageConfig?: unknown };
+      settings?: { name?: unknown; storageId?: unknown; storageConfig?: unknown };
       password?: unknown;
     };
     startWorkspaceWorker({
       directoryPath: launch.directory.path,
+      name: typeof launch.settings?.name === 'string' ? launch.settings.name : '',
       storageId: typeof launch.settings?.storageId === 'string' ? launch.settings.storageId : '',
       storageConfig: launch.settings?.storageConfig,
       password: typeof launch.password === 'string' ? launch.password : null,

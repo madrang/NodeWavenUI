@@ -17,6 +17,7 @@ import type { ProviderAccount, WorkspaceSettings } from '../shared/workspace.js'
 import { effectiveDefaultAccount, effectiveDefaultModel } from '../shared/workspace.js';
 import { readBridge } from '../shared/bridge.js';
 import type { CoreAgentToolInfo, CoreChatPicks } from '../shared/core-api.js';
+import type { TaskRecord } from '../shared/tasks.js';
 import { JsonViewerElement } from './json-viewer-element.js';
 import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from '../shared/window-tools.js';
@@ -202,6 +203,7 @@ export class MainApp implements McpSessionSink {
       promptSources: this.promptSources,
       selectedSystemPromptId: (chat) => this.selectedSystemPromptId(chat),
       chatHasConversation: (chat) => this.chatHasConversation(chat),
+      waitingTask: (chat) => this.waitingTask(chat),
       pinChatToBottom: () => this.pinChatToBottom(),
       sendQueuedNow: (chat, index) => this.sendQueuedNow(chat, index),
       retryChatFrom: (chat, index) => this.retryChatFrom(chat, index),
@@ -243,6 +245,10 @@ export class MainApp implements McpSessionSink {
     // The record changes redraw the tabs with their task badges. The queue pump runs in the engine.
     this.taskStore.subscribe(() => {
       this.renderTabs();
+      // The task card of the active chat follows its record: it leaves when the record leaves the draft state.
+      if (this.activeChat()?.waitingTaskId) {
+        this.messages.render();
+      }
     });
     this.rail = new AppRail({
       gate: this.permissionGate,
@@ -573,7 +579,8 @@ export class MainApp implements McpSessionSink {
     const chat = this.activeChat();
     const text = this.chatInput.value.trim();
     const images = this.pendingImages;
-    if (!chat || (text.length === 0 && images.length === 0)) {
+    // A chat that waits for a task sends without a message: the brief of the task is the message.
+    if (!chat || (text.length === 0 && images.length === 0 && !this.waitingTask(chat))) {
       return;
     }
     if (chat.isMcpHostLog) {
@@ -610,6 +617,15 @@ export class MainApp implements McpSessionSink {
   /** True when the chat already carries a sent message, so its system prompt window has passed. */
   private chatHasConversation(chat: Chat): boolean {
     return chat.entries.some((entry) => entry.role === 'user' || entry.role === 'assistant');
+  }
+
+  /** The draft task one chat waits for, or null. The chat waits only while its record is a draft. */
+  private waitingTask(chat: Chat): TaskRecord | null {
+    if (!chat.waitingTaskId || !this.taskStore) {
+      return null;
+    }
+    const task = this.taskStore.get(chat.waitingTaskId);
+    return task && task.status === 'draft' ? task : null;
   }
 
   /** Restarts the failed turn of one user message in the core: every entry after the message drops,
@@ -765,6 +781,9 @@ export class MainApp implements McpSessionSink {
     void openTaskBoardView({
       store,
       dispatch: (id, mode, sessionFileId) => this.chats.dispatch(id, mode, sessionFileId),
+      openTaskChat: (taskId) => {
+        void this.newChat(taskId);
+      },
       openSession: (chatId) => {
         this.activateChat(chatId);
       },
@@ -865,9 +884,10 @@ export class MainApp implements McpSessionSink {
     this.chatInput.style.height = `${this.chatInput.scrollHeight}px`;
   }
 
-  /** Opens one fresh chat in the core and activates its tab. */
-  private async newChat(): Promise<void> {
-    const chat = await this.chats.create();
+  /** Opens one fresh chat in the core and activates its tab. A task id names the draft task the
+   * chat waits for: its first send dispatches the task. */
+  private async newChat(taskId?: string): Promise<void> {
+    const chat = await this.chats.create(taskId);
     this.activateChat(chat.id);
   }
 

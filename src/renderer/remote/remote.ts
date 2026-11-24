@@ -4,6 +4,10 @@
  * proposals, the task reviews, and the chat sessions, and answers through the API of the worker
  * core. The event stream rides a fetch stream with the authorization header, so no credential
  * lands in a URL. The replies and the patch diffs render through the shared text stack of the app.
+ * The tabs sit under the top bar, and both leave while a tab scrolls down.
+ * A chat that sent nothing carries a setup card: the provider, the model, and the system prompt
+ * source of its first message, and the card of the task it waits for. The tasks tab opens such a
+ * chat for a draft task.
  */
 
 import { buildDiff, renderMarkdown } from '../text/render.js';
@@ -32,6 +36,8 @@ interface TaskItem {
   readonly id: string;
   readonly title: string;
   readonly status: string;
+  readonly description?: string;
+  readonly goal?: string;
   readonly result: string | null;
 }
 
@@ -40,10 +46,65 @@ interface ChatSessionDto {
   readonly title: string;
   readonly createdAt: string;
   readonly entries: { role: string; content: string }[];
+  /** The system prompt the chat bound on its first message, when it sent one. */
+  readonly systemPrompt?: { sourceId: string; title: string; text: string };
+  /** The draft task the chat waits for. Its first send dispatches the task into the chat. */
+  readonly waitingTaskId?: string;
+  /** The provider account and the model the chat bound on its first message, when it sent one. */
+  readonly boundProviderId?: string;
+  readonly boundModel?: string;
+}
+
+/** One system prompt source of the menu, as the server lists it. */
+interface PromptSourceDto {
+  readonly id: string;
+  readonly label: string;
+}
+
+/** One provider account of the connection menu, as the server lists it. No key rides along. */
+interface ConnectionAccountDto {
+  readonly id: string;
+  readonly label: string;
+  readonly models: { id: string; label: string }[];
+}
+
+/** The connection menu of the workspace: the accounts a first message picks from, and the defaults. */
+interface ConnectionMenuDto {
+  readonly accounts: readonly ConnectionAccountDto[];
+  readonly defaultProviderId: string | null;
+  readonly defaultModel: string | null;
+}
+
+/** One state snapshot of the server: the answer of `/api/state` and the first frame of the stream. */
+interface StateSnapshot {
+  readonly permission?: unknown;
+  readonly patches?: unknown;
+  readonly tasks?: unknown;
+  readonly name?: unknown;
+  readonly prompts?: unknown;
 }
 
 const STORAGE_KEY = 'nodewavenui-remote-token';
 
+/** The option value of the session drop-down that opens a fresh session. No session id reads so. */
+const NEW_SESSION = 'new';
+
+/** The connection menu while the server listed none, or answered another shape. */
+const EMPTY_CONNECTION_MENU: ConnectionMenuDto = { accounts: [], defaultProviderId: null, defaultModel: null };
+
+/** The system prompt sources of the menu, in menu order. The state snapshot carries them. */
+let promptSources: readonly PromptSourceDto[] = [];
+
+/** The connection menu of the workspace. The chats tab reads it with the session list. */
+let connectionMenu: ConnectionMenuDto = EMPTY_CONNECTION_MENU;
+
+/** The source the menu of one chat holds before its first message, keyed by session id. */
+const heldPromptPicks = new Map<string, string>();
+
+/** The provider and the model the setup of one chat holds before its first message, keyed by session id. */
+const heldConnectionPicks = new Map<string, { providerId: string; model: string }>();
+
+const workspaceName = document.querySelector<HTMLElement>('#workspace-name');
 const connectionBadge = document.querySelector<HTMLElement>('#connection');
 const loginView = document.querySelector<HTMLElement>('#login');
 const remoteView = document.querySelector<HTMLElement>('#remote');
@@ -74,7 +135,7 @@ async function api(path: string, init?: RequestInit): Promise<unknown> {
 }
 
 /** Applies one state snapshot to the views. */
-function applyState(next: { permission?: unknown; patches?: unknown; tasks?: unknown }): void {
+function applyState(next: StateSnapshot): void {
   if (next.permission && typeof next.permission === 'object') {
     state.permission = next.permission as typeof state.permission;
   }
@@ -83,6 +144,13 @@ function applyState(next: { permission?: unknown; patches?: unknown; tasks?: unk
   }
   if (next.tasks && typeof next.tasks === 'object') {
     state.tasks = next.tasks as typeof state.tasks;
+  }
+  // An empty name keeps the app name of the page.
+  if (typeof next.name === 'string' && next.name && workspaceName) {
+    workspaceName.textContent = next.name;
+  }
+  if (Array.isArray(next.prompts)) {
+    promptSources = next.prompts as readonly PromptSourceDto[];
   }
   renderApprovals();
   renderPatches();
@@ -166,19 +234,7 @@ function dispatchFrame(frame: string): void {
   }
   const payload: unknown = JSON.parse(dataLines.join('\n'));
   if (event === 'state') {
-    const snapshot = payload as { permission?: unknown; patches?: unknown; tasks?: unknown };
-    if (snapshot.permission && typeof snapshot.permission === 'object') {
-      state.permission = snapshot.permission as typeof state.permission;
-    }
-    if (snapshot.patches && typeof snapshot.patches === 'object') {
-      state.patches = snapshot.patches as typeof state.patches;
-    }
-    if (snapshot.tasks && typeof snapshot.tasks === 'object') {
-      state.tasks = snapshot.tasks as typeof state.tasks;
-    }
-    renderApprovals();
-    renderPatches();
-    renderTasks();
+    applyState(payload as StateSnapshot);
     return;
   }
   if (event === 'permission') {
@@ -233,7 +289,7 @@ async function enterRemote(): Promise<void> {
     remoteView.hidden = false;
   }
   try {
-    applyState((await api('/api/state')) as typeof state);
+    applyState((await api('/api/state')) as StateSnapshot);
   } catch (error) {
     showLogin(error instanceof Error ? error.message : String(error));
     return;
@@ -336,20 +392,66 @@ function renderPatches(): void {
   }
 }
 
-/** Renders the tasks view. */
+/** Builds the body of one task card: the status and the title, the brief, and the goal. */
+function taskCardBody(task: TaskItem): HTMLElement {
+  const body = document.createElement('div');
+  body.className = 'task-card-body';
+  const head = document.createElement('div');
+  head.className = 'task-card-head';
+  const badge = document.createElement('span');
+  badge.className = 'task-card-badge';
+  badge.textContent = task.status;
+  const title = document.createElement('span');
+  title.className = 'task-card-title';
+  title.textContent = task.title;
+  head.append(badge, title);
+  body.append(head);
+  if (task.description) {
+    const description = document.createElement('div');
+    description.className = 'md-body task-card-description';
+    renderMarkdown(description, task.description);
+    body.append(description);
+  }
+  if (task.goal) {
+    const goal = document.createElement('p');
+    goal.className = 'task-card-goal';
+    goal.textContent = `Goal: ${task.goal}`;
+    body.append(goal);
+  }
+  return body;
+}
+
+/** Renders the tasks view: the draft tasks with their new-session action, then the reviews. */
 function renderTasks(): void {
   const view = document.querySelector<HTMLElement>('#view-tasks');
   if (!view) {
     return;
   }
   view.replaceChildren();
+  const drafts = state.tasks.records.filter((task) => task.status === 'draft');
   const reviews = state.tasks.records.filter((task) => task.status === 'review');
-  if (reviews.length === 0) {
+  if (drafts.length === 0 && reviews.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'status';
-    empty.textContent = 'No task waits for review.';
+    empty.textContent = 'No draft task and no review wait.';
     view.append(empty);
     return;
+  }
+  for (const task of drafts) {
+    const card = document.createElement('div');
+    card.className = 'card task-card';
+    card.append(taskCardBody(task));
+    const row = document.createElement('div');
+    row.className = 'row';
+    const start = document.createElement('button');
+    start.className = 'primary';
+    start.textContent = 'New session';
+    start.addEventListener('click', () => {
+      openTaskChat(task.id);
+    });
+    row.append(start);
+    card.append(row);
+    view.append(card);
   }
   for (const task of reviews) {
     const card = document.createElement('div');
@@ -381,46 +483,352 @@ function renderTasks(): void {
   }
 }
 
-/** Renders the chats view. */
+/** Renders the chats view: the session list while no chat opens, then one drop-down above the
+   chat, so the chat keeps the room. The list holds every chat of the engine, so a session that
+   left the engine closes here too. */
 function renderChats(sessions: readonly ChatSessionDto[]): void {
+  activeChat = sessions.find((session) => session.id === activeChat?.id) ?? null;
   const view = document.querySelector<HTMLElement>('#view-chats');
   if (!view) {
     return;
   }
   view.replaceChildren();
-  const list = document.createElement('div');
-  list.className = 'card chat-session-list';
-  for (const session of sessions) {
-    const button = document.createElement('button');
-    button.className = 'chat-session';
-    button.textContent = session.title;
-    button.addEventListener('click', () => {
-      renderChat(session);
+  if (!activeChat) {
+    const list = document.createElement('div');
+    list.className = 'card chat-session-list';
+    const fresh = document.createElement('button');
+    fresh.className = 'chat-session primary';
+    fresh.textContent = 'New Session';
+    fresh.addEventListener('click', () => {
+      createChat(sessions);
     });
-    list.append(button);
-  }
-  view.append(list);
-  if (activeChat) {
-    renderChat(sessions.find((session) => session.id === activeChat?.id) ?? null);
-  }
-}
-
-/** Renders one chat with its send box. */
-function renderChat(session: ChatSessionDto | null): void {
-  activeChat = session;
-  const view = document.querySelector<HTMLElement>('#view-chats');
-  if (!view) {
+    list.append(fresh);
+    for (const session of sessions) {
+      const button = document.createElement('button');
+      button.className = 'chat-session';
+      button.textContent = session.title;
+      button.addEventListener('click', () => {
+        openChat(sessions, session.id);
+      });
+      list.append(button);
+    }
+    view.append(list);
     return;
   }
-  const existing = view.querySelector('.chat-view');
-  existing?.remove();
+  const picker = document.createElement('select');
+  picker.className = 'chat-session-select';
+  picker.setAttribute('aria-label', 'Chat session');
+  const fresh = document.createElement('option');
+  fresh.value = NEW_SESSION;
+  fresh.textContent = 'New Session';
+  picker.append(fresh);
+  for (const session of sessions) {
+    const option = document.createElement('option');
+    option.value = session.id;
+    option.textContent = session.title;
+    picker.append(option);
+  }
+  picker.value = activeChat.id;
+  picker.addEventListener('change', () => {
+    if (picker.value === NEW_SESSION) {
+      createChat(sessions);
+      return;
+    }
+    openChat(sessions, picker.value);
+  });
+  // The drop-down and the button that closes the active session share one row.
+  const row = document.createElement('div');
+  row.className = 'chat-session-row';
+  row.append(picker, buildCloseButton(sessions));
+  view.append(row);
+  renderChat(activeChat);
+}
+
+/** Builds the button that closes the active session, at the right of the session drop-down. The
+   core closes the chat the way the close of a tab does: its session file drops, a task that runs in
+   it settles cancelled, and its running turn stops. The page asks first, because a tap here lands
+   beside the drop-down, and the messages do not come back. The session list shows again after. */
+function buildCloseButton(sessions: readonly ChatSessionDto[]): HTMLButtonElement {
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'chat-session-close';
+  close.title = 'Close this session. Its messages are deleted, and a task that runs in it is cancelled.';
+  close.textContent = 'Close';
+  close.addEventListener('click', () => {
+    if (!activeChat || !window.confirm(`Close the session "${activeChat.title}"? Its messages are deleted.`)) {
+      return;
+    }
+    const closed = activeChat;
+    void api('/api/chat/close', { method: 'POST', body: JSON.stringify({ fileId: closed.id }) })
+      .then(refreshChats)
+      .catch((error: unknown) => {
+        showError(error);
+        activeChat = closed;
+        renderChats(sessions);
+      });
+  });
+  return close;
+}
+
+/** Opens one session of a list as the active chat. */
+function openChat(sessions: readonly ChatSessionDto[], id: string): void {
+  const session = sessions.find((candidate) => candidate.id === id);
   if (!session) {
+    return;
+  }
+  activeChat = session;
+  renderChats(sessions);
+}
+
+/** Reads the connection menu out of one server answer. Another shape reads as an empty menu. */
+function readConnectionMenu(value: unknown): ConnectionMenuDto {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as { accounts?: unknown }).accounts)) {
+    return EMPTY_CONNECTION_MENU;
+  }
+  return value as ConnectionMenuDto;
+}
+
+/** Reads the session list and the connection menu, then draws the chats view. */
+function refreshChats(): Promise<void> {
+  return Promise.all([api('/api/chat/sessions'), api('/api/chat/connections')]).then(([sessions, connections]) => {
+    connectionMenu = readConnectionMenu(connections);
+    renderChats(sessions as readonly ChatSessionDto[]);
+  });
+}
+
+/** Opens one fresh session in the engine as the active chat. The session list reads again after,
+ * so the drop-down holds the fresh session. A task id names the draft task the chat waits for. */
+function createChat(sessions: readonly ChatSessionDto[], taskId?: string): void {
+  api('/api/chat/create', { method: 'POST', body: JSON.stringify(taskId ? { taskId } : {}) })
+    .then((session) => {
+      activeChat = session as ChatSessionDto;
+      return refreshChats();
+    })
+    .catch((error: unknown) => {
+      showError(error);
+      renderChats(sessions);
+    });
+}
+
+/** Opens a new chat that waits for one draft task, and shows it in the chats tab. The send of that
+ * chat dispatches the task. */
+function openTaskChat(taskId: string): void {
+  api('/api/chat/create', { method: 'POST', body: JSON.stringify({ taskId }) })
+    .then((session) => {
+      activeChat = session as ChatSessionDto;
+      showTab('chats');
+    })
+    .catch(showError);
+}
+
+/** The live selects of the setup card of one chat, so a send reads the picks they hold. A select
+   stays null while the page offers no choice for it. */
+interface SetupControls {
+  readonly provider: HTMLSelectElement | null;
+  readonly model: HTMLSelectElement | null;
+  readonly prompt: HTMLSelectElement | null;
+}
+
+/** The selects that are off, for a chat past its setup. */
+const NO_SETUP: SetupControls = { provider: null, model: null, prompt: null };
+
+/** The account the provider select starts on: the held account, the default of the workspace, or
+   the first one. */
+function preferredAccount(held: string | undefined): ConnectionAccountDto | undefined {
+  const accounts = connectionMenu.accounts;
+  return (
+    accounts.find((account) => account.id === held) ??
+    accounts.find((account) => account.id === connectionMenu.defaultProviderId) ??
+    accounts[0]
+  );
+}
+
+/** Fills the model select with the models of one account, and starts it on the held model, the
+   default of the workspace, or the first one. */
+function fillModels(select: HTMLSelectElement, accountId: string, held: string | undefined): void {
+  const models = connectionMenu.accounts.find((account) => account.id === accountId)?.models ?? [];
+  select.replaceChildren();
+  for (const model of models) {
+    const option = document.createElement('option');
+    option.value = model.id;
+    option.textContent = model.label;
+    select.append(option);
+  }
+  const wanted = [held, connectionMenu.defaultModel ?? undefined, models[0]?.id].find((id) =>
+    models.some((model) => model.id === id),
+  );
+  select.value = wanted ?? '';
+}
+
+/** Builds one labeled select row of the setup card. The label wraps the select, so a tap on the
+   label reaches the select. */
+function setupRow(labelText: string, select: HTMLSelectElement): HTMLElement {
+  const row = document.createElement('label');
+  row.className = 'chat-setup-row';
+  const label = document.createElement('span');
+  label.className = 'chat-setup-label';
+  label.textContent = labelText;
+  row.append(label, select);
+  return row;
+}
+
+/** Places the setup card of one chat that sent nothing, first in its message area: the provider,
+   the model, and the system prompt source of its first message. The card keeps only the rows the
+   page can offer. Answers the live selects. */
+function appendSetupCard(scroll: HTMLElement, session: ChatSessionDto): SetupControls {
+  const card = document.createElement('div');
+  card.className = 'chat-setup';
+  const held = heldConnectionPicks.get(session.id);
+  let provider: HTMLSelectElement | null = null;
+  let model: HTMLSelectElement | null = null;
+  if (connectionMenu.accounts.length === 0) {
+    const none = document.createElement('p');
+    none.className = 'chat-setup-empty';
+    none.textContent = 'No provider is configured.';
+    card.append(none);
+  } else {
+    const providerSelect = document.createElement('select');
+    providerSelect.className = 'chat-setup-select';
+    providerSelect.title = 'The provider of the first message. The chat stays on it after the send.';
+    for (const account of connectionMenu.accounts) {
+      const option = document.createElement('option');
+      option.value = account.id;
+      option.textContent = account.label;
+      providerSelect.append(option);
+    }
+    const modelSelect = document.createElement('select');
+    modelSelect.className = 'chat-setup-select';
+    modelSelect.title = 'The model of the first message. The chat stays on it after the send.';
+    providerSelect.value = preferredAccount(held?.providerId)?.id ?? '';
+    fillModels(modelSelect, providerSelect.value, held?.model);
+    providerSelect.addEventListener('change', () => {
+      // A new provider starts on its own default model, like the app.
+      fillModels(modelSelect, providerSelect.value, undefined);
+      heldConnectionPicks.set(session.id, { providerId: providerSelect.value, model: modelSelect.value });
+    });
+    modelSelect.addEventListener('change', () => {
+      heldConnectionPicks.set(session.id, { providerId: providerSelect.value, model: modelSelect.value });
+    });
+    card.append(
+      setupRow('Provider', providerSelect),
+      setupRow('Model', modelSelect),
+    );
+    provider = providerSelect;
+    model = modelSelect;
+  }
+  let prompt: HTMLSelectElement | null = null;
+  if (promptSources.length > 0) {
+    const promptSelect = document.createElement('select');
+    promptSelect.className = 'chat-setup-select';
+    promptSelect.title = 'The system prompt of the first message. The chat keeps it after the send.';
+    for (const source of promptSources) {
+      const option = document.createElement('option');
+      option.value = source.id;
+      option.textContent = source.label;
+      promptSelect.append(option);
+    }
+    const heldPrompt = heldPromptPicks.get(session.id);
+    promptSelect.value =
+      heldPrompt && promptSources.some((source) => source.id === heldPrompt) ? heldPrompt : (promptSources[0]?.id ?? '');
+    promptSelect.addEventListener('change', () => {
+      heldPromptPicks.set(session.id, promptSelect.value);
+    });
+    card.append(setupRow('System prompt', promptSelect));
+    prompt = promptSelect;
+  }
+  scroll.append(card);
+  return { provider, model, prompt };
+}
+
+/** Places the line of the connection one chat bound on its first message: the provider and the
+   model, as one quiet line like the locked labels of the app. Nothing renders while the chat bound
+   no provider. */
+function appendBoundConnection(scroll: HTMLElement, session: ChatSessionDto): void {
+  if (!session.boundProviderId) {
+    return;
+  }
+  const account = connectionMenu.accounts.find((candidate) => candidate.id === session.boundProviderId);
+  const model = account?.models.find((candidate) => candidate.id === session.boundModel);
+  const line = document.createElement('div');
+  line.className = 'entry notice chat-bound-connection';
+  line.textContent = `${account?.label ?? 'unknown provider'} · ${model?.label ?? session.boundModel ?? '–'}`;
+  scroll.append(line);
+}
+
+/** Places the system prompt one chat bound on its first message: a collapsed bubble on the
+   assistant side. A bound prompt without text, the none source, renders nothing. */
+function appendBoundPrompt(scroll: HTMLElement, session: ChatSessionDto): void {
+  const bound = session.systemPrompt;
+  if (!bound || bound.text.length === 0) {
+    return;
+  }
+  const item = document.createElement('div');
+  item.className = 'entry assistant system-prompt-item';
+  const disclosure = document.createElement('details');
+  disclosure.className = 'system-prompt';
+  const summary = document.createElement('summary');
+  const label = document.createElement('span');
+  label.className = 'system-prompt-title';
+  label.textContent = bound.title;
+  const body = document.createElement('div');
+  body.className = 'system-prompt-body';
+  body.textContent = bound.text;
+  summary.append(label);
+  disclosure.append(summary, body);
+  item.append(disclosure);
+  scroll.append(item);
+}
+
+/** Places the setup of one chat first in its message area. A chat that sent nothing and bound
+   nothing gets its setup card. A chat past that point gets the line of the connection it bound,
+   then its collapsed bound prompt. Answers the live selects while the card shows. */
+function appendChatSetup(scroll: HTMLElement, session: ChatSessionDto): SetupControls {
+  const sent = session.entries.some((entry) => entry.role === 'user' || entry.role === 'assistant');
+  if (!sent && !session.systemPrompt && !session.boundProviderId) {
+    return appendSetupCard(scroll, session);
+  }
+  appendBoundConnection(scroll, session);
+  appendBoundPrompt(scroll, session);
+  return NO_SETUP;
+}
+
+/** The draft task one chat waits for, or null: the chat waits for none, or the task left the draft state. */
+function waitingTask(session: ChatSessionDto): TaskItem | null {
+  if (!session.waitingTaskId) {
+    return null;
+  }
+  const task = state.tasks.records.find((record) => record.id === session.waitingTaskId);
+  return task && task.status === 'draft' ? task : null;
+}
+
+/** Places the card of the task one chat waits for, under its setup card. The send of the chat
+   dispatches the task with the picks of that card. */
+function appendTaskCard(scroll: HTMLElement, task: TaskItem): void {
+  const card = document.createElement('div');
+  card.className = 'chat-task-card';
+  card.append(taskCardBody(task));
+  const hint = document.createElement('p');
+  hint.className = 'task-card-hint';
+  hint.textContent = 'Send starts this task with the settings above. A message is optional.';
+  card.append(hint);
+  scroll.append(card);
+}
+
+/** Renders the active chat with its send box, under the session drop-down of the view. */
+function renderChat(session: ChatSessionDto): void {
+  const view = document.querySelector<HTMLElement>('#view-chats');
+  if (!view) {
     return;
   }
   const card = document.createElement('div');
   card.className = 'chat-view';
   const scroll = document.createElement('div');
   scroll.className = 'chat-scroll';
+  const setup = appendChatSetup(scroll, session);
+  const task = waitingTask(session);
+  if (task) {
+    appendTaskCard(scroll, task);
+  }
   for (const entry of session.entries.slice(-40)) {
     // A persisted empty reply renders nothing, like the app.
     if (entry.role === 'assistant' && entry.content.length === 0) {
@@ -444,7 +852,8 @@ function renderChat(session: ChatSessionDto | null): void {
   form.id = 'chat-send';
   const input = document.createElement('input');
   input.type = 'text';
-  input.placeholder = 'Message';
+  // A chat that waits for a task sends without a message: the brief of the task is the message.
+  input.placeholder = task ? 'Message (optional)' : 'Message';
   const send = document.createElement('button');
   send.type = 'submit';
   send.textContent = 'Send';
@@ -452,15 +861,18 @@ function renderChat(session: ChatSessionDto | null): void {
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     const text = input.value.trim();
-    if (text.length === 0) {
+    if (text.length === 0 && !task) {
       return;
     }
     input.value = '';
-    void api('/api/chat/send', { method: 'POST', body: JSON.stringify({ fileId: session.id, text }) })
-      .then(() => api('/api/chat/sessions'))
-      .then((fresh) => {
-        renderChats(fresh as readonly ChatSessionDto[]);
-      })
+    // The first message of the chat carries the picks its setup card holds.
+    const picks = {
+      ...(setup.provider ? { providerId: setup.provider.value } : {}),
+      ...(setup.model ? { model: setup.model.value } : {}),
+      ...(setup.prompt ? { systemPromptId: setup.prompt.value } : {}),
+    };
+    void api('/api/chat/send', { method: 'POST', body: JSON.stringify({ fileId: session.id, text, ...picks }) })
+      .then(refreshChats)
       .catch(showError);
   });
   card.append(form);
@@ -477,23 +889,85 @@ function showError(error: unknown): void {
   }
 }
 
+/** The scroll distance that flips the top bars, so a small drift keeps them. */
+const BAR_SCROLL_DISTANCE = 8;
+
+/** How long the top bars take to slide (the transition of the style sheet), with a margin. */
+const BAR_MOTION_MILLISECONDS = 300;
+
+/** The scroll container the last scroll event read, and the top position it read there. */
+let lastScroller: HTMLElement | null = null;
+let lastScrollTop = 0;
+
+/** The time the top bars end their slide. */
+let barMotionEnd = 0;
+
+/** Slides the top bars up out of the view, or back in. */
+function setTopHidden(hidden: boolean): void {
+  if (document.body.classList.contains('top-hidden') !== hidden) {
+    barMotionEnd = performance.now() + BAR_MOTION_MILLISECONDS;
+  }
+  document.body.classList.toggle('top-hidden', hidden);
+}
+
+/** Hides the top bars while a tab scrolls down, and shows them again while it scrolls up or
+   reaches its top. The scroll event does not bubble, so the capture phase on the remote view
+   hears every tab and the message area of the chat. Two kinds of event move no bar: the first
+   event of a container only sets the baseline, so a tab switch never counts as a scroll, and the
+   slide of the bars moves the scroll position of a view that sits at the end of its range. */
+function onRemoteScroll(event: Event): void {
+  const scroller = event.target;
+  if (!(scroller instanceof HTMLElement)) {
+    return;
+  }
+  const top = scroller.scrollTop;
+  if (scroller !== lastScroller) {
+    lastScroller = scroller;
+  } else if (performance.now() >= barMotionEnd) {
+    if (top <= 0 || top < lastScrollTop - BAR_SCROLL_DISTANCE) {
+      setTopHidden(false);
+    } else if (top > lastScrollTop + BAR_SCROLL_DISTANCE) {
+      setTopHidden(true);
+    }
+  }
+  lastScrollTop = top;
+}
+remoteView?.addEventListener('scroll', onRemoteScroll, { capture: true, passive: true });
+
+// The heights of the two top bars stay in the variables of the page: the hidden state slides each
+// bar up by its own height (see the style sheet).
+for (const [selector, variable] of [
+  ['header', '--bar-height'],
+  ['main#remote nav', '--tabs-height'],
+] as const) {
+  const bar = document.querySelector<HTMLElement>(selector);
+  if (!bar) {
+    continue;
+  }
+  const measure = (): void => {
+    document.documentElement.style.setProperty(variable, `${bar.getBoundingClientRect().height}px`);
+  };
+  new ResizeObserver(measure).observe(bar);
+}
+
+/** Shows one tab of the remote view. The bars return with every tab switch. */
+function showTab(name: string): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('nav button')) {
+    button.classList.toggle('active', button.dataset.view === name);
+  }
+  for (const section of document.querySelectorAll<HTMLElement>('main#remote > section')) {
+    section.hidden = section.id !== `view-${name}`;
+  }
+  setTopHidden(false);
+  if (name === 'chats') {
+    void refreshChats().catch(showError);
+  }
+}
+
 // The tab navigation.
 for (const button of document.querySelectorAll<HTMLButtonElement>('nav button')) {
   button.addEventListener('click', () => {
-    for (const other of document.querySelectorAll<HTMLButtonElement>('nav button')) {
-      other.classList.toggle('active', other === button);
-    }
-    const name = button.dataset.view;
-    for (const section of document.querySelectorAll<HTMLElement>('main#remote > section')) {
-      section.hidden = section.id !== `view-${name}`;
-    }
-    if (name === 'chats') {
-      void api('/api/chat/sessions')
-        .then((sessions) => {
-          renderChats(sessions as readonly ChatSessionDto[]);
-        })
-        .catch(showError);
-    }
+    showTab(button.dataset.view ?? '');
   });
 }
 

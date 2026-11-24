@@ -127,6 +127,8 @@ export const WORKER_STORAGE_IDS: readonly string[] = ['json', 'json-password'];
 export interface WorkerStart {
   /** The absolute path of the workspace folder. */
   readonly directoryPath: string;
+  /** The display name of the workspace marker. Empty when the start message carries none. */
+  readonly name: string;
   /** The storage setup id of the workspace marker. */
   readonly storageId: string;
   /** The non-secret storage configuration of the workspace marker. */
@@ -193,6 +195,7 @@ export function readWorkerStart(value: unknown): WorkerStart | null {
   const appRoot = typeof value.appRoot === 'string' ? value.appRoot : '';
   return {
     directoryPath: value.directoryPath,
+    name: typeof value.name === 'string' ? value.name : '',
     storageId: value.storageId,
     storageConfig: value.storageConfig,
     password,
@@ -339,6 +342,9 @@ export interface CoreChatMeta {
   readonly thinkingLevel?: CoreThinkingLevel;
   /** The dispatchable task this chat runs, set when a dispatch bound it. */
   readonly taskId?: string;
+  /** The draft task the chat was opened for. Its first send dispatches the task into the chat. Absent
+   * once the task left the draft state, or once a send dispatched it. */
+  readonly waitingTaskId?: string;
   /** True while an agent turn of the chat runs. */
   readonly running: boolean;
   /** Counts the state changes of the chat since the core opened it. A surface drops a change it
@@ -360,6 +366,12 @@ export interface CoreChatState {
 export interface CoreAgentToolInfo {
   readonly name: string;
   readonly description: string;
+}
+
+/** One system prompt source as a surface lists it: the menu entry without its builder. */
+export interface CoreSystemPromptSourceInfo {
+  readonly id: string;
+  readonly label: string;
 }
 
 /**
@@ -394,6 +406,23 @@ export interface CoreChatPicks {
   readonly providerId?: string;
   readonly model?: string;
   readonly systemPromptId?: string;
+}
+
+/** One provider account as a surface lists it for a first send. No key and no address ride along. */
+export interface CoreConnectionAccount {
+  readonly id: string;
+  readonly label: string;
+  /** The models of the account, each with its display label. */
+  readonly models: readonly { readonly id: string; readonly label: string }[];
+}
+
+/** The connection menu of a workspace: the accounts a first send picks from, and the defaults. */
+export interface CoreConnectionMenu {
+  readonly accounts: readonly CoreConnectionAccount[];
+  /** The account the chats use by default, or null when none is chosen. */
+  readonly defaultProviderId: string | null;
+  /** The model the chats use by default, or null when none is chosen. */
+  readonly defaultModel: string | null;
 }
 
 /** The `chat.send` call. */
@@ -596,6 +625,28 @@ function readChatPicks(value: Record<string, unknown>): CoreChatPicks {
     ...(model ? { model } : {}),
     ...(systemPromptId ? { systemPromptId } : {}),
   };
+}
+
+/**
+ * Reads one `chat.create` payload. A missing payload opens a plain chat.
+ *
+ * @param value The payload of the request. It can have any type.
+ * @returns The task id the new chat waits for, an empty object for a plain chat, or null when the
+ * task id has another shape than a string.
+ */
+export function readChatCreatePayload(value: unknown): { readonly taskId?: string } | null {
+  // Any falsy payload, a missing one included, opens a plain chat.
+  if (!value) {
+    return {};
+  }
+  if (!isRecord(value)) {
+    return null;
+  }
+  // Any falsy task id names no task, so only a string names one.
+  if (!value.taskId) {
+    return {};
+  }
+  return typeof value.taskId === 'string' ? { taskId: value.taskId } : null;
 }
 
 /**

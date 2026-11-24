@@ -135,7 +135,9 @@ function startHeadless(): void {
     parsed = null;
   }
   const marker =
-    typeof parsed === 'object' && parsed ? (parsed as { storageId?: unknown; storageConfig?: unknown }) : null;
+    typeof parsed === 'object' && parsed ?
+      (parsed as { name?: unknown; storageId?: unknown; storageConfig?: unknown }) :
+      null;
   // Only the plain JSON setup opens without a surface: a password needs an unlock, and the
   // legacy IndexedDB setups die with the renderer profile they lived in.
   if (!marker || marker.storageId !== 'json') {
@@ -153,6 +155,7 @@ function startHeadless(): void {
   });
   startWorkspaceWorker({
     directoryPath: positional,
+    name: typeof marker.name === 'string' ? marker.name : '',
     storageId: marker.storageId,
     storageConfig: marker.storageConfig,
     password: null,

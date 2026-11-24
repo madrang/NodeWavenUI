@@ -38,19 +38,27 @@ body {
   word-break: break-word;
 }
 
-/* The top bar: the workspace name and the connection state, over one border like the app bar. */
+/* The top bar: the workspace name and the connection state, over one border like the app bar.
+   It leaves while a tab scrolls down (see `.top-hidden` below). */
 header {
   flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+  transition: margin-top 200ms ease;
 }
 
+/* A long workspace name truncates, so the connection state keeps its room. */
 header h1 {
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 14px;
   font-weight: 600;
 }
@@ -61,7 +69,8 @@ header h1 {
 
 /* Controls: the base control styles of the app, with touch padding. */
 input,
-button {
+button,
+select {
   font: inherit;
   padding: 10px 14px;
   border-radius: 6px;
@@ -83,13 +92,15 @@ button.approve,
   font-weight: 600;
 }
 
-button.deny {
+button.deny,
+.chat-session-close {
   border-color: color-mix(in srgb, var(--error) 60%, var(--border));
   color: var(--error);
   background: none;
 }
 
-button.deny:hover {
+button.deny:hover,
+.chat-session-close:hover {
   background: color-mix(in srgb, var(--error) 15%, transparent);
 }
 
@@ -122,6 +133,7 @@ main#login > p.status {
 
 /* The remote view: one column under the bar, every section scrolling its own area. */
 main#remote {
+  --inset: 12px;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -129,23 +141,31 @@ main#remote {
   width: 100%;
   max-width: 640px;
   margin: 0 auto;
-  padding: 12px;
+  padding: var(--inset);
 }
 
-/* The view switcher: the tab vocabulary of the app, flattened into one segmented row. */
+/* The tab strip: the tab vocabulary of the app, rounded tops that join the line below. The strip
+   spans the width under the bar, and every tab keeps an even share, so the touch targets stay wide. */
 nav {
   flex: none;
   display: flex;
-  gap: 6px;
-  margin-bottom: 10px;
+  align-items: flex-end;
+  gap: 4px;
+  margin: calc(-1 * var(--inset)) calc(-1 * var(--inset)) 10px;
+  padding: 6px 6px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  transition: margin-top 200ms ease;
 }
 
 nav button {
   flex: 1;
+  min-width: 0;
   padding: 8px 4px;
-  border-radius: 8px;
+  border-radius: 8px 8px 0 0;
   background: color-mix(in srgb, var(--surface) 40%, transparent);
   border: 1px solid color-mix(in srgb, var(--border) 35%, transparent);
+  border-bottom: none;
   color: var(--muted);
 }
 
@@ -154,11 +174,24 @@ nav button:hover {
   color: var(--text);
 }
 
+/* The active tab joins the line of the strip. */
 nav button.active {
   background: var(--surface);
   border-color: var(--border);
   color: var(--text);
   font-weight: 600;
+  margin-bottom: -1px;
+}
+
+/* The top bars leave while a tab scrolls down and return while it scrolls up: each slides up by
+   its own height, and the tab content takes the room. The script measures the heights into the
+   variables of the page and sets the class. */
+body.top-hidden header {
+  margin-top: calc(-1 * var(--bar-height));
+}
+
+body.top-hidden nav {
+  margin-top: calc(-1 * (var(--inset) + var(--tabs-height)));
 }
 
 main#remote > section {
@@ -270,6 +303,31 @@ main#remote > section {
   border-color: var(--accent);
 }
 
+/* The drop-down that replaces the list while a chat opens, so the chat keeps the room. */
+.chat-session-select {
+  flex: none;
+  width: 100%;
+}
+
+/* The session row: the drop-down takes the room, and the button that closes the active session
+   sits at its right. The red outline marks the close, like a refusal. */
+.chat-session-row {
+  flex: none;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-session-row .chat-session-select {
+  flex: 1;
+  width: auto;
+  min-width: 0;
+}
+
+.chat-session-close {
+  flex: none;
+}
+
 .chat-view {
   flex: 1 1 0;
   min-height: 0;
@@ -327,6 +385,176 @@ main#remote > section {
   color: var(--error);
   font-size: 12px;
   background: none;
+}
+
+/* The collapsed bound prompt sits in a bubble on the assistant side, like the app. */
+.system-prompt-item {
+  min-width: 0;
+}
+
+/* The setup card of a chat that sent nothing: the provider, the model, and the system prompt
+   source of its first message, one labeled select per row. The rows share the columns of the card,
+   so the selects line up. The auto margins center it in the empty message area, between the
+   drop-down and the composer. */
+.chat-setup {
+  align-self: stretch;
+  min-width: 0;
+  margin-top: auto;
+  margin-bottom: auto;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.chat-setup-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-width: 0;
+}
+
+.chat-setup-label {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chat-setup-select {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 10px;
+  font-size: 13px;
+}
+
+.chat-setup-empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* A task card under the setup pins the setup to the top of the message area: the auto margins
+   center it only while it sits alone. */
+.chat-setup:has(+ .chat-task-card) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* The line of the connection one chat bound on its first message: a quiet centered line. */
+.chat-bound-connection {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The task card: under the setup card of a chat that waits for the task, or on the tasks tab
+   with its new-session action. */
+.chat-task-card {
+  align-self: center;
+  max-width: 100%;
+  min-width: 0;
+  margin-bottom: auto;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.task-card-body {
+  min-width: 0;
+}
+
+.task-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-card-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.task-card-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.task-card-description {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.task-card-goal,
+.task-card-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* The collapsed prompt: the source title as the summary, the text under a rule. */
+.system-prompt {
+  min-width: 0;
+}
+
+.system-prompt > summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.system-prompt > summary::-webkit-details-marker {
+  display: none;
+}
+
+.system-prompt > summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.system-prompt[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.system-prompt-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-prompt-body {
+  margin: 4px 0 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 40vh;
+  overflow: auto;
 }
 
 #chat-send {

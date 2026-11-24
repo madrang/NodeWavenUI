@@ -19,6 +19,7 @@ import type { StorageBackend } from '../../dist/storage/storage.js';
 import type { OpenAiProviderConfig } from '../../dist/providers/openai.js';
 import type { CompletionRequest, CompletionResult, InferenceProvider } from '../../dist/providers/provider.js';
 import type { CoreChatEvent } from '../../dist/shared/core-api.js';
+import type { TaskRecord } from '../../dist/shared/tasks.js';
 
 /** One in-memory settings backend. */
 class MemoryBackend implements StorageBackend {
@@ -63,6 +64,13 @@ function scripted(...answers: readonly CompletionResult[]): ProviderScript {
 /** Reads one text answer of the fake provider. */
 function text(content: string): CompletionResult {
   return { content, model: 'test-model' };
+}
+
+/** Reads the answer of the fake provider that completes one task through the tasks tool, so the
+ * turn of the task ends without a nudge. */
+function completion(taskId: string): CompletionResult {
+  const arguments_ = JSON.stringify({ action: 'complete', id: taskId, result: 'Sorted.', evidence: 'ls reads sorted' });
+  return { content: '', model: 'test-model', toolCalls: [{ id: 'call-1', name: 'tasks', arguments: arguments_ }] };
 }
 
 /** The script of a fake provider that holds its first request until `release` runs, so a test acts
@@ -203,6 +211,35 @@ describe('the chat engine', () => {
     return chat.id;
   }
 
+  /** Opens the task store of the spec workspace. */
+  async function taskStore(): Promise<TaskStore> {
+    const tasks = new TaskStore(root);
+    await tasks.load();
+    return tasks;
+  }
+
+  /** Creates one draft task, and fails the spec when the store refuses it. */
+  async function createTask(tasks: TaskStore, blockedBy: readonly string[] = []): Promise<TaskRecord> {
+    const task = await tasks.create({
+      title: 'Sort the files',
+      description: 'Alphabetical order.',
+      goal: 'ls reads sorted',
+      origin: 'user',
+      originChatId: null,
+      parentTaskId: null,
+      blockedBy,
+    });
+    if (!task) {
+      throw new Error('The task store refused the draft task of the spec.');
+    }
+    return task;
+  }
+
+  /** Waits until one task completed into review and the turn of its chat ended. */
+  async function settleTask(tasks: TaskStore, taskId: string, chatId: number): Promise<void> {
+    await waitFor(() => tasks.get(taskId)?.status === 'review' && !engine.isRunning(chatId));
+  }
+
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), 'nvengine-'));
     events.length = 0;
@@ -315,6 +352,117 @@ describe('the chat engine', () => {
     expect(engine.list()[0]?.systemPrompt).to.deep.equal({ sourceId: 'agents-md', title: 'AGENTS.md', text: 'Be terse.' });
   });
 
+  it('binds the provider and model the first send picks', async () => {
+    script = scripted(text('the reply'));
+    const other = {
+      id: 'account-2',
+      label: 'Other account',
+      baseUrl: 'https://other.invalid/v1',
+      apiKey: 'other key',
+      models: [
+        { id: 'other-model', vision: false },
+        { id: 'other-vision', vision: true },
+      ],
+    };
+    await new WorkspaceSettingsStore(backend).saveProviderRegistry({
+      accounts: [ACCOUNT, other],
+      defaultProviderId: ACCOUNT.id,
+      defaultModel: 'test-model',
+    });
+    const chat = engine.create();
+    const picks = { providerId: other.id, model: 'other-model' };
+    expect(await engine.send({ chatId: chat.id, text: 'hello', images: [], ...picks })).to.equal(true);
+    await waitFor(() => !engine.isRunning(chat.id));
+    expect(engine.get(chat.id)).to.include({ boundProviderId: 'account-2', boundModel: 'other-model' });
+  });
+
+  it('dispatches the task a chat waits for on an empty first send', async () => {
+    const tasks = await taskStore();
+    const task = await createTask(tasks);
+    script = scripted(completion(task.id), text('done'));
+    engine = await open({ tasks });
+    const chat = engine.create(task.id);
+    expect(chat).to.include({ title: 'Sort the files', waitingTaskId: task.id });
+    engine.remoteSend(chat.fileId, '');
+    await settleTask(tasks, task.id, chat.id);
+    // The brief is the message. The completion and its reply follow.
+    expect(engine.get(chat.id)?.entries.map((entry) => entry.role)).to.deep.equal(['user', 'assistant', 'tool', 'assistant']);
+    expect(engine.get(chat.id)?.entries[0]?.content.startsWith(`[task ${task.id}] Sort the files`)).to.equal(true);
+    // The record ran in the chat, the chat no longer waits, and no second chat opened for the task.
+    expect(tasks.get(task.id)).to.include({ status: 'review', sessionFileId: chat.fileId, sessionChatId: chat.id });
+    expect(engine.get(chat.id)).to.include({ taskId: task.id });
+    expect(engine.get(chat.id)).to.not.have.property('waitingTaskId');
+    expect(engine.list()).to.have.lengthOf(1);
+  });
+
+  it('lands the brief before the message of a first send, and binds its picks', async () => {
+    const tasks = await taskStore();
+    const task = await createTask(tasks);
+    script = scripted(completion(task.id), text('done'));
+    engine = await open({ tasks, promptSources: [{ id: 'agents-md', label: 'AGENTS.md', build: async () => 'Be terse.' }] });
+    const chat = engine.create(task.id);
+    const call = { chatId: chat.id, text: 'Start with the specs.', images: [], systemPromptId: 'agents-md' };
+    expect(await engine.send(call)).to.equal(true);
+    await settleTask(tasks, task.id, chat.id);
+    expect(engine.get(chat.id)?.entries[0]?.content.startsWith(`[task ${task.id}]`)).to.equal(true);
+    expect(engine.get(chat.id)?.entries[1]?.content).to.equal('Start with the specs.');
+    expect(engine.get(chat.id)?.systemPrompt).to.deep.equal({ sourceId: 'agents-md', title: 'AGENTS.md', text: 'Be terse.' });
+    // The model reads the system prompt, then the brief, then the message.
+    expect(script.requests[0]?.messages.map((message) => message.role)).to.deep.equal(['system', 'user', 'user']);
+  });
+
+  it('keeps a blocked task queued on the chat that sent it', async () => {
+    const tasks = await taskStore();
+    const blocker = await createTask(tasks);
+    const task = await createTask(tasks, [blocker.id]);
+    engine = await open({ tasks });
+    const chat = engine.create(task.id);
+    expect(await engine.send({ chatId: chat.id, text: '', images: [] })).to.equal(false);
+    expect(tasks.get(task.id)).to.include({ status: 'queued', dispatchMode: 'session', sessionFileId: chat.fileId });
+    expect(engine.get(chat.id)?.entries.map((entry) => entry.role)).to.deep.equal(['notice']);
+    expect(engine.get(chat.id)).to.not.have.property('waitingTaskId');
+    expect(script.requests).to.have.lengthOf(0);
+  });
+
+  it('refuses an empty send on a chat that waits for no task', async () => {
+    const chat = engine.create();
+    expect(await engine.send({ chatId: chat.id, text: '', images: [] })).to.equal(false);
+    engine.remoteSend(chat.fileId, '');
+    expect(engine.get(chat.id)?.entries).to.deep.equal([]);
+  });
+
+  it('refuses a chat for a task that is missing or is no draft', async () => {
+    const tasks = await taskStore();
+    const task = await createTask(tasks);
+    await tasks.cancel(task.id, 'Not needed.');
+    engine = await open({ tasks });
+    expect(() => engine.create('missing-task')).to.throw('no draft');
+    expect(() => engine.create(task.id)).to.throw('no draft');
+  });
+
+  it('lists the connection menu without a key and without an address', async () => {
+    const seeing = {
+      id: 'account-2',
+      label: 'Seeing account',
+      baseUrl: 'https://seeing.invalid/v1',
+      apiKey: 'seeing key',
+      models: [{ id: 'seeing-model', vision: true }],
+    };
+    await new WorkspaceSettingsStore(backend).saveProviderRegistry({
+      accounts: [ACCOUNT, seeing],
+      defaultProviderId: seeing.id,
+      defaultModel: 'seeing-model',
+    });
+    expect(await engine.connectionMenu()).to.deep.equal({
+      accounts: [
+        { id: 'account-1', label: 'Spec account', models: [{ id: 'test-model', label: 'test-model' }] },
+        { id: 'account-2', label: 'Seeing account', models: [{ id: 'seeing-model', label: 'seeing-model · vision' }] },
+      ],
+      defaultProviderId: 'account-2',
+      defaultModel: 'seeing-model',
+    });
+  });
+
   it('answers a send without a provider with a notice and no turn', async () => {
     await new WorkspaceSettingsStore(backend).saveProviderRegistry({
       accounts: [],
@@ -342,6 +490,22 @@ describe('the chat engine', () => {
     expect(existsSync(join(root, 'chats')) ? readdirSync(join(root, 'chats')) : []).to.deep.equal([]);
     // The closed chat pushed its removal, and nothing after it.
     expect(events.at(-1)).to.deep.equal({ kind: 'closed', chatId: chat.id });
+  });
+
+  it('closes the chat of one session file from the phone page, and leaves no session file', async () => {
+    script = scripted(text('the reply'));
+    const chatId = await turn('hello');
+    const fileId = engine.get(chatId)?.fileId ?? '';
+    await waitFor(() => existsSync(join(root, 'chats', `${fileId}.json`)));
+    // An unknown session file closes nothing.
+    engine.remoteClose('no-such-session');
+    expect(engine.get(chatId)).to.not.equal(null);
+    engine.remoteClose(fileId);
+    expect(engine.list()).to.deep.equal([]);
+    expect(events.at(-1)).to.deep.equal({ kind: 'closed', chatId });
+    // The session file drops on the write chain of the store, so the removal lands a moment later.
+    await waitFor(() => !existsSync(join(root, 'chats', `${fileId}.json`)));
+    expect(readdirSync(join(root, 'chats'))).to.deep.equal([]);
   });
 
   it('restores the stored sessions of a workspace', async () => {

@@ -72,6 +72,11 @@ function applyMeta(chat: Chat, meta: CoreChatMeta): void {
   } else {
     delete chat.taskId;
   }
+  if (meta.waitingTaskId) {
+    chat.waitingTaskId = meta.waitingTaskId;
+  } else {
+    delete chat.waitingTaskId;
+  }
   // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence clears the field
   if (meta.contextTokens !== undefined) {
     chat.contextTokens = meta.contextTokens;
@@ -166,9 +171,10 @@ export class ChatClient {
     };
   }
 
-  /** Opens one fresh chat in the core and adds it to the mirror. */
-  async create(): Promise<Chat> {
-    const core = readCoreChat(await this.request('chat.create'));
+  /** Opens one fresh chat in the core and adds it to the mirror. A task id names the draft task the
+   * chat waits for: the first send of the chat dispatches the task into it. */
+  async create(taskId?: string): Promise<Chat> {
+    const core = readCoreChat(await this.request('chat.create', taskId ? { taskId } : undefined));
     if (!core) {
       throw new Error('The core answered the new chat with an invalid shape.');
     }

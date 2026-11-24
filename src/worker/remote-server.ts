@@ -15,6 +15,12 @@ import { extname, join, normalize } from 'node:path';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { RemoteServerConfig, WorkspaceSettingsStore } from '../storage/settings-store.js';
 import { WORKSPACE_REMOTE_FOLDER } from '../shared/workspace.js';
+import type {
+  CoreChatPicks,
+  CoreConnectionMenu,
+  CoreSystemPrompt,
+  CoreSystemPromptSourceInfo,
+} from '../shared/core-api.js';
 import { BodyLimitError, readRequestBody } from '../shared/http-body.js';
 import { log } from './logger.js';
 
@@ -24,12 +30,38 @@ type CertificateGenerator = (addresses: readonly string[]) => Promise<{ cert: st
 /** Builds the pairing QR code image of one address. */
 type QrBuilder = (text: string) => Promise<string>;
 
+/** One chat session in the shape the phone page reads. The id is the session file id. */
+export interface RemoteChatSession {
+  readonly id: string;
+  readonly title: string;
+  readonly createdAt: string;
+  readonly entries: readonly unknown[];
+  /** The system prompt the chat bound on its first send, when it sent one. */
+  readonly systemPrompt?: CoreSystemPrompt;
+  /** The draft task the chat waits for. Its first send dispatches the task into the chat. */
+  readonly waitingTaskId?: string;
+  /** The provider account and the model the chat bound on its first send, when it sent one. */
+  readonly boundProviderId?: string;
+  readonly boundModel?: string;
+}
+
 /** The state the server serves: the same snapshots every surface sees. */
 export interface RemoteStateProviders {
+  /** The display name of the workspace. Empty keeps the app name on the page. */
+  workspaceName(): string;
   permission(): { pending: readonly unknown[]; rules: readonly unknown[] };
   patches(): { patches: readonly unknown[]; tasks: readonly unknown[] };
   tasks(): { records: readonly unknown[] };
-  chatSessions(): Promise<readonly unknown[]>;
+  /** Every chat of the engine in creation order: the stored sessions and the fresh chats that hold
+   * no file yet. */
+  chatSessions(): Promise<readonly RemoteChatSession[]>;
+  /** Opens one fresh chat in the engine. Its session file lands with its first message. A task id
+   * names the draft task the chat waits for. */
+  createChat(taskId?: string): RemoteChatSession;
+  /** The system prompt sources a first send binds, in menu order. */
+  chatPromptSources(): readonly CoreSystemPromptSourceInfo[];
+  /** The connection menu a first send picks from. No key and no address ride along. */
+  chatConnections(): Promise<CoreConnectionMenu>;
   resolvePermission(id: number, approve: boolean, remember: boolean): Promise<void>;
   applyPatch(id: number): Promise<unknown>;
   denyPatch(id: number, comment: string | null): Promise<void>;
@@ -37,7 +69,11 @@ export interface RemoteStateProviders {
   acceptTask(id: string): Promise<unknown>;
   returnTask(id: string): Promise<unknown>;
   cancelTask(id: string): Promise<unknown>;
-  sendChat(fileId: string | null, text: string): void;
+  /** Lands one message in the chat of the session file. The picks reach a first send: the provider,
+   * the model, and the system prompt source. A missing pick keeps the default of the workspace. */
+  sendChat(fileId: string | null, text: string, picks?: CoreChatPicks): void;
+  /** Closes the chat of the session file, the way the close of a tab does. An unknown id closes nothing. */
+  closeChat(fileId: string): void;
 }
 
 /** One open event stream of the remote control. */
@@ -472,6 +508,8 @@ export class RemoteServer {
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(
         JSON.stringify({
+          name: this.state.workspaceName(),
+          prompts: this.state.chatPromptSources(),
           permission: this.state.permission(),
           patches: this.state.patches(),
           tasks: this.state.tasks(),
@@ -484,6 +522,11 @@ export class RemoteServer {
       response.end(JSON.stringify(await this.state.chatSessions()));
       return;
     }
+    if (request.method === 'GET' && path === '/api/chat/connections') {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(await this.state.chatConnections()));
+      return;
+    }
     if (request.method === 'GET' && path === '/api/events') {
       response.writeHead(200, {
         'content-type': 'text/event-stream',
@@ -491,6 +534,8 @@ export class RemoteServer {
       });
       response.write('retry: 3000\n\n');
       response.write(`event: state\ndata: ${JSON.stringify({
+        name: this.state.workspaceName(),
+        prompts: this.state.chatPromptSources(),
         permission: this.state.permission(),
         patches: this.state.patches(),
         tasks: this.state.tasks(),
@@ -529,6 +574,17 @@ export class RemoteServer {
         }
         return call.id;
       };
+      // The picks of a first send ride as strings. A value of another shape, or an empty one, stays out.
+      const stringPicks = (names: readonly string[]): Record<string, string> => {
+        const picks: Record<string, string> = {};
+        for (const name of names) {
+          const value = call[name];
+          if (typeof value === 'string' && value) {
+            picks[name] = value;
+          }
+        }
+        return picks;
+      };
       if (path === '/api/permission/resolve') {
         await this.state.resolvePermission(numericId('resolve call'), call.approve === true, call.remember === true);
         this.answerJson(response, { ok: true });
@@ -560,12 +616,31 @@ export class RemoteServer {
         this.answerJson(response, { ok: true });
         return;
       }
+      if (path === '/api/chat/create') {
+        this.answerJson(response, this.state.createChat(typeof call.taskId === 'string' ? call.taskId : undefined));
+        return;
+      }
       if (path === '/api/chat/send') {
         const text = call.text;
-        if (typeof text !== 'string' || text.length === 0) {
+        // An empty text sends on a chat that waits for a task: the brief of the task is its message.
+        if (typeof text !== 'string') {
           throw new Error('The send call needs a text.');
         }
-        this.state.sendChat(typeof call.fileId === 'string' ? call.fileId : null, text);
+        // The picks reach a first send. A missing one keeps the default of the workspace.
+        this.state.sendChat(
+          typeof call.fileId === 'string' ? call.fileId : null,
+          text,
+          stringPicks(['providerId', 'model', 'systemPromptId']),
+        );
+        this.answerJson(response, { ok: true });
+        return;
+      }
+      if (path === '/api/chat/close') {
+        const fileId = call.fileId;
+        if (typeof fileId !== 'string' || fileId.length === 0) {
+          throw new Error('The close call needs a session file id.');
+        }
+        this.state.closeChat(fileId);
         this.answerJson(response, { ok: true });
         return;
       }

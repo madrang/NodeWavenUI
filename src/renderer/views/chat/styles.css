@@ -359,6 +359,69 @@ li:focus-within > .message-actions {
   overflow: auto;
 }
 
+/* The card of the task one chat waits for, under the system prompt menu. The send of the chat
+   dispatches the task with the picks of the tab. */
+.task-chat-item {
+  align-self: center;
+  max-width: 90%;
+  min-width: 0;
+  margin-bottom: auto;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.task-chat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-chat-badge {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.task-chat-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.task-chat-description {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.task-chat-goal,
+.task-chat-hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+
+.task-chat-hint {
+  color: var(--muted);
+}
+
+/* A task card under the menu pins the menu to the top of the list: the auto margins of the menu
+   center it only while it sits alone. */
+.system-prompt-menu:has(+ .task-chat-item) {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
 /* The reasoning disclosure of an assistant reply: collapsed until the user opens it.
    The summary spans the full row, so the click target stays comfortable. */
 .reasoning {

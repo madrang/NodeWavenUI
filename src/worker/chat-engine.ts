@@ -20,7 +20,7 @@ import { CHAT_AGENT_SOURCE, agentToolRule, chatAgentSource } from '../shared/per
 import type { PathRule, PermissionRule } from '../shared/permissions.js';
 import type { McpCallResult, McpNativeTool } from '../shared/mcp-endpoints.js';
 import { presetOfAccount } from '../shared/provider-presets/index.js';
-import { effectiveDefaultAccount, effectiveDefaultModel, modelVision } from '../shared/workspace.js';
+import { effectiveDefaultAccount, effectiveDefaultModel, modelDisplayName, modelVision } from '../shared/workspace.js';
 import type { ProviderAccount, ProviderRegistry } from '../shared/workspace.js';
 import type { TaskDispatchMode, TaskRecord } from '../shared/tasks.js';
 import type { McpToolResult } from '../shared/window-tools.js';
@@ -33,7 +33,9 @@ import type {
   CoreChatMeta,
   CoreChatPicks,
   CoreChatSend,
+  CoreConnectionMenu,
   CoreEvent,
+  CoreSystemPromptSourceInfo,
 } from '../shared/core-api.js';
 import { NONE_SYSTEM_PROMPT_SETUP_ID, defaultSystemPromptSetup } from '../shared/system-prompts.js';
 import type { SystemPromptSource } from '../shared/system-prompts.js';
@@ -123,6 +125,8 @@ interface EngineChat {
   thinkingLevel?: ThinkingLevel;
   /** The dispatchable task this chat runs, set when a dispatch bound it. */
   taskId?: string;
+  /** The draft task the chat was opened for, set at its creation. Its first send dispatches the task. */
+  waitingTaskId?: string;
   /** Counts the state changes of the chat. Every pushed change carries it, so a surface drops a repeat. */
   revision: number;
 }
@@ -218,14 +222,26 @@ export class ChatEngine {
     return this.runningTurns.has(chatId);
   }
 
-  /** Opens one fresh chat. It holds no session file until its first entry lands. */
-  create(): CoreChat {
+  /** Opens one fresh chat. It holds no session file until its first entry lands. A task id names the
+   * draft task the chat waits for: the chat takes the title of the task, and its first send
+   * dispatches the task into the chat.
+   *
+   * @param taskId The draft task the chat waits for. A missing id opens a plain chat.
+   * @returns The new chat.
+   * @throws Error when the task is missing or is no draft.
+   */
+  create(taskId?: string): CoreChat {
+    const waiting = taskId ? this.deps.tasks.get(taskId) : null;
+    if (taskId && (!waiting || waiting.status !== 'draft')) {
+      throw new Error(`The task ${taskId} is missing or is no draft, so no chat can wait for it.`);
+    }
     const chat: EngineChat = {
       id: this.nextChatId,
       fileId: crypto.randomUUID(),
-      title: `Chat ${this.nextChatId}`,
+      title: waiting ? waiting.title : `Chat ${this.nextChatId}`,
       createdAt: new Date().toISOString(),
       entries: [],
+      ...(waiting ? { waitingTaskId: waiting.id } : {}),
       revision: 0,
     };
     this.nextChatId += 1;
@@ -260,7 +276,8 @@ export class ChatEngine {
 
   /**
    * Delivers one message of a surface. A running turn queues the message as a dimmed entry that
-   * delivers when the turn ends.
+   * delivers when the turn ends. A chat that waits for a task sends without a text: the brief of
+   * the task is its message.
    *
    * @param call The send: the chat, the text, the images, and the connection picks of a first send.
    * @returns True when the message landed. False when the chat holds nothing to send, or when a
@@ -268,7 +285,8 @@ export class ChatEngine {
    */
   async send(call: CoreChatSend): Promise<boolean> {
     const chat = this.chatById(call.chatId);
-    if (!chat || (call.text.length === 0 && call.images.length === 0)) {
+    const waiting = chat ? this.waitingTask(chat) : null;
+    if (!chat || (call.text.length === 0 && call.images.length === 0 && !waiting)) {
       return false;
     }
     if (this.isRunning(chat.id)) {
@@ -281,21 +299,34 @@ export class ChatEngine {
       });
       return true;
     }
-    return this.deliver(chat, call.text, call.images, call);
+    return this.deliver(chat, call.text, call.images, call, waiting ?? undefined);
   }
 
   /** Lands one remote send: the chat of the named session file takes the message, the newest chat
-   * when the sender named none. A running turn queues the message like a local send does. */
-  remoteSend(fileId: string | null, text: string): void {
+   * when the sender named none. A running turn queues the message like a local send does. The picks
+   * reach the first send of the chat, the way the menu of the workspace page does. A chat that
+   * waits for a task sends without a text. */
+  remoteSend(fileId: string | null, text: string, picks?: CoreChatPicks): void {
     const chat = (fileId ? this.chatByFileId(fileId) : null) ?? this.chats.at(-1) ?? null;
-    if (!chat || text.trim().length === 0) {
+    const waiting = chat ? this.waitingTask(chat) : null;
+    if (!chat || (text.trim().length === 0 && !waiting)) {
       return;
     }
     if (this.isRunning(chat.id)) {
       this.pushEntry(chat, { role: 'user', content: text, queued: true });
       return;
     }
-    this.unattended(`the turn of chat ${chat.id}`, this.deliver(chat, text.trim(), []));
+    this.unattended(`the turn of chat ${chat.id}`, this.deliver(chat, text.trim(), [], picks, waiting ?? undefined));
+  }
+
+  /** Closes the chat of the named session file, the way the close of a tab does: it leaves the
+   * list, its session file drops, a live task bound to it settles cancelled, and a running turn
+   * stops. An unknown session file closes nothing. */
+  remoteClose(fileId: string): void {
+    const chat = this.chatByFileId(fileId);
+    if (chat) {
+      this.close(chat.id);
+    }
   }
 
   /** Stops the running turn of one chat. The streamed part stays, and a `Stopped.` notice lands. */
@@ -433,6 +464,26 @@ export class ChatEngine {
     const settings = await this.loadTurnSettings();
     const tools = availableAgentTools(this.agentToolDeps(settings, await this.deps.main.nativeTools()));
     return tools.map(({ name, description }) => ({ name, description }));
+  }
+
+  /** Reads the system prompt sources a first send binds, in menu order: the list the phone page offers. */
+  promptSources(): readonly CoreSystemPromptSourceInfo[] {
+    return this.deps.promptSources.map(({ id, label }) => ({ id, label }));
+  }
+
+  /** Reads the connection menu a first send picks from: every account with its models, and the
+   * defaults of the registry. No key and no address ride along. */
+  async connectionMenu(): Promise<CoreConnectionMenu> {
+    const registry = await this.deps.settings.loadProviderRegistry();
+    return {
+      accounts: registry.accounts.map((account) => ({
+        id: account.id,
+        label: account.label,
+        models: account.models.map((model) => ({ id: model.id, label: modelDisplayName(account, model.id) })),
+      })),
+      defaultProviderId: registry.defaultProviderId,
+      defaultModel: registry.defaultModel,
+    };
   }
 
   /**
@@ -581,9 +632,14 @@ export class ChatEngine {
     this.deps.chatSessions.saveSession(session);
   }
 
-  /** Delivers one message: resolves the connection, binds the system prompt, pushes the entry, and
-   * starts the agent turn.
+  /** Delivers one message: resolves the connection, binds the system prompt, hands the task the
+   * chat waits for over, pushes the entry, and starts the agent turn. The picks bind on a first send.
    *
+   * @param chat The chat that takes the message.
+   * @param text The text of the message. Empty when a task alone sends.
+   * @param images The images of the message.
+   * @param picks The provider, the model, and the system prompt source of a first send.
+   * @param task The draft task the chat waits for. The send dispatches it into the chat.
    * @returns True when the message landed and the turn started. False when a notice or error entry
    * explains the refusal.
    */
@@ -592,6 +648,7 @@ export class ChatEngine {
     text: string,
     images: readonly ChatImage[],
     picks?: CoreChatPicks,
+    task?: TaskRecord,
   ): Promise<boolean> {
     const settings = await this.loadTurnSettings();
     const connection = this.resolveChatConnection(chat, settings, picks);
@@ -612,8 +669,17 @@ export class ChatEngine {
         return false;
       }
     }
-    this.pushEntry(chat, { role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
-    this.unattended(`the turn of chat ${chat.id}`, this.runChatTurn(chat, settings));
+    if (task) {
+      const claimed = await this.claimWaitingTask(chat, task);
+      // A task alone sends nothing when its claim refused: the notice explains why.
+      if (!claimed && text.length === 0 && images.length === 0) {
+        return false;
+      }
+    }
+    if (text.length > 0 || images.length > 0) {
+      this.pushEntry(chat, { role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
+    }
+    this.unattended(`the turn of chat ${chat.id}`, this.runChatTurn(chat, settings, picks));
     return true;
   }
 
@@ -707,10 +773,15 @@ export class ChatEngine {
 
   /** Runs one agent turn that answers the latest user message of the chat: resolves the connection,
    * streams the reply, records the outcome, and delivers the queue. The send, the retry of a failed
-   * turn, and the resend of an edited message all land here. */
-  private async runChatTurn(chat: EngineChat, preloaded?: TurnSettings): Promise<void> {
+   * turn, and the resend of an edited message all land here.
+   *
+   * @param chat The chat that runs the turn.
+   * @param preloaded The settings of the turn, when the caller read them already.
+   * @param picks The connection picks of a first send. A later turn reads the bound provider and model.
+   */
+  private async runChatTurn(chat: EngineChat, preloaded?: TurnSettings, picks?: CoreChatPicks): Promise<void> {
     const settings = preloaded ?? await this.loadTurnSettings();
-    const connection = this.resolveChatConnection(chat, settings);
+    const connection = this.resolveChatConnection(chat, settings, picks);
     if (!connection) {
       this.pushEntry(chat, {
         role: chat.boundProviderId ? 'error' : 'notice',
@@ -914,6 +985,53 @@ export class ChatEngine {
     this.chats.push(chat);
     this.deps.emit({ channel: 'chat.event', payload: { kind: 'chat', chat: this.viewOf(chat) } satisfies CoreChatEvent });
     return chat;
+  }
+
+  /** The draft task one chat waits for, or null: the chat waits for none, or the task left the draft state. */
+  private waitingTask(chat: EngineChat): TaskRecord | null {
+    if (!chat.waitingTaskId) {
+      return null;
+    }
+    const task = this.deps.tasks.get(chat.waitingTaskId);
+    return task && task.status === 'draft' ? task : null;
+  }
+
+  /** Hands the task a chat waits for over to that chat, as a step of the first send of the chat.
+   * The record joins the queue of the chat, then binds it and lands the brief. A blocked task keeps
+   * its place in that queue, and the pump hands it over when its blockers settle. The chat stops
+   * waiting in every case.
+   *
+   * @param chat The chat that waits for the task.
+   * @param task The draft task.
+   * @returns True when the brief landed and the turn may run. False when the record left the draft
+   * state or waits for its blockers: a notice entry explains it.
+   */
+  private async claimWaitingTask(chat: EngineChat, task: TaskRecord): Promise<boolean> {
+    delete chat.waitingTaskId;
+    // The pump skips the task while this claim holds it, so no second chat opens for it.
+    this.taskDispatching.add(task.id);
+    try {
+      const queued = await this.deps.tasks.dispatch(task.id, 'session', chat.fileId);
+      if (!queued) {
+        this.pushEntry(chat, { role: 'notice', content: `The task ${task.id} is no longer a draft. Nothing was sent.` });
+        this.persistChat(chat);
+        this.metaChanged(chat);
+        return false;
+      }
+      if (!this.deps.tasks.ready(queued)) {
+        this.pushEntry(chat, {
+          role: 'notice',
+          content: `The task ${task.id} waits for its blockedBy tasks: ${queued.blockedBy.join(', ')}. It enters this chat when they are done.`,
+        });
+        this.persistChat(chat);
+        this.metaChanged(chat);
+        return false;
+      }
+      await this.handTaskOver(chat, queued);
+      return true;
+    } finally {
+      this.taskDispatching.delete(task.id);
+    }
   }
 
   /** Binds one chat to a task, names its work, and pushes the brief. The turn of the session starts
@@ -1218,6 +1336,9 @@ export class ChatEngine {
 
   /** Reads the wire state of one chat, without its entries. */
   private metaOf(chat: EngineChat): CoreChatMeta {
+    // The chat waits only while its task is a draft: a record that left the draft state never wakes it.
+    const waiting =
+      chat.waitingTaskId && this.deps.tasks.get(chat.waitingTaskId)?.status === 'draft' ? chat.waitingTaskId : undefined;
     return {
       id: chat.id,
       fileId: chat.fileId,
@@ -1232,6 +1353,7 @@ export class ChatEngine {
       ...(chat.boundSystemPrompt ? { systemPrompt: chat.boundSystemPrompt } : {}),
       ...(chat.thinkingLevel ? { thinkingLevel: chat.thinkingLevel } : {}),
       ...(chat.taskId ? { taskId: chat.taskId } : {}),
+      ...(waiting ? { waitingTaskId: waiting } : {}),
       running: this.isRunning(chat.id),
       revision: chat.revision,
     };

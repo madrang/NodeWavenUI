@@ -11,6 +11,8 @@ import { readBridge } from '../shared/bridge.js';
 import type { JsonViewerElement } from './json-viewer-element.js';
 import { appendCodeRuns, renderMarkdown } from './text/render.js';
 import { NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
+import type { TaskRecord } from '../shared/tasks.js';
+import { translateMessage } from './locale/index.js';
 
 /** The icon strokes of the message action zone, drawn on a 16 by 16 grid. */
 const ICON_COPY = 'M6 6h8v8H6z M12 3H2v9';
@@ -64,6 +66,8 @@ export interface Chat {
   thinkingLevel?: ThinkingLevel;
   /** The dispatchable task this chat runs, set when a dispatch bound it. */
   taskId?: string;
+  /** The draft task the chat was opened for. Its first send dispatches the task into the chat. */
+  waitingTaskId?: string;
 }
 
 /** The one open message editor: the chat it belongs to, the entry index it replaces, and its draft.
@@ -104,6 +108,8 @@ export interface ChatRendererContext {
   selectedSystemPromptId(chat: Chat): string;
   /** True when the chat already carries a sent message, so its system prompt window has passed. */
   chatHasConversation(chat: Chat): boolean;
+  /** Reads the draft task one chat waits for, or null. The first send of that chat dispatches the task. */
+  waitingTask(chat: Chat): TaskRecord | null;
   /** Scrolls the latest message into view, but only while the view sits at the bottom. */
   pinChatToBottom(): void;
   /** Sends one queued message at once. */
@@ -718,6 +724,7 @@ export class ChatRenderer {
       return;
     }
     this.appendSystemPromptItem(chat, promptOpen);
+    this.appendWaitingTaskItem(chat);
     // The streaming entry of a busy chat renders as the connecting status until its first piece lands.
     let streamingIndex = -1;
     if (this.context.isTurnRunning(chat.id)) {
@@ -815,6 +822,45 @@ export class ChatRenderer {
       chat.pendingSystemPromptId = select.value;
     });
     item.append(label, select);
+    this.chatMessages.append(item);
+  }
+
+  /** Renders the card of the task one chat waits for, under the system prompt element. The send of
+   * the chat dispatches the task with the picks of the tab. Nothing renders while the chat waits for
+   * no task. */
+  private appendWaitingTaskItem(chat: Chat): void {
+    const task = this.context.waitingTask(chat);
+    if (!task) {
+      return;
+    }
+    const item = document.createElement('li');
+    item.className = 'task-chat-item';
+    const head = document.createElement('div');
+    head.className = 'task-chat-head';
+    const badge = document.createElement('span');
+    badge.className = 'task-chat-badge';
+    badge.textContent = translateMessage('tasks', 'cardBadge');
+    const title = document.createElement('span');
+    title.className = 'task-chat-title';
+    title.textContent = task.title;
+    head.append(badge, title);
+    item.append(head);
+    if (task.description) {
+      const description = document.createElement('div');
+      description.className = 'task-chat-description md-body';
+      renderMarkdown(description, task.description);
+      item.append(description);
+    }
+    if (task.goal) {
+      const goal = document.createElement('p');
+      goal.className = 'task-chat-goal';
+      goal.textContent = translateMessage('tasks', 'goalPrefix', { goal: task.goal });
+      item.append(goal);
+    }
+    const hint = document.createElement('p');
+    hint.className = 'task-chat-hint';
+    hint.textContent = translateMessage('tasks', 'cardHint');
+    item.append(hint);
     this.chatMessages.append(item);
   }
 }
