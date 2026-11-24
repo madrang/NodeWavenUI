@@ -2,21 +2,37 @@
  * The storage sharing of one workspace: which storages the chat agent may read.
  * The settings storage stays unshared by default. Every added storage carries its own access level,
  * none or read-only, set in the settings section. The record persists in the `shared-storages` record.
- * The record shape and its guard live with the storage layer (`src/storage/shared-storages.ts`).
+ * The record shape and its guard live beside this file (`src/storage/shared-storages.ts`). The
+ * registry stays platform free, so the settings pane of the workspace page and the chat engine of
+ * the worker core each open the shared storages of their own context.
  */
 
-import type { StorageSetup } from './plugins.js';
-import type { StorageBackend } from '../storage/storage.js';
-import { GuardedStorage, type StoragePermissionCheck } from '../storage/guarded.js';
+import type { StorageBackend } from './storage.js';
+import { GuardedStorage, type StoragePermissionCheck } from './guarded.js';
 import { matchingRuleDecision, type PermissionRule } from '../shared/permissions.js';
 import {
   type SharedStorageEntry,
   type SharedStoragesRecord,
   type StorageAccess,
-} from '../storage/shared-storages.js';
+} from './shared-storages.js';
 
-export { EMPTY_SHARED_STORAGES, isSharedStoragesRecord } from '../storage/shared-storages.js';
-export type { SharedStorageEntry, SharedStoragesRecord, StorageAccess } from '../storage/shared-storages.js';
+export { EMPTY_SHARED_STORAGES, isSharedStoragesRecord } from './shared-storages.js';
+export type { SharedStorageEntry, SharedStoragesRecord, StorageAccess } from './shared-storages.js';
+
+/** The options one shared storage opens its backend with. */
+export interface SharedStorageOpenOptions {
+  readonly directoryPath: string;
+  /** The non-secret configuration kept in the share record. */
+  readonly config: unknown;
+  /** The password, for setups that need one. */
+  readonly password?: string;
+}
+
+/** The slice of a storage setup the registry opens a shared storage through. */
+export interface SharedStorageSetupSource {
+  /** Opens the backend for a workspace. */
+  readonly open: (options: SharedStorageOpenOptions) => StorageBackend;
+}
 
 /** The public state of one shared storage, for the settings cards. */
 export interface SharedStorageState {
@@ -62,7 +78,7 @@ export class StorageShareRegistry {
 
   constructor(
     private readonly settingsBackend: StorageBackend,
-    private readonly resolveSetup: (setupId: string) => StorageSetup | undefined,
+    private readonly resolveSetup: (setupId: string) => SharedStorageSetupSource | undefined,
     private readonly directoryPath: string,
     private readonly rules: () => readonly PermissionRule[] = () => [],
   ) {

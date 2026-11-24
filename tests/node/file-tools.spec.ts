@@ -6,53 +6,18 @@
  */
 
 import { expect } from 'chai';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createFileTools, type FileToolDeps } from '../../dist/renderer/file-tools.js';
+import { createFileTools, type FileToolDeps } from '../../dist/worker/file-tools.js';
 import { PatchStore } from '../../dist/worker/patch-store.js';
-import type { AgentTool } from '../../dist/renderer/agent-tools.js';
-import type { NodeWavenBridge } from '../../dist/shared/bridge.js';
+import type { AgentTool } from '../../dist/worker/agent-tools.js';
 import type { PathRule } from '../../dist/shared/permissions.js';
 
 /** One recorded permission call of the fake gate. */
 interface RecordedCheck {
   action: string;
   path: string;
-}
-
-/** Installs the bridge fs slice over real files. */
-function installBridge(): void {
-  globalThis.nodewavenui = {
-    fs: {
-      list: async (directory: string) => readdirSync(directory),
-      readText: async (path: string) => readFileSync(path, 'utf8'),
-      readData: async () => {
-        throw new Error('not used');
-      },
-      writeText: async (path: string, text: string) => {
-        writeFileSync(path, text);
-      },
-      writeData: async () => {
-        throw new Error('not used');
-      },
-      makeDirectory: async (path: string) => {
-        mkdirSync(path, { recursive: true });
-      },
-      remove: async () => {
-        throw new Error('not used');
-      },
-      rename: async () => {
-        throw new Error('not used');
-      },
-      stat: async (path: string) => {
-        if (!existsSync(path)) {
-          return null;
-        }
-        return { exists: true, directory: statSync(path).isDirectory() };
-      },
-    },
-  } as unknown as NodeWavenBridge;
 }
 
 describe('the file tool permissions', () => {
@@ -67,7 +32,6 @@ describe('the file tool permissions', () => {
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), 'nvfiles-'));
     outside = mkdtempSync(join(tmpdir(), 'nvoutside-'));
-    installBridge();
     checks = [];
     rules = [];
     store = new PatchStore(root);
@@ -91,7 +55,6 @@ describe('the file tool permissions', () => {
   });
 
   afterEach(() => {
-    globalThis.nodewavenui = undefined;
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
   });

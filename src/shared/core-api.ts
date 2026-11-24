@@ -51,6 +51,22 @@ export const CORE_REQUEST_CHANNELS = [
   'chat.sessions.load',
   'chat.sessions.save',
   'chat.sessions.delete',
+  'chat.list',
+  'chat.get',
+  'chat.create',
+  'chat.close',
+  'chat.send',
+  'chat.stop',
+  'chat.retry',
+  'chat.fork',
+  'chat.edit',
+  'chat.sendNow',
+  'chat.thinking',
+  'chat.notify',
+  'chat.notice',
+  'chat.tools',
+  'chat.dispatch',
+  'chat.task.return',
   'patch.list',
   'patch.propose',
   'patch.apply',
@@ -125,6 +141,7 @@ export interface WorkerStart {
 export type MainToWorkerMessage =
   | { readonly kind: 'start'; readonly start: WorkerStart } |
   { readonly kind: 'request'; readonly request: CoreRequest } |
+  { readonly kind: 'callReply'; readonly reply: CoreReply } |
   { readonly kind: 'shutdown' };
 
 /** One log record the worker forwards to the main process hierarchy. */
@@ -137,6 +154,17 @@ export interface WorkerLogRecord {
   readonly args: readonly string[];
 }
 
+/** Every call channel the worker sends to the main process, for the services that stayed there:
+ * the window and command tools, and the MCP client with its connections. */
+export const MAIN_CALL_CHANNELS = ['windowTool', 'mcp.nativeTools', 'mcp.runNativeTool', 'mcp.readResource'] as const;
+
+/** One call the worker sends to the main process. The id ties the reply to the call. */
+export interface CoreMainCall {
+  readonly id: number;
+  readonly channel: (typeof MAIN_CALL_CHANNELS)[number];
+  readonly payload: unknown;
+}
+
 /** What the worker sends to the main process. */
 export type WorkerToMainMessage =
   | { readonly kind: 'ready' } |
@@ -144,7 +172,7 @@ export type WorkerToMainMessage =
   { readonly kind: 'reply'; readonly reply: CoreReply } |
   { readonly kind: 'event'; readonly event: CoreEvent } |
   { readonly kind: 'log'; readonly record: WorkerLogRecord } |
-  { readonly kind: 'chatSend'; readonly send: { readonly fileId: string | null; readonly text: string } };
+  { readonly kind: 'call'; readonly call: CoreMainCall };
 
 /**
  * Checks one value as a WorkerStart.
@@ -277,7 +305,111 @@ export interface CoreChatSession {
   readonly contextTokens?: number;
   readonly outputTokens?: number;
   readonly systemPrompt?: { readonly sourceId: string; readonly title: string; readonly text: string };
-  readonly thinkingLevel?: 'low' | 'medium' | 'high';
+  readonly thinkingLevel?: CoreThinkingLevel;
+}
+
+/** The reasoning effort levels a chat may pin. */
+export type CoreThinkingLevel = 'low' | 'medium' | 'high';
+
+/** One system prompt a chat bound on its first send. */
+export interface CoreSystemPrompt {
+  readonly sourceId: string;
+  readonly title: string;
+  readonly text: string;
+}
+
+/** The state of one chat as every surface reads it, without its entries. */
+export interface CoreChatMeta {
+  readonly id: number;
+  /** The session file id: one uuid per chat, stable across launches. */
+  readonly fileId: string;
+  readonly title: string;
+  /** ISO date and time of the chat creation. It fixes the restore order. */
+  readonly createdAt: string;
+  /** The provider and model the chat bound on its first send. They stay for the life of the chat. */
+  readonly boundProviderId?: string;
+  readonly boundModel?: string;
+  /** The context tokens of the last request, when the provider reported usage. */
+  readonly contextTokens?: number;
+  /** The output tokens of the whole chat, summed over the requests the provider reported. */
+  readonly outputTokens?: number;
+  /** The system prompt the chat bound on its first send. It stays for the life of the chat. */
+  readonly systemPrompt?: CoreSystemPrompt;
+  /** The reasoning effort of the chat. Unset follows the workspace default. */
+  readonly thinkingLevel?: CoreThinkingLevel;
+  /** The dispatchable task this chat runs, set when a dispatch bound it. */
+  readonly taskId?: string;
+  /** True while an agent turn of the chat runs. */
+  readonly running: boolean;
+  /** Counts the state changes of the chat since the core opened it. A surface drops a change it
+   * already holds, and a gap orders a fresh read of the chat. */
+  readonly revision: number;
+}
+
+/** One chat as the core answers it whole: its state and its entries. */
+export interface CoreChat extends CoreChatMeta {
+  readonly entries: readonly CoreChatEntry[];
+}
+
+/** The `chat.list` answer: every chat of the core, in creation order. */
+export interface CoreChatState {
+  readonly chats: readonly CoreChat[];
+}
+
+/** One tool of the chat agent as the settings matrix lists it. */
+export interface CoreAgentToolInfo {
+  readonly name: string;
+  readonly description: string;
+}
+
+/**
+ * One chat state change the core pushes on `chat.event`. A new chat arrives whole, a change of its
+ * state arrives without entries, a change of its entries arrives as one splice, and a streamed
+ * piece arrives as the delta the surface appends to the entry at its index.
+ */
+export type CoreChatEvent =
+  | { readonly kind: 'chat'; readonly chat: CoreChat } |
+  { readonly kind: 'closed'; readonly chatId: number } |
+  { readonly kind: 'meta'; readonly chat: CoreChatMeta } |
+  {
+    readonly kind: 'splice';
+    readonly chatId: number;
+    readonly revision: number;
+    readonly index: number;
+    readonly remove: number;
+    readonly entries: readonly CoreChatEntry[];
+  } |
+  {
+    readonly kind: 'delta';
+    readonly chatId: number;
+    readonly revision: number;
+    readonly index: number;
+    readonly content?: string;
+    readonly reasoning?: string;
+  };
+
+/** The connection picks of one send: the provider, the model, and the system prompt the page menu
+ * holds while the chat sent nothing. The chat binds them on that first send. */
+export interface CoreChatPicks {
+  readonly providerId?: string;
+  readonly model?: string;
+  readonly systemPromptId?: string;
+}
+
+/** The `chat.send` call. */
+export interface CoreChatSend extends CoreChatPicks {
+  readonly chatId: number;
+  readonly text: string;
+  readonly images: readonly ChatImageShape[];
+}
+
+/** The `chat.edit` call. A missing index marks the draft of a fork, which appends as a new message.
+ * A missing image list keeps the images of the edited message. */
+export interface CoreChatEdit extends CoreChatPicks {
+  readonly chatId: number;
+  readonly index?: number;
+  readonly text: string;
+  readonly images?: readonly ChatImageShape[];
 }
 
 /** The states of one patch proposal. */
@@ -433,6 +565,261 @@ export function readChatSessionPayload(value: unknown): CoreChatSession | null {
     return null;
   }
   return value as unknown as CoreChatSession;
+}
+
+/** Reads the images of one send or edit call. A missing list reads as none. Null on a malformed one. */
+function readChatImages(value: unknown): readonly ChatImageShape[] | null {
+  // Any falsy value reads as no image, the same reading the send form holds.
+  if (!value) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const images: ChatImageShape[] = [];
+  for (const image of value) {
+    if (!isRecord(image) || typeof image.data !== 'string' || typeof image.mimeType !== 'string') {
+      return null;
+    }
+    images.push({ data: image.data, mimeType: image.mimeType });
+  }
+  return images;
+}
+
+/** Reads the connection picks of one send or edit call. A missing pick leaves the default. */
+function readChatPicks(value: Record<string, unknown>): CoreChatPicks {
+  const providerId = typeof value.providerId === 'string' ? value.providerId : undefined;
+  const model = typeof value.model === 'string' ? value.model : undefined;
+  const systemPromptId = typeof value.systemPromptId === 'string' ? value.systemPromptId : undefined;
+  return {
+    ...(providerId ? { providerId } : {}),
+    ...(model ? { model } : {}),
+    ...(systemPromptId ? { systemPromptId } : {}),
+  };
+}
+
+/**
+ * Reads one `chat.send` payload.
+ *
+ * @param value The payload of the request. It can have any type.
+ * @returns The send, or null on an invalid shape.
+ */
+export function readChatSendPayload(value: unknown): CoreChatSend | null {
+  if (
+    !isRecord(value) ||
+    typeof value.chatId !== 'number' ||
+    !Number.isInteger(value.chatId) ||
+    typeof value.text !== 'string'
+  ) {
+    return null;
+  }
+  const images = readChatImages(value.images);
+  if (!images) {
+    return null;
+  }
+  return { ...readChatPicks(value), chatId: value.chatId, text: value.text, images };
+}
+
+/**
+ * Reads one `chat.edit` payload.
+ *
+ * @param value The payload of the request. It can have any type.
+ * @returns The edit, or null on an invalid shape.
+ */
+export function readChatEditPayload(value: unknown): CoreChatEdit | null {
+  if (
+    !isRecord(value) ||
+    typeof value.chatId !== 'number' ||
+    !Number.isInteger(value.chatId) ||
+    typeof value.text !== 'string'
+  ) {
+    return null;
+  }
+  // A missing index marks a fork draft, so only a present index needs the integer shape.
+  const indexValid = value.index === undefined || (typeof value.index === 'number' && Number.isInteger(value.index));
+  if (!indexValid) {
+    return null;
+  }
+  // A missing image list keeps the images of the edited message, so the call carries none.
+  const images = value.images ? readChatImages(value.images) : [];
+  if (!images) {
+    return null;
+  }
+  return {
+    ...readChatPicks(value),
+    chatId: value.chatId,
+    ...(typeof value.index === 'number' ? { index: value.index } : {}),
+    text: value.text,
+    ...(images.length > 0 ? { images } : {}),
+  };
+}
+
+/**
+ * Reads one `{ chatId }` payload with a number id, the shape of the chat close, stop, and get calls.
+ *
+ * @param value The payload of the request. It can have any type.
+ * @returns The chat id, or null on an invalid shape.
+ */
+export function readChatIdPayload(value: unknown): { readonly chatId: number } | null {
+  if (!isRecord(value) || typeof value.chatId !== 'number' || !Number.isInteger(value.chatId)) {
+    return null;
+  }
+  return { chatId: value.chatId };
+}
+
+/**
+ * Reads one `{ chatId, index }` payload, the shape of the retry, fork, and send-now calls.
+ *
+ * @param value The payload of the request. It can have any type.
+ * @returns The chat id and the entry index, or null on an invalid shape.
+ */
+export function readChatIndexPayload(value: unknown): { readonly chatId: number; readonly index: number } | null {
+  if (
+    !isRecord(value) ||
+    typeof value.chatId !== 'number' ||
+    !Number.isInteger(value.chatId) ||
+    typeof value.index !== 'number' ||
+    !Number.isInteger(value.index) ||
+    value.index < 0
+  ) {
+    return null;
+  }
+  return { chatId: value.chatId, index: value.index };
+}
+
+/**
+ * Reads one `chat.thinking` payload. A missing level clears the pinned effort of the chat.
+ *
+ * @param value The payload of the request. It can have any type.
+ * @returns The chat id and the level, or null on an invalid shape.
+ */
+export function readChatThinkingPayload(
+  value: unknown,
+): { readonly chatId: number; readonly level: CoreThinkingLevel | null } | null {
+  const base = readChatIdPayload(value);
+  if (!base || !isRecord(value)) {
+    return null;
+  }
+  const level = value.level;
+  // A missing level clears the pin, so only a present level needs one of the three values.
+  const levelValid = level === undefined || level === null || level === 'low' || level === 'medium' || level === 'high';
+  if (!levelValid) {
+    return null;
+  }
+  return {
+    chatId: base.chatId,
+    level: level === 'low' || level === 'medium' || level === 'high' ? level : null,
+  };
+}
+
+/** The chat id of one notify or notice call: the chat the text lands in, or null for the newest chat. */
+export interface CoreChatTextCall {
+  readonly chatId: number | null;
+  readonly text: string;
+}
+
+/**
+ * Reads one `chat.notify` or `chat.notice` payload.
+ *
+ * @param value The payload of the request. It can have any type.
+ * @returns The chat id the text lands in (null for the newest chat) and the text, or null on an invalid shape.
+ */
+export function readChatNotifyPayload(value: unknown): CoreChatTextCall | null {
+  if (!isRecord(value) || typeof value.text !== 'string') {
+    return null;
+  }
+  return { chatId: typeof value.chatId === 'number' ? value.chatId : null, text: value.text };
+}
+
+/**
+ * Reads one call the worker sends to the main process.
+ * The call crosses a process boundary, so the main process validates it before use.
+ *
+ * @param value The value to check. It can have any type.
+ * @returns The call, or null on an invalid shape or a channel outside the list.
+ */
+export function readMainCall(value: unknown): CoreMainCall | null {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'number' ||
+    !Number.isInteger(value.id) ||
+    typeof value.channel !== 'string' ||
+    !MAIN_CALL_CHANNELS.includes(value.channel as (typeof MAIN_CALL_CHANNELS)[number])
+  ) {
+    return null;
+  }
+  return { id: value.id, channel: value.channel as (typeof MAIN_CALL_CHANNELS)[number], payload: value.payload };
+}
+
+/**
+ * Reads one `chat.list` answer.
+ *
+ * @param value The reply of the core. It can have any type.
+ * @returns The chat list, or null on an invalid shape.
+ */
+export function readChatState(value: unknown): CoreChatState | null {
+  if (!isRecord(value) || !Array.isArray(value.chats)) {
+    return null;
+  }
+  return { chats: value.chats as CoreChat[] };
+}
+
+/**
+ * Reads one chat event the core pushed. Returns null on an invalid shape.
+ *
+ * @param value The payload of the `chat.event` push. It can have any type.
+ * @returns The event, or null when a surface cannot apply it.
+ */
+export function readChatEvent(value: unknown): CoreChatEvent | null {
+  if (!isRecord(value) || typeof value.kind !== 'string') {
+    return null;
+  }
+  const chat = isRecord(value.chat) ? value.chat : null;
+  const wholeChat = Boolean(chat) && typeof chat?.id === 'number' && typeof chat?.revision === 'number';
+  switch (value.kind) {
+    case 'chat':
+      return wholeChat ? { kind: 'chat', chat: chat as unknown as CoreChat } : null;
+    case 'closed':
+      return typeof value.chatId === 'number' ? { kind: 'closed', chatId: value.chatId } : null;
+    case 'meta':
+      return wholeChat ? { kind: 'meta', chat: chat as unknown as CoreChatMeta } : null;
+    case 'splice': {
+      const { chatId, revision, index, remove, entries } = value;
+      if (
+        typeof chatId !== 'number' ||
+        typeof revision !== 'number' ||
+        typeof index !== 'number' ||
+        typeof remove !== 'number' ||
+        !Array.isArray(entries)
+      ) {
+        return null;
+      }
+      return {
+        kind: 'splice',
+        chatId,
+        revision,
+        index,
+        remove,
+        entries: entries as CoreChatEntry[],
+      };
+    }
+    case 'delta': {
+      const { chatId, revision, index } = value;
+      if (typeof chatId !== 'number' || typeof revision !== 'number' || typeof index !== 'number') {
+        return null;
+      }
+      return {
+        kind: 'delta',
+        chatId,
+        revision,
+        index,
+        ...(typeof value.content === 'string' ? { content: value.content } : {}),
+        ...(typeof value.reasoning === 'string' ? { reasoning: value.reasoning } : {}),
+      };
+    }
+    default:
+      return null;
+  }
 }
 
 /**

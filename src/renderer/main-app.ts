@@ -1,51 +1,43 @@
 /**
  * The main app screen: a tab bar with a fixed settings tab first, then the chat tabs.
  * The settings pane lives in `settings.ts` and mounts on the gear of this screen.
- * A chat pane sends its conversation through the configured provider and shows the reply.
+ * The screen renders the chats the engine of the worker core owns (`src/renderer/chat-client.ts`):
+ * the turns, the tools, and the provider calls run there. This file keeps the tabs, the composer,
+ * the message list, and the permission cards.
  */
 
-import { OpenAiInferenceProvider } from '../providers/openai.js';
-import type { ChatImage, ChatMessage, CompletionDelta, ToolCall } from '../providers/provider.js';
+import type { ChatImage, ThinkingLevel } from '../providers/provider.js';
 import type { StorageSetup, SystemPromptSetup } from './plugins.js';
 import { closeWindow, minimizeWindow, toggleDevToolsWindow, toggleMaximizeWindow } from './window-ops.js';
-import { chatAgentSource, chatIdOfAgentSource, isChatAgentSource } from '../shared/permissions.js';
+import { chatIdOfAgentSource, isChatAgentSource } from '../shared/permissions.js';
 import { AppRail } from './rail.js';
 import { installColumnResizers } from './chat-resizer.js';
 import { getWorkarea } from './workarea.js';
 import type { ProviderAccount, WorkspaceSettings } from '../shared/workspace.js';
-import { presetOfAccount } from '../shared/provider-presets/index.js';
+import { effectiveDefaultAccount, effectiveDefaultModel } from '../shared/workspace.js';
 import { readBridge } from '../shared/bridge.js';
-import {
-  agentToolDefinition,
-  agentToolRule,
-  availableAgentTools,
-  buildAgentTools,
-  CHAT_AGENT_SOURCE,
-  type AgentTool,
-  type AgentToolDeps,
-  type AgentToolOutput,
-} from './agent-tools.js';
-import { type ChatSessionStore, type ChatEntry, type StoredChatSession } from './chat-sessions.js';
+import type { CoreAgentToolInfo, CoreChatPicks } from '../shared/core-api.js';
 import { JsonViewerElement } from './json-viewer-element.js';
 import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { McpConnectionInfo, McpHostHandle, McpSessionSink } from '../shared/window-tools.js';
 import type { NotificationHub } from './notification-hub.js';
 import type { PermissionGate } from './permission-gate.js';
-import { PatchStore, type PatchNotice } from './patch-store.js';
+import { PatchStore } from './patch-store.js';
 import { TaskStore } from './task-store.js';
-import type { TaskToolDeps } from './task-tools.js';
 import { openTaskBoardView } from './views/task-board/view.js';
 import { openEditorView } from './editor-view.js';
-import type { TaskRecord } from '../shared/tasks.js';
 import { openPatchReviewView } from './patch-review.js';
 import { PermissionRequestElement, type PermissionResolveDetail } from './permission-request-element.js';
 import { requireElement } from './dom.js';
 import { ChatRenderer, type Chat, type ChatEditState } from './chat-render.js';
+import type { ChatEntry } from './chat-sessions.js';
 import type { WorkspaceSettingsStore } from '../storage/settings-store.js';
-import type { StorageShareRegistry } from './storage-shares.js';
+import type { StorageShareRegistry } from '../storage/share-registry.js';
 import type { PluginFolderController } from './plugin-folders.js';
-import { defaultSystemPromptSetup, NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
-import { effectiveDefaultAccount, effectiveDefaultModel, modelDisplayName, modelVision, SettingsView } from './settings.js';
+import { NONE_SYSTEM_PROMPT_SETUP_ID, defaultSystemPromptSetup } from './system-prompts.js';
+import { ChatClient, type ChatChange } from './chat-client.js';
+import { modelDisplayName, SettingsView } from './settings.js';
+import { log } from './logger.js';
 
 /** The longest edge of a pasted or dropped image, in pixels. Bigger pictures scale down. */
 const MAX_IMAGE_EDGE = 1280;
@@ -58,6 +50,9 @@ const CHAT_PIN_THRESHOLD = 8;
 
 /** How long the collapsed reasoning tail stays after the last reasoning delta, in milliseconds. */
 const REASONING_TAIL_TIMEOUT = 1200;
+
+/** The minimum gap between two streamed renders of one chat, in milliseconds. */
+const STREAM_RENDER_INTERVAL = 80;
 
 
 /** Reads the trailing words of a reasoning text, for the collapsed activity tail. */
@@ -89,7 +84,6 @@ function formatTokenCount(count: number | undefined): string {
 }
 
 
-
 /** Drives the main app screen. The chat model and the message list live in `chat-render.ts`. */
 export class MainApp implements McpSessionSink {
   private readonly settings: WorkspaceSettings;
@@ -98,13 +92,17 @@ export class MainApp implements McpSessionSink {
   private readonly notificationHub: NotificationHub;
   private readonly workspacePath: string;
   private readonly storageShares: StorageShareRegistry;
-  private readonly chatSessions: ChatSessionStore;
   private readonly promptSources: readonly SystemPromptSetup[];
   /** The settings pane of the center workspace. It owns the settings state of the workspace. */
   private readonly settingsView: SettingsView;
-  private readonly chats: Chat[] = [];
+  /** The chats of the workspace, owned by the engine of the worker core. */
+  private readonly chats: ChatClient;
+  /** The one MCP host tab, which logs every host session. It belongs to this page alone: it never
+   * persists and sits before every chat tab. Null before the first connection. */
+  private hostTab: Chat | null = null;
   private activeChatId: number | null = null;
-  private nextChatId = 1;
+  /** The tools of the chat agent, for the settings matrix. The engine lists them. */
+  private agentTools: readonly CoreAgentToolInfo[] = [];
   /** True while the settings view fills the center workspace. The chat column stays beside it. */
   private settingsOpen = false;
   /** The left rail: the approvals feed and the files tree. */
@@ -112,19 +110,14 @@ export class MainApp implements McpSessionSink {
   private patchStore: PatchStore | null = null;
   /** The dispatchable task records of the workspace. */
   private taskStore: TaskStore | null = null;
-  /** The task ids a dispatch holds in flight, so the store listener and the tool call never double-run one. */
-  private readonly taskDispatching = new Set<string>();
-  /** The nudge counts per task id: one nudge per running stretch, so a silent agent hears once. */
-  private readonly taskNudges = new Map<string, number>();
-  /** The abort controllers of the running agent turns, keyed by chat id, in start order. Chats
-   * run their turns in parallel; one chat queues its own sends while its turn runs. */
-  private readonly runningTurns = new Map<number, AbortController>();
   /** The images that ride along with the next message, from paste or drop. */
   private pendingImages: ChatImage[] = [];
   /** True while the chat view sits at the latest message, so new content keeps it in view. */
   private chatPinned = true;
   /** The pending clear of the collapsed reasoning tail, armed on every reasoning delta. */
   private reasoningTailTimer: number | null = null;
+  /** The time of the last streamed render of one chat, keyed by chat id. A missing time renders at once. */
+  private readonly streamRenders = new Map<number, number>();
   /** The one open message editor: the chat it belongs to, the entry index it replaces, and its draft.
    * A missing index marks the draft of a fork, which appends as a new message at the end. */
   private editing: ChatEditState | null = null;
@@ -156,7 +149,6 @@ export class MainApp implements McpSessionSink {
    * @param workspacePath The absolute path of the workspace directory.
    * @param storageShares The storage sharing registry of the workspace.
    * @param storageSetups The registered storage setups, for the add form.
-   * @param chatSessions The chat session store of the workspace.
    * @param promptSources The registered system prompt sources, for the chat menu.
    * @param pluginFolders The plugin folder controller, for the settings pane.
    */
@@ -170,7 +162,6 @@ export class MainApp implements McpSessionSink {
     workspacePath: string,
     storageShares: StorageShareRegistry,
     storageSetups: readonly StorageSetup[],
-    chatSessions: ChatSessionStore,
     promptSources: readonly SystemPromptSetup[],
     pluginFolders: PluginFolderController,
   ) {
@@ -180,8 +171,12 @@ export class MainApp implements McpSessionSink {
     this.notificationHub = notificationHub;
     this.workspacePath = workspacePath;
     this.storageShares = storageShares;
-    this.chatSessions = chatSessions;
     this.promptSources = promptSources;
+    const bridge = readBridge();
+    if (!bridge) {
+      throw new Error('The main app screen needs the nodewavenui bridge of an app window.');
+    }
+    this.chats = new ChatClient(bridge, (chatId) => chatId === this.activeChatId);
     this.settingsView = new SettingsView(
       store,
       permissionGate,
@@ -194,7 +189,7 @@ export class MainApp implements McpSessionSink {
         onRegistryChange: () => {
           this.renderChatStatus();
         },
-        listAgentTools: () => availableAgentTools(this.agentToolDeps()),
+        listAgentTools: () => this.agentTools,
       },
     );
     this.messages = new ChatRenderer(requireElement<HTMLOListElement>('#chat-messages'), {
@@ -213,6 +208,9 @@ export class MainApp implements McpSessionSink {
       forkChatAt: (chat, index) => this.forkChatAt(chat, index),
       copyEntryText: (text) => this.copyEntryText(text),
       saveEditing: () => this.saveEditing(),
+    });
+    this.chats.subscribe((change) => {
+      this.onChatChange(change);
     });
     this.notificationHub.setChatNotifier((text) => {
       this.pushChatNotification(text);
@@ -240,22 +238,11 @@ export class MainApp implements McpSessionSink {
     await this.permissionGate?.ready();
     this.patchStore = new PatchStore();
     await this.patchStore.load();
-    // Denials and returns leave for the agent of their chat at once. A running turn reads the
-    // entry at its next loop step, and an idle chat starts a turn to process it.
-    this.patchStore.onNotice((notice) => {
-      void this.deliverPatchNotice(notice);
-    });
     this.taskStore = new TaskStore();
     await this.taskStore.load();
-    // Every record change pumps the queue: a ready queued task opens its session or enters an
-    // idle bound one, and the tabs redraw with their task badges.
+    // The record changes redraw the tabs with their task badges. The queue pump runs in the engine.
     this.taskStore.subscribe(() => {
       this.renderTabs();
-      void this.pumpQueuedTasks();
-    });
-    // A settle tells the origin chat when it did not cause it: the background-notification parity.
-    this.taskStore.onSettle((task) => {
-      void this.deliverTaskSettle(task);
     });
     this.rail = new AppRail({
       gate: this.permissionGate,
@@ -303,7 +290,7 @@ export class MainApp implements McpSessionSink {
     });
     installColumnResizers();
     this.newChatButton.addEventListener('click', () => {
-      this.newChat();
+      void this.newChat();
     });
     // A vertical wheel over the strip scrolls it, so a full strip stays reachable with no visible scrollbar.
     // A horizontal wheel keeps its default, so the trackpad swipe does not scroll twice.
@@ -337,7 +324,7 @@ export class MainApp implements McpSessionSink {
     this.chatStop.addEventListener('click', () => {
       const active = this.activeChat();
       if (active) {
-        this.runningTurns.get(active.id)?.abort();
+        this.fire('the stop of the turn', this.chats.stop(active.id));
       }
     });
     // The chat view scrolls to the latest message only while it sits at the bottom.
@@ -363,90 +350,74 @@ export class MainApp implements McpSessionSink {
       event.preventDefault();
       void this.addImageFiles(imageFilesOf(event.dataTransfer?.files ?? null));
     });
-    await this.chatSessions.init();
+    // The tool matrix lists the tools of the engine. The native tools follow the connections,
+    // so the list reads again whenever they change.
+    this.mcpClients.subscribe(() => {
+      this.fire('the agent tool list', this.refreshAgentTools());
+    });
+    await this.refreshAgentTools();
     await this.restoreChats();
-    await this.relinkTaskSessions();
   }
 
-  /** Re-links the runtime chat ids of the bound task records after a restore: the persisted
-   * session files keep their binding, the numeric chat ids start fresh. A live record whose
-   * session tab never came back keeps its stale id and shows on the board for a re-dispatch. */
-  private async relinkTaskSessions(): Promise<void> {
-    const store = this.taskStore;
-    if (!store) {
-      return;
-    }
-    for (const task of store.list()) {
-      if (!task.sessionFileId) {
-        continue;
-      }
-      const chat = this.chatByFileId(task.sessionFileId);
-      if (chat) {
-        await store.relink(task.id, chat.id);
-      }
-    }
+  /** Reads the tool list of the chat engine from the core, and renders the tool matrix. */
+  private async refreshAgentTools(): Promise<void> {
+    this.agentTools = await this.chats.tools();
+    this.settingsView.renderAgentTools();
   }
 
-  /** Finds the chat one session file id owns. */
-  private chatByFileId(fileId: string): Chat | null {
-    return this.chats.find((chat) => chat.fileId === fileId) ?? null;
-  }
-
-  /** Restores the stored sessions as chat tabs in creation order and activates the newest.
-   * A workspace without a stored session opens one fresh chat. */
+  /** Loads the chats the engine restored, in creation order, and activates the newest. A workspace
+   * without a stored session opens one fresh chat. */
   private async restoreChats(): Promise<void> {
-    const sessions = await this.chatSessions.loadSessions();
-    for (const session of sessions) {
-      const chat: Chat = {
-        id: this.nextChatId,
-        fileId: session.id,
-        title: session.title,
-        createdAt: session.createdAt,
-        entries: [...session.entries],
-        ...(session.boundProviderId ? { boundProviderId: session.boundProviderId } : {}),
-        ...(session.boundModel ? { boundModel: session.boundModel } : {}),
-        // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
-        ...(session.contextTokens !== undefined ? { contextTokens: session.contextTokens } : {}),
-        // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
-        ...(session.outputTokens !== undefined ? { outputTokens: session.outputTokens } : {}),
-        ...(session.systemPrompt ? { boundSystemPrompt: session.systemPrompt } : {}),
-        ...(session.thinkingLevel ? { thinkingLevel: session.thinkingLevel } : {}),
-      };
-      this.nextChatId += 1;
-      this.chats.push(chat);
-    }
-    // The id counter also names new chats. A closed chat drops its file, so a restored title
-    // can carry a number above the session count, and the counter must clear it.
-    const highestChatNumber = Math.max(0, ...this.chats.map((chat) => Number(/^Chat (\d+)$/.exec(chat.title)?.[1] ?? 0)));
-    this.nextChatId = Math.max(this.nextChatId, highestChatNumber + 1);
-    const newest = this.chats.at(-1) ?? null;
+    await this.chats.load();
+    const newest = this.chats.list().at(-1) ?? null;
     if (!newest) {
-      this.newChat();
+      await this.newChat();
       return;
     }
     this.activateChat(newest.id);
   }
 
-  /** Persists one chat as its session file. The host tab and chats without entries hold nothing worth a file. */
-  private persistChat(chat: Chat): void {
-    if (chat.isMcpHostLog || chat.entries.length === 0) {
+  /** Renders one state change the core pushed: the tabs on every list change, the status bar on a
+   * state change, and the message list when the active chat took an entry or finished a turn. */
+  private onChatChange(change: ChatChange): void {
+    if (change.kind === 'delta') {
+      const chat = this.chats.get(change.chatId);
+      if (chat) {
+        this.renderStreamed(chat, change.entry);
+      }
       return;
     }
-    const session: StoredChatSession = {
-      id: chat.fileId,
-      title: chat.title,
-      createdAt: chat.createdAt,
-      entries: chat.entries,
-      ...(chat.boundProviderId ? { boundProviderId: chat.boundProviderId } : {}),
-      ...(chat.boundModel ? { boundModel: chat.boundModel } : {}),
-      // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
-      ...(chat.contextTokens !== undefined ? { contextTokens: chat.contextTokens } : {}),
-      // eslint-disable-next-line local/prefer-truthiness -- zero tokens is a real recorded usage, only absence drops the field
-      ...(chat.outputTokens !== undefined ? { outputTokens: chat.outputTokens } : {}),
-      ...(chat.boundSystemPrompt ? { systemPrompt: chat.boundSystemPrompt } : {}),
-      ...(chat.thinkingLevel ? { thinkingLevel: chat.thinkingLevel } : {}),
-    };
-    this.chatSessions.saveSession(session);
+    if (change.kind === 'unread') {
+      this.renderTabs();
+      return;
+    }
+    if (change.kind === 'entries') {
+      // A new entry opens the throttle of the streamed renders, so its first piece shows at once.
+      this.streamRenders.delete(change.chatId);
+      if (change.chatId === this.activeChatId) {
+        this.messages.render();
+      }
+      return;
+    }
+    this.renderTabs();
+    if (change.kind === 'meta') {
+      this.renderChatStatus();
+      if (change.runningChanged) {
+        this.updateTurnControls(change.chatId, this.chats.isRunning(change.chatId));
+        this.messages.render();
+      }
+      return;
+    }
+    if (change.chatId === this.activeChatId) {
+      this.messages.render();
+    }
+  }
+
+  /** Lets one chat request of the core run on its own, and reports its failure in the log. */
+  private fire(what: string, request: Promise<unknown>): void {
+    void request.catch((error: unknown) => {
+      log.main.warning(`${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   /** McpSessionSink: every MCP session logs into one shared host tab, and each new connection posts its facts. */
@@ -477,12 +448,12 @@ export class MainApp implements McpSessionSink {
 
   /** Reads the one host tab, or null before the first connection. */
   private mcpHostTab(): Chat | null {
-    return this.chats.find((candidate) => candidate.isMcpHostLog) ?? null;
+    return this.hostTab;
   }
 
   /** Creates the host tab and activates it, the first time a client connects. It sits before every chat tab. */
   private createMcpHostTab(): Chat {
-    const chat: Chat = {
+    this.hostTab = {
       // The host tab holds the id 0, below every chat number, so it consumes no chat title.
       id: 0,
       fileId: crypto.randomUUID(),
@@ -491,9 +462,8 @@ export class MainApp implements McpSessionSink {
       entries: [],
       isMcpHostLog: true,
     };
-    this.chats.unshift(chat);
-    this.activateChat(chat.id);
-    return chat;
+    this.activateChat(0);
+    return this.hostTab;
   }
 
   /** McpSessionSink: one tool call of a session lands in the host tab, its arguments in the JSON viewer. */
@@ -539,18 +509,17 @@ export class MainApp implements McpSessionSink {
 
   /** Lands one notification as a user message in the active chat, so the chat agent sees it on its next turn. */
   private pushChatNotification(text: string): void {
-    const chat = this.activeChat() ?? this.chats.at(-1) ?? null;
+    const chat = this.activeChat() ?? this.chats.list().at(-1) ?? null;
     if (!chat) {
       return;
     }
-    chat.entries.push({ role: 'user', content: text });
-    this.persistChat(chat);
-    if (chat.id === this.activeChatId) {
+    if (chat.isMcpHostLog) {
+      // The host tab belongs to this page alone, so its entry lands here.
+      chat.entries.push({ role: 'user', content: text });
       this.messages.render();
       return;
     }
-    chat.unread = true;
-    this.renderTabs();
+    this.fire('the chat notification', this.chats.notify(chat.id, text));
   }
 
   /** Renders the pending permission requests of the active chat tab above the chat input.
@@ -600,33 +569,6 @@ export class MainApp implements McpSessionSink {
     this.permissionRequests.hidden = this.permissionRequests.childElementCount === 0;
   }
 
-  /** The connection one chat runs on: its bound provider and model, or the status bar selection.
-   * Null when the chat has no usable provider, or when its bound provider no longer exists. */
-  private resolveChatConnection(chat: Chat): { account: ProviderAccount; model: string; vision: boolean } | null {
-    const registry = this.settingsView.registry;
-    if (chat.boundProviderId) {
-      const account = registry.accounts.find((candidate) => candidate.id === chat.boundProviderId);
-      if (!account || !chat.boundModel) {
-        return null;
-      }
-      return { account, model: chat.boundModel, vision: modelVision(account, chat.boundModel) };
-    }
-    const account =
-      registry.accounts.find((candidate) => candidate.id === chat.pendingProviderId) ??
-      effectiveDefaultAccount(registry);
-    if (!account) {
-      return null;
-    }
-    const model =
-      chat.pendingModel && account.models.some((candidate) => candidate.id === chat.pendingModel) ?
-        chat.pendingModel :
-        effectiveDefaultModel(registry, account);
-    if (!model) {
-      return null;
-    }
-    return { account, model, vision: modelVision(account, model) };
-  }
-
   private async send(): Promise<void> {
     const chat = this.activeChat();
     const text = this.chatInput.value.trim();
@@ -640,19 +582,29 @@ export class MainApp implements McpSessionSink {
       this.messages.render();
       return;
     }
-    if (this.isTurnRunning(chat.id)) {
-      // The agent of this chat runs: the message waits as a dimmed entry and delivers when the run ends.
+    if (!this.isTurnRunning(chat.id)) {
+      // The user acts on the latest message, so the send pins the view back to it.
+      this.chatPinned = true;
+    }
+    // The engine queues the message itself while the turn of this chat runs, and answers false when
+    // a notice entry explains a refusal: nothing is consumed then, so the composer keeps its draft.
+    const accepted = await this.chats.send(chat, text, images, this.connectionPicks(chat));
+    if (accepted) {
       this.chatInput.value = '';
       this.fitChatInput();
       this.pendingImages = [];
       this.renderAttachments();
-      chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images: [...images] } : {}), queued: true });
-      this.messages.render();
-      return;
     }
-    // The user acts on the latest message, so the send pins the view back to it.
-    this.chatPinned = true;
-    await this.deliver(chat, text, images);
+  }
+
+  /** The connection picks of one first send: the provider, the model, and the system prompt the
+   * status bar and the chat menu hold while the chat sent nothing. */
+  private connectionPicks(chat: Chat): CoreChatPicks {
+    return {
+      ...(chat.pendingProviderId ? { providerId: chat.pendingProviderId } : {}),
+      ...(chat.pendingModel ? { model: chat.pendingModel } : {}),
+      systemPromptId: this.selectedSystemPromptId(chat),
+    };
   }
 
   /** True when the chat already carries a sent message, so its system prompt window has passed. */
@@ -660,182 +612,14 @@ export class MainApp implements McpSessionSink {
     return chat.entries.some((entry) => entry.role === 'user' || entry.role === 'assistant');
   }
 
-  /** True while a chat sits before its first sent message, so its system prompt window is open. */
-  private chatNeedsSystemPrompt(chat: Chat): boolean {
-    return !chat.boundSystemPrompt && !this.chatHasConversation(chat);
-  }
-
-  /** Binds the system prompt of a chat that sits before its first message: the menu choice snapshots
-   * its text into the chat, so the chat keeps what it sent. A chat that picks no source binds the
-   * none prompt.
-   *
-   * @returns True when the chat holds a prompt. False when the source build failed; its error entry landed.
-   */
-  private async bindChatSystemPrompt(chat: Chat): Promise<boolean> {
-    const setup = this.selectedSystemPromptSetup(chat);
-    if (!setup) {
-      chat.boundSystemPrompt = { sourceId: NONE_SYSTEM_PROMPT_SETUP_ID, title: 'No system prompt', text: '' };
-      return true;
-    }
-    let promptText: string;
-    try {
-      promptText = await setup.build({ workspacePath: this.workspacePath });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      chat.entries.push({
-        role: 'error',
-        content: `The system prompt source "${setup.label}" failed: ${message}`,
-      });
-      this.messages.render();
-      return false;
-    }
-    chat.boundSystemPrompt = { sourceId: setup.id, title: setup.label, text: promptText };
-    this.messages.render();
-    return true;
-  }
-
-  /** Lands one remote send: the chat of the named session file takes the message, the active chat
-   * when the sender named none. A running turn queues the message like a local send does. */
-  remoteDeliver(fileId: string | null, text: string): void {
-    const chat = (fileId ? this.chatByFileId(fileId) : null) ?? this.activeChat() ?? this.chats.at(-1) ?? null;
-    if (!chat || chat.isMcpHostLog || text.trim().length === 0) {
-      return;
-    }
-    if (this.isTurnRunning(chat.id)) {
-      chat.entries.push({ role: 'user', content: text, queued: true });
-      this.messages.render();
-      this.renderTabs();
-      return;
-    }
-    void this.deliver(chat, text.trim(), [], { keepInput: true });
-  }
-
-  /** Delivers one message: resolves the connection, binds the system prompt, pushes the entry, and runs the agent turn. */
-  private async deliver(
-    chat: Chat,
-    text: string,
-    images: readonly ChatImage[],
-    options?: { keepInput?: boolean },
-  ): Promise<void> {
-    const connection = this.resolveChatConnection(chat);
-    if (connection && images.length > 0 && !connection.vision) {
-      // Nothing is consumed: the text stays typed and the chips stay pending, so the user can switch model or remove the images.
-      chat.entries.push({
-        role: 'notice',
-        content: `The model "${connection.model}" reads text only. Turn on its Vision flag in the settings, or remove the images.`,
-      });
-      this.messages.render();
-      this.persistChat(chat);
-      return;
-    }
-    // Only a chat without messages binds a prompt. An old chat keeps running without one.
-    // The bind sits past the rejected-send guards, so a send that never reaches the transcript leaves the menu open.
-    if (this.chatNeedsSystemPrompt(chat)) {
-      // The first send binds the prompt source and snapshots its text, so the chat keeps what it sent.
-      if (!(await this.bindChatSystemPrompt(chat))) {
-        return;
-      }
-    }
-    if (!options?.keepInput) {
-      this.chatInput.value = '';
-      this.fitChatInput();
-      this.pendingImages = [];
-      this.renderAttachments();
-    }
-    chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
-    await this.runChatTurn(chat);
-  }
-
-  /** Runs one agent turn that answers the latest user message of the chat: resolves the connection,
-   * streams the reply, records the outcome, and delivers the queue.
-   * The send, the retry of a failed turn, and the resend of an edited message all land here. */
-  private async runChatTurn(chat: Chat): Promise<void> {
-    const connection = this.resolveChatConnection(chat);
-    if (!connection) {
-      chat.entries.push({
-        role: chat.boundProviderId ? 'error' : 'notice',
-        content: chat.boundProviderId ?
-          'The provider of this chat no longer exists. Open a new chat tab for a different model.' :
-          'No provider is configured. Open the Settings tab, add a provider, and give it a model.',
-      });
-      this.messages.render();
-      this.persistChat(chat);
-      return;
-    }
-    const preset = presetOfAccount(connection.account);
-    const provider = new OpenAiInferenceProvider({
-      baseUrl: connection.account.baseUrl,
-      apiKey: connection.account.apiKey,
-      ...(preset?.beforeRequest ? { beforeRequest: preset.beforeRequest } : {}),
-    });
-    if (!chat.boundProviderId) {
-      // The first send binds the chat to this provider and model, and locks the status bar.
-      chat.boundProviderId = connection.account.id;
-      chat.boundModel = connection.model;
-      this.renderChatStatus();
-    }
-    const abort = new AbortController();
-    this.runningTurns.set(chat.id, abort);
-    this.updateTurnControls(chat.id, true);
-    this.messages.render();
-    let stopped = false;
-    try {
-      await this.runAgentTurn(
-        chat,
-        provider,
-        connection.model,
-        connection.vision,
-        this.settingsView.agentTurnLimit,
-        chat.thinkingLevel ?? this.settingsView.agentThinkingDefault ?? undefined,
-        abort.signal,
-      );
-    } catch (error) {
-      if (abort.signal.aborted) {
-        stopped = true;
-        // The aborted streaming slot keeps whatever streamed. An empty one drops, queued entries included in the search.
-        for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
-          const candidate = chat.entries[index];
-          if (candidate && candidate.role === 'assistant') {
-            if (!candidate.content && !candidate.reasoning && !candidate.toolCalls) {
-              chat.entries.splice(index, 1);
-            }
-            break;
-          }
-        }
-        chat.entries.push({ role: 'notice', content: 'Stopped.' });
-      } else {
-        chat.entries.push({
-          role: 'error',
-          content: error instanceof Error ? error.message : String(error),
-        });
-      }
-    } finally {
-      if (this.runningTurns.get(chat.id) === abort) {
-        this.runningTurns.delete(chat.id);
-      }
-      this.updateTurnControls(chat.id, false);
-      this.messages.render();
-      this.renderTabs();
-      this.persistChat(chat);
-    }
-    // A stop leaves the queue in place: the user halted the agent, so nothing follows on its own.
-    if (stopped) {
-      return;
-    }
-    await this.drainQueued(chat);
-    await this.afterTaskTurn(chat);
-  }
-
-  /** Restarts the failed turn of one user message: every entry after the message drops, and the
-   * turn runs again, so the failed message sends again from that exact point. */
-  private async retryChatFrom(chat: Chat, messageIndex: number): Promise<void> {
+  /** Restarts the failed turn of one user message in the core: every entry after the message drops,
+   * and the turn runs again from that exact point. */
+  private retryChatFrom(chat: Chat, messageIndex: number): void {
     if (this.isTurnRunning(chat.id)) {
       return;
     }
-    chat.entries.splice(messageIndex + 1);
     this.chatPinned = true;
-    this.messages.render();
-    await this.runChatTurn(chat);
+    this.fire(`the retry in chat ${chat.id}`, this.chats.retry(chat.id, messageIndex));
   }
 
   /** Copies the history before one user message into a new chat tab, then opens the message editor
@@ -845,29 +629,22 @@ export class MainApp implements McpSessionSink {
     if (!original) {
       return;
     }
-    const fork: Chat = {
-      id: this.nextChatId,
-      fileId: crypto.randomUUID(),
-      title: `${chat.title} fork`,
-      createdAt: new Date().toISOString(),
-      entries: chat.entries.slice(0, index).map((entry) => ({ ...entry })),
-      ...(chat.boundProviderId ? { boundProviderId: chat.boundProviderId } : {}),
-      ...(chat.boundModel ? { boundModel: chat.boundModel } : {}),
-      ...(chat.boundSystemPrompt ? { boundSystemPrompt: chat.boundSystemPrompt } : {}),
-      ...(chat.thinkingLevel ? { thinkingLevel: chat.thinkingLevel } : {}),
-    };
-    this.nextChatId += 1;
-    this.chats.push(fork);
-    this.editing = {
-      chatId: fork.id,
-      text: original.content,
-      ...(original.images && original.images.length > 0 ? { images: original.images } : {}),
-    };
-    this.activateChat(fork.id);
+    const fork = this.chats.fork(chat.id, index).then((created) => {
+      if (!created) {
+        return;
+      }
+      this.editing = {
+        chatId: created.id,
+        text: original.content,
+        ...(original.images && original.images.length > 0 ? { images: original.images } : {}),
+      };
+      this.activateChat(created.id);
+    });
+    this.fire(`the fork of chat ${chat.id}`, fork);
   }
 
-  /** Sends the edited draft: the history from the edited message on drops, the draft replaces the
-   * message, and the turn restarts from there. A fork draft appends to the copied history. */
+  /** Sends the edited draft: the core replaces the edited message with it, or appends a fork draft,
+   * and restarts the turn from there. */
   private async saveEditing(): Promise<void> {
     const editing = this.editing;
     const editor = this.chatMessages.querySelector('textarea.message-editor');
@@ -875,89 +652,29 @@ export class MainApp implements McpSessionSink {
       return;
     }
     const text = editor.value.trim();
-    const chat = this.chats.find((candidate) => candidate.id === editing.chatId) ?? null;
+    const chat = this.chats.get(editing.chatId) ?? null;
     this.editing = null;
     if (!chat || this.isTurnRunning(chat.id)) {
       this.messages.render();
       return;
     }
-    const target = typeof editing.index === 'number' ? chat.entries[editing.index] : undefined;
-    const images = editing.images ?? target?.images ?? [];
-    if (text.length === 0 && images.length === 0) {
-      this.messages.render();
-      return;
-    }
-    if (this.chatNeedsSystemPrompt(chat)) {
-      // A fork draft at the head of its tab is a first message, so the menu choice binds here too.
-      if (!(await this.bindChatSystemPrompt(chat))) {
-        return;
-      }
-    }
-    chat.entries.splice(editing.index ?? chat.entries.length);
-    chat.entries.push({ role: 'user', content: text, ...(images.length > 0 ? { images } : {}) });
     this.chatPinned = true;
+    // The editor closes with this send. The core lands the entry, and the list renders its change.
     this.messages.render();
-    await this.runChatTurn(chat);
+    this.fire(`the edited send in chat ${chat.id}`, this.chats.edit(editing, text, this.connectionPicks(chat)));
   }
 
   /** Copies one message text to the clipboard. */
   private copyEntryText(text: string): void {
     navigator.clipboard.writeText(text).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[NodeWavenUI] the message text could not be copied: ${message}`);
+      log.main.warning(`the message text could not be copied: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
 
-  /** Delivers the first waiting message of a chat after a finished run: one still queued, or a
-   * send-now entry the finished turn never answered. The entry moves to the end as it delivers. */
-  private async drainQueued(chat: Chat): Promise<void> {
-    const index = chat.entries.findIndex((entry) => entry.role === 'user' && entry.queued);
-    const queued = index >= 0 ? chat.entries[index] : undefined;
-    if (queued) {
-      chat.entries.splice(index, 1);
-      this.messages.render();
-      await this.deliver(chat, queued.content, queued.images ?? []);
-      return;
-    }
-    // A send-now entry un-queued into the running turn still needs its answer when that turn
-    // ended its final text without another loop step. It carries queued false, not absent.
-    for (let position = chat.entries.length - 1; position >= 0; position -= 1) {
-      const entry = chat.entries[position];
-      if (entry?.role === 'assistant') {
-        return;
-      }
-      if (entry?.role === 'user' && typeof entry.queued === 'boolean' && !entry.queued) {
-        chat.entries.splice(position, 1);
-        this.messages.render();
-        await this.deliver(chat, entry.content, entry.images ?? []);
-        return;
-      }
-    }
-  }
-
-  /** Sends one queued message at once. While a turn runs, the entry un-queues into the next
-   * request of that turn, so it goes out without waiting for the turn to end. Without a running
-   * turn it delivers immediately. */
-  private async sendQueuedNow(chat: Chat, index: number): Promise<void> {
-    const entry = chat.entries[index];
-    if (!entry || entry.role !== 'user' || !entry.queued) {
-      return;
-    }
-    chat.entries.splice(index, 1);
-    if (this.isTurnRunning(chat.id)) {
-      chat.entries.push({
-        role: 'user',
-        content: entry.content,
-        ...(entry.images && entry.images.length > 0 ? { images: entry.images } : {}),
-        // False, not absent: the drain after the run answers it when the turn ends without it.
-        queued: false,
-      });
-      this.messages.render();
-      this.persistChat(chat);
-      return;
-    }
-    this.messages.render();
-    await this.deliver(chat, entry.content, entry.images ?? []);
+  /** Sends one queued message at once. The core un-queues it into the next request of the running
+   * turn, or delivers it when no turn runs. */
+  private sendQueuedNow(chat: Chat, index: number): void {
+    this.fire(`the send-now in chat ${chat.id}`, this.chats.sendNow(chat.id, index));
   }
 
   /** Adds image files from paste or drop to the pending attachments, downscaled and capped. */
@@ -967,28 +684,33 @@ export class MainApp implements McpSessionSink {
     }
     const room = MAX_ATTACHMENTS - this.pendingImages.length;
     if (room <= 0) {
-      this.activeChat()?.entries.push({
-        role: 'notice',
-        content: `One message carries at most ${MAX_ATTACHMENTS} images.`,
-      });
-      this.messages.render();
+      this.attachNotice(`One message carries at most ${MAX_ATTACHMENTS} images.`);
       return;
     }
     if (files.length > room) {
-      this.activeChat()?.entries.push({
-        role: 'notice',
-        content: `One message carries at most ${MAX_ATTACHMENTS} images. The first ${room} ${room === 1 ? 'stays' : 'stay'}, the rest drop.`,
-      });
-      this.messages.render();
+      this.attachNotice(`One message carries at most ${MAX_ATTACHMENTS} images. The first ${room} ${room === 1 ? 'stays' : 'stay'}, the rest drop.`);
     }
     for (const file of files.slice(0, room)) {
       try {
         this.pendingImages.push(await this.readImageFile(file));
       } catch (error) {
-        console.warn(`[NodeWavenUI] the image "${file.name}" could not be read: ${error instanceof Error ? error.message : String(error)}`);
+        log.main.warning(`the image "${file.name}" could not be read: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     this.renderAttachments();
+  }
+
+  /** Lands one attachment notice in the transcript of the active chat. */
+  private attachNotice(text: string): void {
+    const chat = this.activeChat();
+    if (chat?.isMcpHostLog) {
+      chat.entries.push({ role: 'notice', content: text });
+      this.messages.render();
+      return;
+    }
+    if (chat) {
+      this.fire('the attachment notice', this.chats.notice(chat.id, text));
+    }
   }
 
   /** Reads one image file as chat image data, scaled down to the attachment size box. */
@@ -1034,248 +756,6 @@ export class MainApp implements McpSessionSink {
     });
   }
 
-  /** The dependencies the agent tools build from. The rule reader feeds the tool rule layer. A
-   * running turn passes its chat, so the permission requests attribute to that chat's tab. */
-  private agentToolDeps(chat?: Chat): AgentToolDeps {
-    const gate: AgentToolDeps['gate'] =
-      this.permissionGate ?? {
-        check: async () => {
-          throw new Error('No permission gate is wired.');
-        },
-      };
-    return {
-      gate,
-      mcpClients: this.mcpClients,
-      workspacePath: this.workspacePath,
-      storageShares: this.storageShares,
-      toolRules: () => this.permissionGate?.listRules() ?? [],
-      source: chat ? chatAgentSource(chat.id) : CHAT_AGENT_SOURCE,
-      chatId: chat?.id ?? this.activeChatId ?? 0,
-      sessionFileId: chat?.fileId ?? null,
-      patchStore: this.patchStore ?? new PatchStore(),
-      pathRules: () => this.settingsView.pathRules,
-      ...(this.taskStore ? { tasks: this.taskToolDeps(gate, chat) } : {}),
-    };
-  }
-
-  /** The deps of the tasks tool: the store, the session and naming callbacks of this app, and the
-   * permission surface the dispatch action asks through. */
-  private taskToolDeps(gate: AgentToolDeps['gate'], chat?: Chat): TaskToolDeps {
-    const chatId = chat?.id ?? this.activeChatId ?? 0;
-    return {
-      store: this.taskStore!,
-      dispatch: (id, mode, sessionFileId) => this.dispatchTask(id, mode, sessionFileId),
-      send: (id, message) => this.sendTask(id, message),
-      setTaskName: async (title, description, amend) => {
-        const store = this.patchStore;
-        if (!store) {
-          throw new Error('No patch store is wired.');
-        }
-        if (!amend && !title) {
-          throw new Error('A new task needs a title. Pass amend true to change the open task.');
-        }
-        if (amend && !store.openTask(chatId)) {
-          throw new Error('No open task to amend. Start one without amend.');
-        }
-        const task = await store.setTask(chatId, title, description, amend);
-        return amend ? `The task now reads "${task.title}".` : `The task "${task.title}" started.`;
-      },
-      chatId,
-      check: gate,
-      dispatchAllowed: () => agentToolRule('tasks', this.permissionGate?.listRules() ?? [])?.effect === 'allow',
-      source: chat ? chatAgentSource(chat.id) : CHAT_AGENT_SOURCE,
-    };
-  }
-
-  /** Delivers one patch notice into its chat: the entry lands for the next loop step, and an idle
-   * chat starts a turn to process it. The host log tab holds no agent, so its notices drop. */
-  private async deliverPatchNotice(notice: PatchNotice): Promise<void> {
-    const chat = this.chats.find((candidate) => candidate.id === notice.chatId);
-    if (!chat || chat.isMcpHostLog) {
-      return;
-    }
-    chat.entries.push({ role: 'user', content: notice.text });
-    this.messages.render();
-    this.persistChat(chat);
-    if (!this.isTurnRunning(chat.id)) {
-      await this.runChatTurn(chat);
-    }
-  }
-
-  /** Delivers one task message into a chat: the entry lands for the next loop step, and an idle
-   * chat starts a turn to process it. Task briefs, nudges, settles, and sends all ride this. */
-  private async deliverTaskNotice(chat: Chat, text: string): Promise<void> {
-    if (chat.isMcpHostLog) {
-      return;
-    }
-    chat.entries.push({ role: 'user', content: text });
-    this.messages.render();
-    this.persistChat(chat);
-    if (!this.isTurnRunning(chat.id)) {
-      await this.runChatTurn(chat);
-    }
-  }
-
-  /** Builds the brief entry one session reads when it takes a task. */
-  private taskBrief(task: TaskRecord): string {
-    const rows = [`[task ${task.id}] ${task.title}`];
-    if (task.description) {
-      rows.push(task.description);
-    }
-    if (task.goal) {
-      rows.push(`Goal: ${task.goal}`);
-    }
-    rows.push('Work only this task. Verify the goal before you finish, then call the tasks tool with action complete (id, result, evidence), or action fail (id, reason) when it does not hold.');
-    return rows.join('\n');
-  }
-
-  /**
-   * Dispatches one queued task onto its session. A new-session dispatch opens the chat tab; a
-   * session dispatch hands the task to its bound chat when that chat sits idle. A busy chat and a
-   * blocked task keep the record queued, and the pump takes them when their turn comes.
-   *
-   * @param id The record id.
-   * @param mode How the dispatch binds the session.
-   * @param sessionFileId The chat session file, on session mode.
-   * @returns The outcome text the agent reads.
-   */
-  private async dispatchTask(id: string, mode: 'new-session' | 'session', sessionFileId: string | null): Promise<string> {
-    const store = this.taskStore;
-    if (!store || this.taskDispatching.has(id)) {
-      return 'The dispatch is already in flight.';
-    }
-    const task = store.get(id);
-    if (!task) {
-      return 'The task does not exist.';
-    }
-    if (task.status !== 'queued') {
-      return `The task holds state ${task.status}.`;
-    }
-    if (!store.ready(task)) {
-      return `The task waits for its blockedBy tasks: ${task.blockedBy.join(', ')}.`;
-    }
-    this.taskDispatching.add(id);
-    try {
-      if (mode === 'session') {
-        const chat = sessionFileId ? this.chatByFileId(sessionFileId) : null;
-        if (!chat) {
-          return `The chat session ${sessionFileId ?? '(none)'} holds no open tab. The task stays queued.`;
-        }
-        if (this.isTurnRunning(chat.id)) {
-          return 'The session runs a turn. The task stays queued and enters when it idles.';
-        }
-        await this.takeTaskOnChat(chat, task);
-        return `The task entered the session "${chat.title}".`;
-      }
-      const chat: Chat = {
-        id: this.nextChatId,
-        fileId: crypto.randomUUID(),
-        title: task.title,
-        createdAt: new Date().toISOString(),
-        entries: [],
-        taskId: task.id,
-      };
-      this.nextChatId += 1;
-      this.chats.push(chat);
-      await this.takeTaskOnChat(chat, task);
-      return 'A new chat session opened for the task.';
-    } finally {
-      this.taskDispatching.delete(id);
-    }
-  }
-
-  /** Binds one chat to a task, pushes the brief, and runs the turn on an idle chat. */
-  private async takeTaskOnChat(chat: Chat, task: TaskRecord): Promise<void> {
-    const store = this.taskStore;
-    if (!store) {
-      return;
-    }
-    chat.taskId = task.id;
-    await store.bindSession(task.id, chat.id, chat.fileId);
-    // The session names its work after the record, so the patches of the run group under the task
-    // title and the tab reads it.
-    await this.patchStore?.setTask(chat.id, task.title, task.description, false);
-    chat.entries.push({ role: 'user', content: this.taskBrief(task) });
-    this.messages.render();
-    this.persistChat(chat);
-    this.renderTabs();
-    if (!this.isTurnRunning(chat.id)) {
-      await this.runChatTurn(chat);
-    }
-  }
-
-  /** Opens sessions and hands idle chats their next ready queued task. Runs on every record change. */
-  private async pumpQueuedTasks(): Promise<void> {
-    const store = this.taskStore;
-    if (!store) {
-      return;
-    }
-    for (const task of store.list()) {
-      if (task.status !== 'queued' || this.taskDispatching.has(task.id) || !store.ready(task)) {
-        continue;
-      }
-      if (task.dispatchMode === 'new-session' && !task.sessionFileId) {
-        await this.dispatchTask(task.id, 'new-session', null);
-        continue;
-      }
-      if (task.dispatchMode === 'session' && task.sessionFileId) {
-        const chat = this.chatByFileId(task.sessionFileId);
-        if (chat && !this.isTurnRunning(chat.id)) {
-          await this.dispatchTask(task.id, 'session', task.sessionFileId);
-        }
-      }
-    }
-  }
-
-  /** Handles the task of one chat after its turn: one nudge on a silent running task, and the
-   * queue pump when the task settled so the next one enters. */
-  private async afterTaskTurn(chat: Chat): Promise<void> {
-    const store = this.taskStore;
-    if (!store || !chat.taskId) {
-      return;
-    }
-    const task = store.get(chat.taskId);
-    if (!task) {
-      return;
-    }
-    if (task.status === 'running') {
-      const nudged = this.taskNudges.get(task.id) ?? 0;
-      if (nudged < 1) {
-        this.taskNudges.set(task.id, nudged + 1);
-        await this.deliverTaskNotice(
-          chat,
-          `[task ${task.id}] The turn ended without a completion. Call the tasks tool: action complete (id, result, evidence), or action fail (id, reason).`,
-        );
-      }
-      return;
-    }
-    this.taskNudges.delete(task.id);
-    await this.pumpQueuedTasks();
-  }
-
-  /** Tells the origin chat of one settle it did not cause, so a waiting parent learns the outcome. */
-  private async deliverTaskSettle(task: TaskRecord): Promise<void> {
-    this.taskNudges.delete(task.id);
-    const origin = task.originChatId ? this.chats.find((chat) => chat.id === task.originChatId) ?? null : null;
-    if (!origin || origin.isMcpHostLog || origin.id === task.sessionChatId) {
-      return;
-    }
-    let head = `Task ${task.id} was cancelled${task.note ? `: ${task.note}` : '.'}`;
-    if (task.status === 'review') {
-      head = `The session completed task ${task.id}. The review waits.`;
-    } else if (task.status === 'done') {
-      head = `The user accepted task ${task.id}.`;
-    } else if (task.status === 'failed') {
-      head = `The session failed task ${task.id}${task.note ? `: ${task.note}` : '.'}`;
-    }
-    await this.deliverTaskNotice(origin, `[task settle] ${head}${task.result ? `\nResult: ${task.result}` : ''}`);
-  }
-
-  /** Finds the chat one task record is bound to in this app run. */
-  private chatOfTask(task: TaskRecord): Chat | null {
-    return task.sessionChatId ? this.chats.find((chat) => chat.id === task.sessionChatId) ?? null : null;
-  }
-
   /** Opens the task board in the center workspace. A focus id opens that record in its edit form. */
   private openTaskBoard(focusId?: string): void {
     const store = this.taskStore;
@@ -1284,268 +764,16 @@ export class MainApp implements McpSessionSink {
     }
     void openTaskBoardView({
       store,
-      dispatch: (id, mode, sessionFileId) => this.dispatchTask(id, mode, sessionFileId),
+      dispatch: (id, mode, sessionFileId) => this.chats.dispatch(id, mode, sessionFileId),
       openSession: (chatId) => {
         this.activateChat(chatId);
       },
       sessions: () =>
-        this.chats
-          .filter((chat) => !chat.isMcpHostLog)
-          .map((chat) => ({ fileId: chat.fileId, title: chat.title })),
+        this.chats.list().map((chat) => ({ fileId: chat.fileId, title: chat.title })),
       returnTask: (id, comment) => {
-        void this.returnTask(id, comment);
+        this.fire(`the return of task ${id}`, this.chats.returnTask(id, comment));
       },
     }, focusId ?? null);
-  }
-
-  /** Returns one review to its session: the record moves back to running and the comment of the
-   * user rides to the session agent as a re-brief. */
-  private async returnTask(id: string, comment: string | null): Promise<void> {
-    const store = this.taskStore;
-    const task = store?.get(id) ?? null;
-    if (!store || !task) {
-      return;
-    }
-    const chat = this.chatOfTask(task);
-    const returned = await store.returnToSession(id);
-    if (!returned || !chat) {
-      return;
-    }
-    await this.deliverTaskNotice(
-      chat,
-      `[task ${id}] The user returned the task with a comment:${comment ? `\n${comment}` : ''}\nAddress the comment, then call the tasks tool with action complete again.`,
-    );
-  }
-
-  /** Sends one message into the session of a task. A busy session queues the entry for its drain. */
-  private async sendTask(id: string, message: string): Promise<string> {
-    const store = this.taskStore;
-    const task = store?.get(id) ?? null;
-    if (!store || !task) {
-      return 'The task does not exist.';
-    }
-    const chat = this.chatOfTask(task);
-    if (!chat) {
-      return 'The task holds no open session tab.';
-    }
-    if (this.isTurnRunning(chat.id)) {
-      chat.entries.push({ role: 'user', content: `[task ${id}] ${message}`, queued: true });
-      this.messages.render();
-      this.persistChat(chat);
-      return 'The session runs a turn. The message queued and delivers when it ends.';
-    }
-    await this.deliverTaskNotice(chat, `[task ${id}] ${message}`);
-    return 'The message entered the session.';
-  }
-
-  /** The tools the agent may call this turn, the built-ins plus the native MCP tools, without the
-   * disabled ones. The turn's chat scopes the permission requests. */
-  private agentTools(chat: Chat): readonly AgentTool[] {
-    return buildAgentTools(this.agentToolDeps(chat));
-  }
-
-  /** Runs the tool-calling loop of one user message, until the model answers in text or hits the round limit. */
-  private async runAgentTurn(
-    chat: Chat,
-    provider: OpenAiInferenceProvider,
-    model: string,
-    vision: boolean,
-    limit: number | null,
-    thinkingLevel: string | undefined,
-    signal: AbortSignal,
-  ): Promise<void> {
-    let turn = 0;
-    while (typeof limit !== 'number' || turn < limit) {
-      turn += 1;
-      const tools = this.agentTools(chat);
-      const messages = this.agentMessages(chat, vision);
-      const streaming = this.beginStreamingEntry(chat);
-      const result = await provider.complete({
-        model,
-        messages,
-        tools: tools.map(agentToolDefinition),
-        ...(thinkingLevel ? { thinkingLevel } : {}),
-        onDelta: streaming.onDelta,
-        signal,
-      });
-      if (result.usage) {
-        chat.contextTokens = result.usage.promptTokens;
-        chat.outputTokens = (chat.outputTokens ?? 0) + result.usage.completionTokens;
-        this.renderChatStatus();
-      }
-      if (result.toolCalls && result.toolCalls.length > 0) {
-        streaming.settle({
-          role: 'assistant',
-          content: result.content,
-          ...(result.reasoning ? { reasoning: result.reasoning } : {}),
-          toolCalls: result.toolCalls,
-        });
-        for (const call of result.toolCalls) {
-          await this.runAgentToolCall(chat, tools, call);
-        }
-        continue;
-      }
-      streaming.settle({
-        role: 'assistant',
-        content: result.content,
-        ...(result.reasoning ? { reasoning: result.reasoning } : {}),
-      });
-      return;
-    }
-    chat.entries.push({
-      role: 'error',
-      content: `The agent exceeded ${limit} tool rounds in one message.`,
-    });
-  }
-
-  /** Runs one tool call of the agent and appends the result entry the next request retransmits. */
-  private async runAgentToolCall(chat: Chat, tools: readonly AgentTool[], call: ToolCall): Promise<void> {
-    let args: Record<string, unknown>;
-    try {
-      const parsed: unknown = JSON.parse(call.arguments);
-      args = typeof parsed === 'object' && parsed ? (parsed as Record<string, unknown>) : {};
-    } catch {
-      args = { _raw: call.arguments };
-    }
-    let output: AgentToolOutput;
-    const tool = tools.find((candidate) => candidate.name === call.name);
-    if (!tool) {
-      output = { text: `Error: no tool named "${call.name}" exists.` };
-    } else {
-      try {
-        output = await tool.run(args);
-      } catch (error) {
-        output = { text: `Error: ${error instanceof Error ? error.message : String(error)}` };
-      }
-    }
-    // A JSON object or array reply rides along as a payload, so the tab shows it in the viewer.
-    let json: unknown;
-    try {
-      const parsed: unknown = JSON.parse(output.text);
-      json = typeof parsed === 'object' && parsed ? parsed : undefined;
-    } catch {
-      json = undefined;
-    }
-    chat.entries.push({
-      role: 'tool',
-      content: output.text,
-      ...(json ? { json } : {}),
-      ...(output.images && output.images.length > 0 ? { images: output.images } : {}),
-      toolCallId: call.id,
-      toolName: call.name,
-    });
-    this.messages.render();
-    // The turn runs on, so the result lands in the session file now: a crash mid-turn keeps it.
-    this.persistChat(chat);
-  }
-
-  /** Reads the entries of one chat as the message list of the next provider request. */
-  private agentMessages(chat: Chat, vision: boolean): ChatMessage[] {
-    const messages: ChatMessage[] = [];
-    const system = chat.boundSystemPrompt;
-    if (system && system.sourceId !== NONE_SYSTEM_PROMPT_SETUP_ID && system.text.length > 0) {
-      messages.push({ role: 'system', content: system.text });
-    }
-    // Tool images travel as one user message after the tool batch, because tool messages carry text only.
-    // A model without vision reads an omission note instead.
-    const toolImages: ChatImage[] = [];
-    const flushToolImages = (): void => {
-      if (toolImages.length === 0) {
-        return;
-      }
-      if (vision) {
-        messages.push({ role: 'user', content: 'The images of the tool results above, in order.', images: [...toolImages] });
-      }
-      toolImages.length = 0;
-    };
-    for (const entry of chat.entries) {
-      if (entry.role === 'user') {
-        if (entry.queued) {
-          continue;
-        }
-        flushToolImages();
-        messages.push({
-          role: 'user',
-          content: entry.content,
-          ...(entry.images && entry.images.length > 0 ? { images: entry.images } : {}),
-        });
-      } else if (entry.role === 'assistant') {
-        flushToolImages();
-        messages.push({
-          role: 'assistant',
-          content: entry.content,
-          ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
-          ...(entry.toolCalls && entry.toolCalls.length > 0 ? { toolCalls: entry.toolCalls } : {}),
-        });
-      } else if (entry.role === 'tool') {
-        let content = entry.content;
-        if (!vision && entry.images && entry.images.length > 0) {
-          content += `\n[${entry.images.length} ${entry.images.length === 1 ? 'image' : 'images'} omitted: the model reads text only]`;
-        }
-        messages.push({
-          role: 'tool',
-          content,
-          ...(entry.toolCallId ? { toolCallId: entry.toolCallId } : {}),
-        });
-        if (entry.images) {
-          toolImages.push(...entry.images);
-        }
-      }
-    }
-    flushToolImages();
-    return messages;
-  }
-
-  /**
-   * Opens one in-flight assistant entry that streams the reply, and settles it with the final entry.
-   * The entry is tracked by identity, because a message queued mid-run appends after it.
-   * The renders stay throttled, so a long stream does not thrash the message list.
-   */
-  private beginStreamingEntry(chat: Chat): {
-    onDelta: (delta: CompletionDelta) => void;
-    settle: (entry: ChatEntry) => void;
-  } {
-    let liveContent = '';
-    let liveReasoning = '';
-    // The slot is tracked through its replacements, because a message queued mid-run appends after it.
-    let slot: ChatEntry = { role: 'assistant', content: '' };
-    chat.entries.push(slot);
-    const replaceSlot = (next: ChatEntry): void => {
-      const index = chat.entries.indexOf(slot);
-      if (index >= 0) {
-        chat.entries[index] = next;
-        slot = next;
-      }
-    };
-    let lastStreamRender = 0;
-    const renderStreamed = (force: boolean): void => {
-      const now = Date.now();
-      if (force || now - lastStreamRender >= 80) {
-        lastStreamRender = now;
-        this.patchStreamingEntry(chat, slot);
-      }
-    };
-    renderStreamed(true);
-    return {
-      onDelta: (delta: CompletionDelta): void => {
-        if (delta.content) {
-          liveContent += delta.content;
-        }
-        if (delta.reasoning) {
-          liveReasoning += delta.reasoning;
-        }
-        replaceSlot({
-          role: 'assistant',
-          content: liveContent,
-          ...(liveReasoning.length > 0 ? { reasoning: liveReasoning } : {}),
-        });
-        renderStreamed(false);
-      },
-      settle: (entry: ChatEntry): void => {
-        replaceSlot(entry);
-        this.messages.render();
-      },
-    };
   }
 
   /**
@@ -1554,15 +782,6 @@ export class MainApp implements McpSessionSink {
    * A missing or replaced list item falls back to one full render.
    */
   private patchStreamingEntry(chat: Chat, slot: ChatEntry): void {
-    if (chat.id !== this.activeChatId) {
-      // A background turn streams unseen: the tab badges until the user opens it, and the patch
-      // stays off the list, which renders another chat.
-      if (!chat.unread) {
-        chat.unread = true;
-        this.renderTabs();
-      }
-      return;
-    }
     const index = chat.entries.indexOf(slot);
     const entry = index >= 0 ? chat.entries[index] : undefined;
     const item = this.chatMessages.querySelector(`:scope > li[data-entry-index="${index}"]`);
@@ -1594,6 +813,20 @@ export class MainApp implements McpSessionSink {
     this.pinChatToBottom();
   }
 
+  /** Renders one streamed piece the core pushed for the active chat. The renders stay throttled, so
+   * a long stream does not thrash the message list. A background chat already marked its tab unread. */
+  private renderStreamed(chat: Chat, slot: ChatEntry): void {
+    if (chat.id !== this.activeChatId) {
+      return;
+    }
+    const now = Date.now();
+    if (now - (this.streamRenders.get(chat.id) ?? 0) < STREAM_RENDER_INTERVAL) {
+      return;
+    }
+    this.streamRenders.set(chat.id, now);
+    this.patchStreamingEntry(chat, slot);
+  }
+
   /** Recomputes the pinned state from the scroll position and shows or hides the jump-down arrow. */
   private updateChatPinned(): void {
     const list = this.chatMessages;
@@ -1610,7 +843,7 @@ export class MainApp implements McpSessionSink {
 
   /** True while one chat runs an agent turn. */
   private isTurnRunning(chatId: number): boolean {
-    return this.runningTurns.has(chatId);
+    return this.chats.isRunning(chatId);
   }
 
   /** Updates the composer controls for one turn state of one chat: the Stop button shows while
@@ -1632,43 +865,29 @@ export class MainApp implements McpSessionSink {
     this.chatInput.style.height = `${this.chatInput.scrollHeight}px`;
   }
 
-  private newChat(): void {
-    const chat: Chat = {
-      id: this.nextChatId,
-      fileId: crypto.randomUUID(),
-      title: `Chat ${this.nextChatId}`,
-      createdAt: new Date().toISOString(),
-      entries: [],
-    };
-    this.nextChatId += 1;
-    this.chats.push(chat);
+  /** Opens one fresh chat in the core and activates its tab. */
+  private async newChat(): Promise<void> {
+    const chat = await this.chats.create();
     this.activateChat(chat.id);
   }
 
   private closeChat(id: number): void {
-    const index = this.chats.findIndex((chat) => chat.id === id);
-    if (index < 0) {
+    const chat = this.chats.get(id);
+    if (!chat) {
       return;
     }
-    const [chat] = this.chats.splice(index, 1);
-    // The closed tab drops its session file, so a restart does not resurrect it.
-    if (chat && !chat.isMcpHostLog) {
-      this.chatSessions.deleteSession(chat.fileId);
-    }
-    // A live task bound to the closed chat settles cancelled, so the record never holds a dead session.
-    if (chat?.taskId) {
-      const task = this.taskStore?.get(chat.taskId);
-      if (task && (task.status === 'running' || task.status === 'queued') && task.sessionFileId === chat.fileId) {
-        void this.taskStore?.cancel(task.id, 'The session tab closed.');
-      }
-    }
+    const index = this.chats.list().indexOf(chat);
+    // The core closes the chat: its session file drops, a live task bound to it settles cancelled,
+    // and its running turn stops. The pushed change removes the tab.
+    this.fire(`the close of chat ${id}`, this.chats.close(id));
     if (this.activeChatId === id) {
       // The chat column keeps a chat: a neighbor takes over, or a fresh chat opens when none stays.
-      const neighbor = this.chats[Math.min(index, this.chats.length - 1)];
+      const rest = this.chats.list().filter((candidate) => candidate.id !== id);
+      const neighbor = rest[Math.min(index, rest.length - 1)];
       if (neighbor) {
         this.activateChat(neighbor.id);
       } else {
-        this.newChat();
+        void this.newChat();
       }
       return;
     }
@@ -1679,7 +898,7 @@ export class MainApp implements McpSessionSink {
     this.activeChatId = id;
     // A freshly opened tab starts at its latest message.
     this.chatPinned = true;
-    const chat = this.chats.find((candidate) => candidate.id === id);
+    const chat = this.activeChat();
     if (chat) {
       chat.unread = false;
     }
@@ -1727,19 +946,26 @@ export class MainApp implements McpSessionSink {
       return;
     }
     const owner = chatIdOfAgentSource(source);
-    const target = this.chats.find((chat) => chat.id === owner) ?? this.activeChat();
+    // No owner, or a chat the core closed meanwhile, falls back to the active chat.
+    const target = this.chats.get(owner ?? -1) ?? this.activeChat();
     if (target) {
       this.activateChat(target.id);
     }
   }
 
+  /** Reads the active tab: the host tab, or one chat of the core. */
   private activeChat(): Chat | null {
     const id = this.activeChatId;
     // The host tab holds the id 0, so only a non-number id means no chat is active.
     if (typeof id !== 'number') {
       return null;
     }
-    return this.chats.find((chat) => chat.id === id) ?? null;
+    return (this.hostTab && this.hostTab.id === id ? this.hostTab : null) ?? this.chats.get(id);
+  }
+
+  /** Reads every tab: the host tab first when a client connected, then the chats in creation order. */
+  private allChats(): readonly Chat[] {
+    return this.hostTab ? [this.hostTab, ...this.chats.list()] : this.chats.list();
   }
 
   private renderTabs(): void {
@@ -1759,7 +985,7 @@ export class MainApp implements McpSessionSink {
       }
     }
     this.chatTabs.replaceChildren();
-    for (const chat of this.chats) {
+    for (const chat of this.allChats()) {
       const group = document.createElement('span');
       const classes = ['tab-group'];
       if (chat.id === this.activeChatId) {
@@ -1814,12 +1040,14 @@ export class MainApp implements McpSessionSink {
     select.value = chat.thinkingLevel ?? '';
     select.addEventListener('change', () => {
       const value = select.value;
-      if (value === 'low' || value === 'medium' || value === 'high') {
-        chat.thinkingLevel = value;
+      const level: ThinkingLevel | null = value === 'low' || value === 'medium' || value === 'high' ? value : null;
+      // The page view follows at once, and the core stores the pin with the chat.
+      if (level) {
+        chat.thinkingLevel = level;
       } else {
         delete chat.thinkingLevel;
       }
-      this.persistChat(chat);
+      this.fire(`the thinking level of chat ${chat.id}`, this.chats.setThinking(chat.id, level));
     });
     return select;
   }
@@ -1910,14 +1138,5 @@ export class MainApp implements McpSessionSink {
       return chat.pendingSystemPromptId;
     }
     return defaultSystemPromptSetup(this.promptSources)?.id ?? NONE_SYSTEM_PROMPT_SETUP_ID;
-  }
-
-  /** The source the chat menu holds: the pending selection, or the default. Null reads the none source. */
-  private selectedSystemPromptSetup(chat: Chat): SystemPromptSetup | null {
-    const wanted = this.selectedSystemPromptId(chat);
-    if (wanted === NONE_SYSTEM_PROMPT_SETUP_ID) {
-      return null;
-    }
-    return this.promptSources.find((source) => source.id === wanted) ?? defaultSystemPromptSetup(this.promptSources);
   }
 }

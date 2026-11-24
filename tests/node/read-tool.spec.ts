@@ -2,51 +2,22 @@
  * Specs for the read tool: the harness scheme serves the folder listing, the live known-paths
  * document, and the shipped documents; the file scheme serves workspace files after the gate and
  * refuses outside paths; the storage scheme serves shared records; every other scheme reaches the
- * MCP resource surface.
+ * MCP resource surface. The tool runs in the worker core, so it reads the files and the harness
+ * documents from disk.
  */
 
 import { expect } from 'chai';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { createReadTool, type AgentToolDeps } from '../../dist/renderer/agent-tools.js';
-import { KNOWN_PATHS_URI } from '../../dist/renderer/doc-resources.js';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createReadTool, type AgentToolDeps } from '../../dist/worker/agent-tools.js';
+import { KNOWN_PATHS_URI, setHarnessDocLoader } from '../../dist/shared/harness-docs.js';
 import type { PathRule } from '../../dist/shared/permissions.js';
-import type { NodeWavenBridge } from '../../dist/shared/bridge.js';
 
-/** Installs the bridge fs slice of the workspace page over real files. */
-function installBridge(): void {
-  globalThis.nodewavenui = {
-    fs: {
-      list: async (directory: string) => readdirSync(directory),
-      readText: async (path: string) => readFileSync(path, 'utf-8'),
-      readData: async () => {
-        throw new Error('not used');
-      },
-      writeText: async () => {
-        throw new Error('not used');
-      },
-      writeData: async () => {
-        throw new Error('not used');
-      },
-      makeDirectory: async (path: string) => {
-        mkdirSync(path, { recursive: true });
-      },
-      remove: async (path: string) => {
-        rmSync(path, { recursive: true, force: true });
-      },
-      rename: async () => {
-        throw new Error('not used');
-      },
-      stat: async (path: string) => {
-        if (!existsSync(path)) {
-          return null;
-        }
-        return { exists: true, directory: statSync(path).isDirectory() };
-      },
-    },
-  } as unknown as NodeWavenBridge;
-}
+/** The harness documents of the build, read from disk the way the worker core reads them. */
+const docsRoot = join(dirname(fileURLToPath(import.meta.url)), '..', 'renderer');
+setHarnessDocLoader(async (file) => readFileSync(join(docsRoot, file), 'utf-8'));
 
 /** One recorded permission check of the stub gate. */
 interface RecordedCheck {
@@ -64,7 +35,6 @@ describe('the read tool', () => {
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'nvread-'));
-    installBridge();
     writeFileSync(join(root, 'note.md'), 'the note text');
     checks = [];
     rules = [];
@@ -123,17 +93,10 @@ describe('the read tool', () => {
     expect(checks).to.deep.equal([]);
   });
 
-  it('serves a shipped harness document', async () => {
-    const originalFetch = globalThis.fetch;
-    const stub = async () => ({ ok: true, text: async () => 'the overview body' });
-    globalThis.fetch = stub as unknown as typeof fetch;
-    try {
-      const output = await tool.run({ uri: 'harness:///nodewavenui/overview.md' });
-      expect(output.text).to.equal('the overview body');
-      expect(checks).to.deep.equal([]);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+  it('serves a shipped harness document from disk', async () => {
+    const output = await tool.run({ uri: 'harness:///nodewavenui/overview.md' });
+    expect(output.text).to.contain('# NodeWavenUI agent overview');
+    expect(checks).to.deep.equal([]);
   });
 
   it('refuses an unknown harness document and names the valid URIs', async () => {

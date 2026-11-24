@@ -8,6 +8,7 @@
   "include": ["src/worker"],
   "references": [
     { "path": "./tsconfig.shared.json" },
+    { "path": "./tsconfig.providers.json" },
     { "path": "./tsconfig.storage.json" }
   ]
 }

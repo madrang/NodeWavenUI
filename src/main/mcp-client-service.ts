@@ -5,7 +5,7 @@
  */
 
 import { ipcMain } from 'electron';
-import type { McpEndpoints } from '../shared/mcp-endpoints.js';
+import type { McpCallResult, McpEndpoints, McpNativeTool } from '../shared/mcp-endpoints.js';
 import { asRecord } from '../shared/records.js';
 import { McpClientManager } from './mcp-manager.js';
 import { callWorkspace, pushWorkspace, workspaceContents } from './workspace-link.js';
@@ -96,6 +96,21 @@ export function registerMcpClientService(): void {
 async function applyEndpoints(endpoints: unknown): Promise<void> {
   await manager.applyEndpoints(endpoints as McpEndpoints);
   pushWorkspace('mcp.state', { servers: manager.listServers(), nativeTools: manager.nativeTools() });
+}
+
+/** Reads the native tool descriptors of the connected endpoints. The worker core lists them for its chat engine. */
+export function mcpNativeTools(): readonly McpNativeTool[] {
+  return manager.nativeTools();
+}
+
+/** Runs one native tool for the worker core: the chat agent calls it from there. */
+export function runMcpNativeTool(name: string, args: Record<string, unknown>): Promise<McpCallResult> {
+  return manager.runNativeTool(name, args);
+}
+
+/** Reads one resource of the MCP server that lists it, for the worker core. */
+export function readMcpResource(uri: string): Promise<string> {
+  return manager.readResource(uri);
 }
 
 /** Loads the endpoint list from the workspace storage and applies it. Runs once a workspace opens. */

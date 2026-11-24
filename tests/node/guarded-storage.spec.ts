@@ -6,7 +6,7 @@
 import { expect } from 'chai';
 import { GuardedStorage } from '../../dist/storage/guarded.js';
 import { StorageError, type StorageBackend } from '../../dist/storage/storage.js';
-import { createShareGuardCheck } from '../../dist/renderer/storage-shares.js';
+import { createShareGuardCheck } from '../../dist/storage/share-registry.js';
 import type { PermissionRule } from '../../dist/shared/permissions.js';
 
 /** One in-memory backend that records the calls it serves. */

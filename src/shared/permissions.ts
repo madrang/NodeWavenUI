@@ -314,6 +314,19 @@ export function matchingRule(
 }
 
 /**
+ * Reads the first rule that governs one agent tool: resource `tool`, the agent principal, the tool name.
+ * The shared matcher of the permission model decides, and the rule list comes from the permission
+ * gate, so the tool registry and the settings matrix read the rules the gate reads.
+ *
+ * @param name The tool name, for example `read` or `obsidian.read_note`.
+ * @param rules The permission rules, in evaluation order.
+ * @returns The rule, or null when none governs the tool, which leaves the tool on ask.
+ */
+export function agentToolRule(name: string, rules: readonly PermissionRule[]): PermissionRule | null {
+  return matchingRule('agent', name, { kind: 'tool', name }, rules);
+}
+
+/**
  * Reads the decision of the first rule that matches one guarded call.
  * The pipeline defaults never run here, so a caller that holds its own grant, for example a
  * storage share, may follow the rules alone and keep its grant under every no-rule key.

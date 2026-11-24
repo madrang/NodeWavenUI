@@ -4,7 +4,7 @@
  */
 
 import { expect } from 'chai';
-import { knownPathsDocument, pluginDocumentSection } from '../../dist/renderer/doc-resources.js';
+import { knownPathsDocument, pluginDocumentSection } from '../../dist/shared/harness-docs.js';
 
 describe('the plugin document section of the overview', () => {
   it('builds one list line per registered document', () => {

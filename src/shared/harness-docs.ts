@@ -1,10 +1,11 @@
 /**
  * The harness documents of the app: markdown files under `docs/` that ship with the renderer assets.
  * Both agent surfaces serve them: the MCP host as resources, the chat agent through the `read` tool
- * with the `harness:` scheme.
+ * with the `harness:` scheme. The table and the readers stay platform free: the pages fetch a
+ * document from their own origin, and the worker core reads it from disk through the loader it sets.
  */
 
-import type { PathRule, PathRuleMode } from '../shared/permissions.js';
+import type { PathRule, PathRuleMode } from './permissions.js';
 
 /** One harness document. */
 export interface HarnessDoc {
@@ -172,6 +173,31 @@ const cache = new Map<string, string>();
 /** The harness documents plugins registered, set once at startup. They appear only while their plugin loads. */
 let pluginDocs: readonly HarnessDoc[] = [];
 
+/** Reads one harness document file, as the running context reaches it. The path is relative to the renderer build. */
+export type HarnessDocLoader = (file: string) => Promise<string>;
+
+/** The page loader: a document is a static asset of the origin the page loads from. */
+const fetchDocument: HarnessDocLoader = async (file) => {
+  const response = await fetch(file);
+  if (!response.ok) {
+    throw new Error(`The harness document ${file} answered HTTP ${response.status}.`);
+  }
+  return response.text();
+};
+
+let loadDocument: HarnessDocLoader = fetchDocument;
+
+/**
+ * Sets the loader the document reads go through.
+ * The worker core calls this once at boot with a disk reader, because it holds no page origin to
+ * fetch from. The pages keep the default.
+ *
+ * @param loader The reader of one document file.
+ */
+export function setHarnessDocLoader(loader: HarnessDocLoader): void {
+  loadDocument = loader;
+}
+
 /**
  * Sets the harness documents of the loaded plugins.
  * The startup wiring calls this after the plugin folders load, so a plugin document never
@@ -234,11 +260,7 @@ export async function readHarnessDoc(uri: string): Promise<string> {
     const list = [...DOCS, ...pluginDocs].map((candidate) => candidate.uri).join(', ');
     throw new Error(`No harness document matches ${uri}. Valid: ${list}.`);
   }
-  const response = await fetch(doc.file);
-  if (!response.ok) {
-    throw new Error(`The harness document ${doc.file} answered HTTP ${response.status}.`);
-  }
-  const text = await response.text();
+  const text = await loadDocument(doc.file);
   // The overview is the entry point, so it carries the live plugin documents: an agent that
   // reads only the overview still learns they exist.
   const composed = doc.uri === OVERVIEW_URI ? withPluginSection(text) : text;

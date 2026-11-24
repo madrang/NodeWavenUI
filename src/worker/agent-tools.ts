@@ -1,28 +1,25 @@
 /**
- * The tools of the chat agent. The registry joins the built-in `read` tool with the window
- * tools the main process serves over the bridge, and with the native tools of the connected
- * MCP endpoints, named `<sanitized-label>.<tool>`.
- * Every window tool runs in the main process with the `agent` principal, so the same
- * permission cards and rules govern it.
+ * The tools of the chat agent, built by the worker core. The registry joins the built-in `read`
+ * tool with the file tools and the task tool, with the window and command tools the main process
+ * serves, and with the native tools of the connected MCP endpoints, named `<sanitized-label>.<tool>`.
+ * Every window tool runs in the main process with the `agent` principal, so the same permission
+ * cards and rules govern it: the engine calls main for them, the way the phone calls the worker.
  */
 
 import type { ChatImage, ToolDefinition } from '../providers/provider.js';
 import type { PermissionRule, PrincipalKind, PermissionTarget } from '../shared/permissions.js';
-import { CHAT_AGENT_SOURCE, matchingRule } from '../shared/permissions.js';
-import { readBridge } from '../shared/bridge.js';
+import { agentToolRule, CHAT_AGENT_SOURCE } from '../shared/permissions.js';
 import type { PathRule } from '../shared/permissions.js';
+import type { McpCallResult, McpNativeTool } from '../shared/mcp-endpoints.js';
 import { COMMAND_TOOL_DEFINITIONS } from '../shared/command-tool.js';
-import { WINDOW_TOOL_DEFINITIONS } from '../shared/window-tools.js';
-import { harnessFolderListing, KNOWN_PATHS_URI, knownPathsDocument, readHarnessDoc } from './doc-resources.js';
-import { readTextFile } from './file-system.js';
+import { WINDOW_TOOL_DEFINITIONS, type McpToolResult } from '../shared/window-tools.js';
+import { harnessFolderListing, KNOWN_PATHS_URI, knownPathsDocument, readHarnessDoc } from '../shared/harness-docs.js';
+import { readTextFile } from './node-file-system.js';
 import { createFileTools, type FileToolDeps } from './file-tools.js';
 import { createTasksTool, type TaskToolDeps } from './task-tools.js';
 import type { PatchStore } from './patch-store.js';
-import type { McpToolResult } from '../shared/window-tools.js';
-import type { McpClientSurface } from './mcp-client-adapter.js';
-import type { StorageShareRegistry } from './storage-shares.js';
 
-/** The permission check the tools need. The PermissionGate of the workspace implements it. */
+/** The permission check the tools need. The permission gate of the worker core implements it. */
 export interface PermissionCheck {
   check(
     principal: PrincipalKind,
@@ -35,19 +32,6 @@ export interface PermissionCheck {
 }
 
 export { CHAT_AGENT_SOURCE };
-
-/**
- * Reads the first rule that governs one agent tool: resource `tool`, the agent principal, the tool name.
- * The shared matcher of the permission model decides, and the rule list comes from the permission
- * gate, so the matrix and the request cards read the rules the gate reads.
- *
- * @param name The tool name, for example `read` or `obsidian.read_note`.
- * @param rules The permission rules, in evaluation order.
- * @returns The rule, or null when none governs the tool, which leaves the tool on ask.
- */
-export function agentToolRule(name: string, rules: readonly PermissionRule[]): PermissionRule | null {
-  return matchingRule('agent', name, { kind: 'tool', name }, rules);
-}
 
 /** True when a deny rule governs the tool, so the agent list hides it. */
 function toolDenied(name: string, rules: readonly PermissionRule[]): boolean {
@@ -68,14 +52,34 @@ export interface AgentTool {
   run(args: Record<string, unknown>): Promise<AgentToolOutput>;
 }
 
+/** The MCP client surface the tools need: the resource reads and the native tools. The connections
+ * live in the main process, so the engine answers these calls from there. */
+export interface AgentMcpSurface {
+  /** Reads one resource of the server that lists it. */
+  readResource(uri: string): Promise<string>;
+  /** Reads the cached native tool descriptors of the connected endpoints. */
+  nativeTools(): readonly McpNativeTool[];
+  /** Runs one native tool. */
+  runNativeTool(name: string, args: Record<string, unknown>): Promise<McpCallResult>;
+}
+
+/** The storage sharing surface the read tool needs. */
+export interface AgentStorageShares {
+  /** Reads one record of one shared storage. Null when the record is empty. */
+  readKey(storageId: string, key: string): Promise<string | null>;
+}
+
 /** The dependencies the built-in tools need. */
 export interface AgentToolDeps {
   readonly gate: PermissionCheck;
-  readonly mcpClients: McpClientSurface;
+  readonly mcpClients: AgentMcpSurface;
+  /** Runs one window or command tool in the main process as the agent principal. The source names
+   * the chat whose turn sent the call, so the permission card lands in that chat's tab. */
+  readonly runWindowTool: (name: string, args: Record<string, unknown>, source: string) => Promise<McpToolResult>;
   /** The absolute path of the workspace directory. `read` serves file URIs inside it only. */
   readonly workspacePath: string;
   /** The storage sharing of the workspace. `read` serves the storages shared read-only. */
-  readonly storageShares: StorageShareRegistry;
+  readonly storageShares: AgentStorageShares;
   /** Reads the permission rules, so the tool rules decide the ask, allow, and disable states. */
   readonly toolRules: () => readonly PermissionRule[];
   /** The source the permission checks of this tool set attribute their requests to, scoped to the
@@ -182,8 +186,9 @@ export function createReadTool(deps: AgentToolDeps): AgentTool {
   };
 }
 
-/** Builds one window tool of the chat agent: the shared definition wrapped over the bridge. The
- * main process runs it as the agent principal and attributes its permission check to the source. */
+/** Builds one window or command tool of the chat agent: the shared definition wrapped over the
+ * call into the main process. The main process runs it as the agent principal and attributes its
+ * permission check to the source. */
 function createWindowTool(
   definition: {
     readonly name: string;
@@ -191,17 +196,14 @@ function createWindowTool(
     readonly inputSchema: Record<string, unknown>;
   },
   source: string,
+  run: AgentToolDeps['runWindowTool'],
 ): AgentTool {
   return {
     name: definition.name,
     description: definition.description,
     inputSchema: definition.inputSchema,
     run: async (args) => {
-      const bridge = readBridge();
-      if (!bridge) {
-        throw new Error('The window tools need the nodewavenui bridge of an app window.');
-      }
-      const result = (await bridge.workspace.runWindowTool(definition.name, args, source)) as McpToolResult | null;
+      const result = await run(definition.name, args, source);
       if (!result || typeof result !== 'object') {
         throw new Error(`The tool "${definition.name}" returned no result.`);
       }
@@ -243,8 +245,8 @@ export function buildAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
 /** The full tool list of the chat agent, disabled tools included, for the settings matrix. */
 export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
   const tools: AgentTool[] = [createReadTool(deps)];
-  // The file tool set runs in the workspace page: reads over the bridge fs after the permission
-  // pipeline, writes as patch proposals the user reviews, tasks as the naming surface.
+  // The file tool set runs in the worker core: reads over its fs after the permission pipeline,
+  // writes as patch proposals the user reviews, tasks as the naming surface.
   const fileDeps: FileToolDeps = {
     check: deps.gate,
     workspacePath: deps.workspacePath,
@@ -255,13 +257,13 @@ export function availableAgentTools(deps: AgentToolDeps): readonly AgentTool[] {
     pathRules: deps.pathRules,
   };
   tools.push(...createFileTools(fileDeps));
-  // The task records join the list only when main-app wired the store and the session callbacks.
+  // The task records join the list only when the engine wired the store and the session callbacks.
   if (deps.tasks) {
     tools.push(createTasksTool(deps.tasks));
   }
   // The chat agent carries the same window and command tools the MCP host serves, acting as the agent principal.
   for (const definition of [...WINDOW_TOOL_DEFINITIONS, ...COMMAND_TOOL_DEFINITIONS]) {
-    tools.push(createWindowTool(definition, deps.source));
+    tools.push(createWindowTool(definition, deps.source, deps.runWindowTool));
   }
   for (const native of deps.mcpClients.nativeTools()) {
     tools.push({

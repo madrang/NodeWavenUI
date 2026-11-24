@@ -8,9 +8,9 @@ import { log } from './logger.js';
 import { app, BrowserWindow, ipcMain, Menu, session, type MenuItemConstructorOptions } from 'electron';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CHAT_AGENT_SOURCE } from '../shared/permissions.js';
 import { relayRendererConsole } from './diagnostics.js';
-import { createTools, parseMcpHostArgument, readMcpHostInfo, startMcpHost } from './mcp-host.js';
+import { parseMcpHostArgument, readMcpHostInfo, startMcpHost } from './mcp-host.js';
+import { runChatAgentTool } from './tool-runner.js';
 import { registerAppProtocol, registerAppProtocolPrivileges, rendererUrl } from './protocol.js';
 import { registerProviderCors } from './provider-cors.js';
 import { registerServices } from './services.js';
@@ -260,13 +260,8 @@ function registerToolService(): void {
     if (typeof candidate?.name !== 'string') {
       throw new Error('The tool call needs a name string.');
     }
-    const tool = createTools().find((descriptor) => descriptor.name === candidate.name);
-    if (!tool) {
-      throw new Error(`The tool "${candidate.name}" is unknown.`);
-    }
     const args = typeof candidate.args === 'object' && candidate.args ? (candidate.args as Record<string, unknown>) : {};
-    const source = typeof candidate.source === 'string' && candidate.source.length > 0 ? candidate.source : CHAT_AGENT_SOURCE;
-    return tool.handler(args, { principal: 'agent', source });
+    return runChatAgentTool(candidate.name, args, typeof candidate.source === 'string' ? candidate.source : null);
   });
   ipcMain.handle('nodewavenui:mcp:start', () => startMcpHostFromArguments());
   ipcMain.handle('nodewavenui:mcp:info', () => readMcpHostInfo());

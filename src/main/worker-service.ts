@@ -1,8 +1,9 @@
 /**
  * The worker link of the main process: it forks the background core for one workspace, feeds it
- * the start data, and relays the core requests of the renderers into it. The state changes of
- * the worker push over the workspace link, so the page sees the same lifecycle every surface
- * sees, and the log records of the worker land in the console hierarchy of the app.
+ * the start data, relays the core requests of the renderers into it, and answers the calls the
+ * core sends back for the services that stayed in main. The state changes of the worker push over
+ * the workspace link, so the page sees the same lifecycle every surface sees, and the log records
+ * of the worker land in the console hierarchy of the app.
  */
 
 import { app, ipcMain, utilityProcess, type UtilityProcess, type WebContents } from 'electron';
@@ -13,6 +14,7 @@ import { log } from './logger.js';
 import type { Logger } from '../shared/logging.js';
 import { EventLevels } from '../shared/logging.js';
 import { pushWorkspace, workspaceContents } from './workspace-link.js';
+import { serveWorkerCall } from './tool-runner.js';
 import {
   CORE_REQUEST_CHANNELS,
   WORKER_STORAGE_IDS,
@@ -128,9 +130,12 @@ export function startWorkspaceWorker(start: WorkerStart): void {
       pushWorkspace(message.event.channel, message.event.payload);
       return;
     }
-    if (message.kind === 'chatSend') {
-      // The remote chat send rides through the workspace page, which owns the chat engine today.
-      pushWorkspace('remote.chat.send', message.send);
+    if (message.kind === 'call') {
+      // The chat engine of the worker reaches the services that stayed in main: the window and
+      // command tools, and the MCP client. The answer travels back as one call reply.
+      void serveWorkerCall(message.call).then((reply) => {
+        send({ kind: 'callReply', reply });
+      });
     }
   });
   const instance = worker;

@@ -11,10 +11,11 @@ import type { McpEndpoint, McpEndpoints } from '../shared/mcp-endpoints.js';
 import { endpointLabelCollisions, sanitizeEndpointLabel } from '../shared/mcp-endpoints.js';
 import { PATH_RULE_MODES, type PathRule, type PathRuleMode } from '../shared/permissions.js';
 import type { ModelEntry, ProviderAccount, ProviderRegistry } from '../shared/workspace.js';
-import { emptyProviderRegistry } from '../shared/workspace.js';
+import { effectiveDefaultAccount, effectiveDefaultModel, emptyProviderRegistry, modelVision } from '../shared/workspace.js';
 import { PROVIDER_PRESETS } from '../shared/provider-presets/index.js';
 import { readBridge, type NodeWavenBridge } from '../shared/bridge.js';
-import { agentToolRule, type AgentTool } from './agent-tools.js';
+import type { CoreAgentToolInfo } from '../shared/core-api.js';
+import { agentToolRule } from '../shared/permissions.js';
 import type { McpClientSurface } from './mcp-client-adapter.js';
 import type { McpHostHandle } from '../shared/window-tools.js';
 import type { PermissionGate } from './permission-gate.js';
@@ -27,7 +28,7 @@ import {
   type SharedStoragesRecord,
   type StorageAccess,
   type SharedStorageEntry,
-} from './storage-shares.js';
+} from '../storage/share-registry.js';
 import { applyTheme, resolveThemeId, THEMES } from './theme.js';
 import { FRAME_MODES, resolveFrameMode } from './frame-mode.js';
 import { currentLanguage, LANGUAGES, LANGUAGE_MIRROR_KEY, translateMessage } from './locale/index.js';
@@ -51,38 +52,16 @@ function splitCommandLine(line: string): { readonly command: string; readonly ar
   return { command: pieces[0] ?? '', args: pieces.slice(1) };
 }
 
-/** The account the chats use: the chosen default, or the first one. */
-export function effectiveDefaultAccount(registry: ProviderRegistry): ProviderAccount | null {
-  return registry.accounts.find((account) => account.id === registry.defaultProviderId) ?? registry.accounts[0] ?? null;
-}
-
-/** The model the chats use: the chosen default when it belongs to the account, or the account's first. */
-export function effectiveDefaultModel(registry: ProviderRegistry, account: ProviderAccount): string | null {
-  const wanted = registry.defaultModel;
-  if (wanted && account.models.some((model) => model.id === wanted)) {
-    return wanted;
-  }
-  return account.models[0]?.id ?? null;
-}
-
-/** Reads the vision flag of one model of an account. An unknown model reads text only. */
-export function modelVision(account: ProviderAccount, modelId: string | null): boolean {
-  if (!modelId) {
-    return false;
-  }
-  return account.models.find((model) => model.id === modelId)?.vision ?? false;
-}
-
 /** The status-bar display name of one model: the id, plus the vision marker when the model sees images. */
 export function modelDisplayName(account: ProviderAccount, modelId: string): string {
   return modelVision(account, modelId) ? `${modelId} · vision` : modelId;
 }
 
 /** The services and callbacks the settings view works with. The chat reacts to registry changes,
- * and the agent tool listing reads the tool deps of the chat agent. */
+ * and the agent tool listing reads the tool list of the chat engine. */
 export interface SettingsViewDeps {
   onRegistryChange(): void;
-  listAgentTools(): readonly AgentTool[];
+  listAgentTools(): readonly CoreAgentToolInfo[];
 }
 
 /** Drives the settings pane of the workspace window. */

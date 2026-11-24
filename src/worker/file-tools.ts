@@ -1,8 +1,8 @@
 /**
  * The file tool set of the chat agent: `files` reads and discovers, and `write` proposes patches.
  * Reads answer from the file as this chat's pending patches leave it: the live text with the
- * rolling patch applied, so a write reads back as if it landed. Writes never touch the bridge
- * fs: every action builds one patch proposal in the patch store, and the user review owns the
+ * rolling patch applied, so a write reads back as if it landed. Writes never touch the fs of the
+ * worker: every action builds one patch proposal in the patch store, and the user review owns the
  * write. A later write builds on the same virtual view, so consecutive changes stack while the
  * review waits. The read-first gate refuses a write on an existing file the agent never read in
  * the same chat: it stops agent mistakes, and it never reaches the user. Reads and writes stay
@@ -14,10 +14,10 @@ import type { AgentTool, AgentToolOutput } from './agent-tools.js';
 import { patchCounts, patchWaitsForReview, type PatchRecord } from './patch-store.js';
 import { matchPathRule, type PathRule } from '../shared/permissions.js';
 import { isWorkspaceConfigPath } from '../shared/workspace.js';
-import { joinPath, listDirectoryNames, readTextFile, statPath } from './file-system.js';
-import { applyPatch } from './libs/diff/index.js';
+import { applyPatch } from 'diff';
+import { joinPath, listDirectoryNames, readTextFile, statPath } from './node-file-system.js';
 
-/** The patch store surface the file tools need, structural so the worker store and the page proxy both fit. */
+/** The patch store surface the file tools need: the store of the worker core. */
 export interface PatchProposeStore {
   propose(
     chatId: number,

@@ -2,7 +2,7 @@
  * The persisted storage sharing record of one workspace: which storages the chat agent may read.
  * The settings store reads and writes the record, so it lives with the storage layer, reachable
  * from the worker core and from the renderers. The registry that opens the shared storages sits
- * renderer-side (`src/renderer/storage-shares.ts`).
+ * beside this file (`src/storage/share-registry.ts`).
  */
 
 /** The access one shared storage grants the chat agent. */

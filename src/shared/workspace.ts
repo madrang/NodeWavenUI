@@ -175,6 +175,28 @@ export function emptyProviderRegistry(): ProviderRegistry {
   return { accounts: [], defaultProviderId: null, defaultModel: null };
 }
 
+/** The account the chats use: the chosen default, or the first one. */
+export function effectiveDefaultAccount(registry: ProviderRegistry): ProviderAccount | null {
+  return registry.accounts.find((account) => account.id === registry.defaultProviderId) ?? registry.accounts[0] ?? null;
+}
+
+/** The model the chats use: the chosen default when it belongs to the account, or the account's first. */
+export function effectiveDefaultModel(registry: ProviderRegistry, account: ProviderAccount): string | null {
+  const wanted = registry.defaultModel;
+  if (wanted && account.models.some((model) => model.id === wanted)) {
+    return wanted;
+  }
+  return account.models[0]?.id ?? null;
+}
+
+/** Reads the vision flag of one model of an account. An unknown model reads text only. */
+export function modelVision(account: ProviderAccount, modelId: string | null): boolean {
+  if (!modelId) {
+    return false;
+  }
+  return account.models.find((model) => model.id === modelId)?.vision ?? false;
+}
+
 /** Reads one stored model entry: the current object form, or a plain id string from before the vision flag. */
 function readModelEntry(value: unknown): ModelEntry | null {
   if (typeof value === 'string' && value.length > 0) {

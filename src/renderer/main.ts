@@ -1,16 +1,15 @@
 /**
  * Workspace window entry point.
  * The main process opens this page in its own window and delivers one handoff payload over the
- * bridge. The window builds the main app from the payload: it reopens the storage backend,
- * starts the chat context, and serves the permission checks and MCP traffic of the main
- * services.
+ * bridge. The window builds the main app from the payload: it opens the storage the worker core
+ * holds, starts the chat screen over the chats the core owns, and serves the frames the main
+ * services build.
  */
 
 import type { WorkspaceSettings } from '../shared/workspace.js';
 import { readBridge, type BridgeMcpSinkEvent } from '../shared/bridge.js';
 import type { StorageBackend } from '../storage/storage.js';
 import { requireElement } from './dom.js';
-import { ChatSessionStore } from './chat-sessions.js';
 import { MainApp } from './main-app.js';
 import { createMcpClientAdapter } from './mcp-client-adapter.js';
 import type { McpHostHandle } from '../shared/window-tools.js';
@@ -20,14 +19,14 @@ import { PermissionGate } from './permission-gate.js';
 import { PluginManager } from './plugins.js';
 import { registerBuiltinStorageSetups } from './storage-setups.js';
 import { registerBuiltinSystemPromptSetups } from './system-prompts.js';
-import { BUILT_IN_HARNESS_DOC_URIS, setPluginHarnessDocs } from './doc-resources.js';
+import { BUILT_IN_HARNESS_DOC_URIS, setPluginHarnessDocs } from '../shared/harness-docs.js';
 import { readAppRootPath } from './node-context.js';
 import { serveFrames } from './frames.js';
 import { log } from './logger.js';
 import { init as initLanguage, LANGUAGE_MIRROR_KEY, localizeHTML } from './locale/index.js';
 import { PluginFolderController, bridgePluginFolderFs } from './plugin-folders.js';
 import { openCoreStorage } from './remote-storage.js';
-import { StorageShareRegistry } from './storage-shares.js';
+import { StorageShareRegistry } from '../storage/share-registry.js';
 import { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import { initializeTheme } from './theme.js';
 import { rememberMainWindowGeometry, restoreMainWindowGeometry } from './window-geometry.js';
@@ -116,6 +115,8 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   // The plugin documents join the harness list only while their plugin loaded, so a removed
   // plugin folder leaves no dangling resource behind.
   setPluginHarnessDocs(plugins.listHarnessDocs());
+  // The chats live in the worker core: its engine runs the turns, and the app screen renders the
+  // state it pushes.
   const app = new MainApp(
     settings,
     store,
@@ -126,7 +127,6 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
     directory.path,
     storageShares,
     plugins.listStorageSetups(),
-    new ChatSessionStore(),
     plugins.listSystemPromptSetups(),
     pluginFolders,
   );
@@ -165,13 +165,6 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   // Every MCP session and tool call of the host lands in the host tab.
   bridge.workspace.onWorkspaceEvent('mcp.sink', (payload) => {
     dispatchSinkEvent(app, payload as BridgeMcpSinkEvent);
-  });
-  // A remote send from the phone lands in its chat through the same deliver path as the composer.
-  bridge.workspace.onWorkspaceEvent('remote.chat.send', (payload) => {
-    const send = payload as { fileId?: unknown; text?: unknown } | null;
-    if (typeof send?.text === 'string') {
-      app.remoteDeliver(typeof send.fileId === 'string' ? send.fileId : null, send.text);
-    }
   });
   // The MCP host starts once this storage is open. The handle carries the endpoint for the settings pane.
   const endpoint = await bridge.workspace.startMcpHost();
