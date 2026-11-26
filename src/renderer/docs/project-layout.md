@@ -12,7 +12,8 @@ src/
     window-tools.ts  the page tool definitions the MCP host and the chat agent share
     core-api.ts      the background core contract: request channels, events, chat wire shapes, worker-to-main calls
     harness-docs.ts  the harness document table and readers (the pages fetch a document, the worker reads it from disk)
-    system-prompts.ts the built-in system prompt sources, shared by the chat menu and the chat engine
+    system-prompts.ts the system prompt sources and the menu helpers: the built-in sources, the prompt files of the instructions folder, the selector slots
+    workspace-migration.ts the version compare of the workspace data migration: each step range against the loaded version and the running version
     node-access.ts   the page-context require wrapper (plugin and crypto loaders)
     records.ts       record guards for untyped boundary values (isRecord, asRecord)
   renderer/        UI code (DOM context)
@@ -29,7 +30,7 @@ src/
     index.ts               launcher window: folder selection, unlock, wizard
     main-window.ts         opens the workspace window with the stored frame mode
     main-handoff.ts        the startup payload the launcher hands to the workspace window
-    main.ts                workspace window boot: storage, the bridge routes, the MCP host start
+    main.ts                workspace window boot: storage, the data version stamp of the marker once the core is ready, the bridge routes, the MCP host start
     frame-mode.ts          the system-border / borderless registry
     theme.ts               theme discovery (built-in and app-root themes/ folders); mirrors the applied id for app pages
     graphs.ts              the Graphs window page and the nodewavenGraphs page global
@@ -42,14 +43,14 @@ src/
     chat-render.ts         the chat model and the message list: bubbles, tool cards, agent turn rails
     permission-gate.ts     the gate client of the page over the core permission channels
     chat-sessions.ts       the entry and session types the views read; the sessions persist in the worker core
-    system-prompts.ts      registers the built-in system prompt sources of the chat menu (AGENTS.md harness plus workspace, none)
+    system-prompts.ts      registers the built-in sources of the chat menu, and lists the prompt files of the instructions folder
     plugin-folders.ts      the plugins/ folder scan, the manifest guard, the SHA-256 integrity gate, and the settings controller
     frames.ts              the embedded frame tiling manager: iframe and webview panels beside the panes, with their title bars and the webview share switch
     storage-setups.ts      the built-in storage setups for the wizard dropdown
     storage-migration.ts   moves legacy backends forward
     workspace-picker.ts    directory selection through the native dialog of the main process
     workspace-files.ts     folder inspection and the workspace marker
-    workspace-migration.ts versioned workspace data migration
+    workspace-migration.ts launcher stage of the workspace data migration, at workspace open: the step from 0.3 to 0.4 moves AGENTS.md into instructions/
     window-geometry.ts     remembers the workspace window placement
     plugin-fields.ts       renders plugin UI definitions (fields as data)
     plugins.ts             plugin manager: user-loaded providers and storage backends
@@ -87,8 +88,9 @@ src/
     patch-store.ts        the patch records and the tasks that group them
     task-store.ts         the dispatchable task records
     chat-sessions.ts      the chat session files, sealed with a storage-held chat key on password workspaces
+    workspace-migration.ts core stage of the workspace data migration, at core boot before the first session read: the step from 0.4 to 0.5 rewrites the bound prompt of the session files
     remote-server.ts      the remote control server of the phone page
-    system-prompts.ts     the system prompt sources of the engine, read through the worker fs
+    system-prompts.ts     the built-in sources of the engine, and the lister of the prompt files of the instructions folder
     node-file-system.ts   shared filesystem access over node:fs
     node-fs.ts            the fs slice of the JSON file backend in the worker
     logger.ts             the worker logging bootstrap, forwarding to the main process

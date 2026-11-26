@@ -136,7 +136,7 @@ function startHeadless(): void {
   }
   const marker =
     typeof parsed === 'object' && parsed ?
-      (parsed as { name?: unknown; storageId?: unknown; storageConfig?: unknown }) :
+      (parsed as { name?: unknown; storageId?: unknown; storageConfig?: unknown; version?: unknown }) :
       null;
   // Only the plain JSON setup opens without a surface: a password needs an unlock, and the
   // legacy IndexedDB setups die with the renderer profile they lived in.
@@ -160,6 +160,9 @@ function startHeadless(): void {
     storageConfig: marker.storageConfig,
     password: null,
     appRoot: APP_ROOT,
+    // The headless start reads the marker itself, so it hands the core the exact version the marker holds.
+    dataVersion: typeof marker.version === 'string' ? marker.version : undefined,
+    appVersion: app.getVersion(),
   });
 }
 

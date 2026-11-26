@@ -304,13 +304,16 @@ li:focus-within > .message-actions {
 }
 
 /* The source menu before the first send: centered and accented, so the choice leads the window.
-   The auto margins center it in the empty list, mid-window between the tabs and the input. */
+   The auto margins center it in the empty list, mid-window between the tabs and the input. The label
+   and the selectors flow on wrapped lines, centered per line, so more selectors fit the card. */
 .system-prompt-item.system-prompt-menu {
   align-self: center;
   max-width: 90%;
   margin-top: auto;
   margin-bottom: auto;
-  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 10px;
   padding: 10px 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
   background: color-mix(in srgb, var(--accent) 8%, var(--surface));

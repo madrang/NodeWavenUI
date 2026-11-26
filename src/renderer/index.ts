@@ -83,9 +83,16 @@ const unlockForm = requireElement<HTMLFormElement>('#unlock-form');
 const unlockPassword = requireElement<HTMLInputElement>('#unlock-password');
 
 /** The workspace folder and settings that wait for the password unlock. */
-const pendingUnlock: { directory: WorkspaceDirectory | null; settings: WorkspaceSettings | null } = {
+const pendingUnlock: {
+  directory: WorkspaceDirectory | null;
+  settings: WorkspaceSettings | null;
+  dataVersion: string | undefined;
+  stampVersion: string | undefined;
+} = {
   directory: null,
   settings: null,
+  dataVersion: undefined,
+  stampVersion: undefined,
 };
 
 /** The plugin registry of the app, seeded with the built-in storage setups. */
@@ -138,12 +145,18 @@ function showLauncherStatus(message: string | null): void {
 /**
  * Opens the workspace window with the workspace data, then closes the launcher window.
  * The stored frame mode decides the window chrome. A failed launch shows its message on the launcher.
+ *
+ * @param dataVersion The exact workspace data version the launcher read in the marker at start.
+ * @param stampVersion The version the workspace page writes into the marker once the core reports
+ * ready. Undefined when nothing is to be written.
  */
 async function launchWorkspaceWindow(
   directory: WorkspaceDirectory,
   settings: WorkspaceSettings,
   store: WorkspaceSettingsStore,
   password: string | null,
+  dataVersion: string | undefined,
+  stampVersion: string | undefined,
 ): Promise<void> {
   selectButton.disabled = true;
   let storedFrameMode: string | null = null;
@@ -154,7 +167,14 @@ async function launchWorkspaceWindow(
     console.warn(`[NodeWavenUI] the stored window frame could not be read, the default applies: ${message}`);
   }
   try {
-    await launchMainWindow({ directory, settings, password, frameMode: resolveFrameMode(storedFrameMode) });
+    await launchMainWindow({
+      directory,
+      settings,
+      password,
+      frameMode: resolveFrameMode(storedFrameMode),
+      dataVersion,
+      stampVersion,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     showLauncherStatus(message);
@@ -180,7 +200,15 @@ function finishWizard(
       { directoryPath: directory.path, config: settings.storageConfig, password } :
       { directoryPath: directory.path, config: settings.storageConfig },
   );
-  void launchWorkspaceWindow(directory, settings, new WorkspaceSettingsStore(backend), password);
+  // The wizard wrote its marker with the running version, so the page stamps nothing.
+  void launchWorkspaceWindow(
+    directory,
+    settings,
+    new WorkspaceSettingsStore(backend),
+    password,
+    settings.version,
+    undefined,
+  );
 }
 
 /** Returns to the launcher for a new folder selection. */
@@ -194,11 +222,16 @@ async function openExistingWorkspace(
   rawSettings: WorkspaceSettings,
 ): Promise<void> {
   let settings = rawSettings;
+  // The core stage of the migration compares the exact version the marker carried at load.
+  let dataVersion = rawSettings.version;
+  // A failed launcher stage stamps nothing: the marker keeps its version, and the step runs again at
+  // the next open.
+  let stampVersion: string | undefined;
   try {
     const migrated = await migrateWorkspaceData(directory.path, rawSettings);
-    if (migrated) {
-      settings = migrated;
-    }
+    settings = migrated.settings;
+    dataVersion = migrated.loadedVersion;
+    stampVersion = migrated.stampVersion;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`[NodeWavenUI] the workspace data migration did not complete: ${message}`);
@@ -212,7 +245,14 @@ async function openExistingWorkspace(
     const backend = setup.open({ directoryPath: directory.path, config: settings.storageConfig });
     const migrated = await migrateLegacyStorage(directory.path, settings, backend, null);
     if (migrated) {
-      void launchWorkspaceWindow(directory, migrated.settings, new WorkspaceSettingsStore(migrated.backend), null);
+      void launchWorkspaceWindow(
+        directory,
+        migrated.settings,
+        new WorkspaceSettingsStore(migrated.backend),
+        null,
+        dataVersion,
+        stampVersion,
+      );
       return;
     }
     if (isLegacyStorageId(settings.storageId)) {
@@ -221,11 +261,20 @@ async function openExistingWorkspace(
       );
       return;
     }
-    void launchWorkspaceWindow(directory, settings, new WorkspaceSettingsStore(backend), null);
+    void launchWorkspaceWindow(
+      directory,
+      settings,
+      new WorkspaceSettingsStore(backend),
+      null,
+      dataVersion,
+      stampVersion,
+    );
     return;
   }
   pendingUnlock.directory = directory;
   pendingUnlock.settings = settings;
+  pendingUnlock.dataVersion = dataVersion;
+  pendingUnlock.stampVersion = stampVersion;
   showLauncherStatus('Enter the workspace password.');
   unlockForm.hidden = false;
   unlockPassword.value = '';
@@ -282,6 +331,8 @@ unlockForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const directory = pendingUnlock.directory;
   const settings = pendingUnlock.settings;
+  const dataVersion = pendingUnlock.dataVersion;
+  const stampVersion = pendingUnlock.stampVersion;
   if (!directory || !settings) {
     return;
   }
@@ -310,6 +361,8 @@ unlockForm.addEventListener('submit', async (event) => {
         migrated.settings,
         new WorkspaceSettingsStore(migrated.backend),
         unlockPassword.value,
+        dataVersion,
+        stampVersion,
       );
       return;
     }
@@ -320,7 +373,7 @@ unlockForm.addEventListener('submit', async (event) => {
       );
       return;
     }
-    await launchWorkspaceWindow(directory, settings, store, unlockPassword.value);
+    await launchWorkspaceWindow(directory, settings, store, unlockPassword.value, dataVersion, stampVersion);
   } catch (error) {
     unlockPassword.disabled = false;
     showLauncherStatus(error instanceof Error ? error.message : String(error));

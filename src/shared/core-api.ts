@@ -9,6 +9,7 @@ import { isRecord } from './records.js';
 import type { BridgePermissionCheck, ChatImageShape } from './bridge.js';
 import { isPermissionRule, type PermissionRule } from './permissions.js';
 import { isTaskStatus, type TaskRecord, type TaskStatus } from './tasks.js';
+import { readSystemPromptIds } from './system-prompts.js';
 
 /** One request a surface sends to the core. The id ties the reply to the request. */
 export interface CoreRequest {
@@ -137,6 +138,11 @@ export interface WorkerStart {
   readonly password: string | null;
   /** The absolute path of the app root, for the static assets the remote server serves. */
   readonly appRoot: string;
+  /** The exact workspace data version the launcher read in the marker at start. Undefined when the
+   * marker carried none. The format migration of the core compares this version. */
+  readonly dataVersion: string | undefined;
+  /** The version of the running app, for the format migration of the core. */
+  readonly appVersion: string;
 }
 
 /** What the main process sends to the worker. */
@@ -200,6 +206,8 @@ export function readWorkerStart(value: unknown): WorkerStart | null {
     storageConfig: value.storageConfig,
     password,
     appRoot,
+    dataVersion: typeof value.dataVersion === 'string' ? value.dataVersion : undefined,
+    appVersion: typeof value.appVersion === 'string' ? value.appVersion : '',
   };
 }
 
@@ -307,7 +315,7 @@ export interface CoreChatSession {
   readonly boundModel?: string;
   readonly contextTokens?: number;
   readonly outputTokens?: number;
-  readonly systemPrompt?: { readonly sourceId: string; readonly title: string; readonly text: string };
+  readonly systemPrompt?: CoreSystemPrompt;
   readonly thinkingLevel?: CoreThinkingLevel;
 }
 
@@ -316,7 +324,8 @@ export type CoreThinkingLevel = 'low' | 'medium' | 'high';
 
 /** One system prompt a chat bound on its first send. */
 export interface CoreSystemPrompt {
-  readonly sourceId: string;
+  /** The ids of the sources that built the prompt, in concatenation order. Empty for the none prompt. */
+  readonly sourceIds: readonly string[];
   readonly title: string;
   readonly text: string;
 }
@@ -405,7 +414,8 @@ export type CoreChatEvent =
 export interface CoreChatPicks {
   readonly providerId?: string;
   readonly model?: string;
-  readonly systemPromptId?: string;
+  /** The system prompt sources the menu holds, in concatenation order. An empty list binds the none prompt. */
+  readonly systemPromptIds?: readonly string[];
 }
 
 /** One provider account as a surface lists it for a first send. No key and no address ride along. */
@@ -619,11 +629,12 @@ function readChatImages(value: unknown): readonly ChatImageShape[] | null {
 function readChatPicks(value: Record<string, unknown>): CoreChatPicks {
   const providerId = typeof value.providerId === 'string' ? value.providerId : undefined;
   const model = typeof value.model === 'string' ? value.model : undefined;
-  const systemPromptId = typeof value.systemPromptId === 'string' ? value.systemPromptId : undefined;
+  // An empty list is the none pick. A list that holds no string, or a value of another shape, stays out.
+  const systemPromptIds = readSystemPromptIds(value.systemPromptIds);
   return {
     ...(providerId ? { providerId } : {}),
     ...(model ? { model } : {}),
-    ...(systemPromptId ? { systemPromptId } : {}),
+    ...(systemPromptIds ? { systemPromptIds } : {}),
   };
 }
 

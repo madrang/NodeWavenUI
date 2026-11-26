@@ -35,6 +35,15 @@ const FILE_SUITE = 'aes-gcm+pbkdf2' as const;
 /** The session ids the file names accept: letters, digits, and dashes, so no path escapes the folder. */
 const SESSION_ID_PATTERN = /^[A-Za-z0-9-]+$/;
 
+/** Reads the session id of one file name of the chats folder. Empty when the name is no session file. */
+function sessionIdOf(fileName: string): string {
+  const id = fileName.endsWith('.json') ? fileName.slice(0, -'.json'.length) : '';
+  return SESSION_ID_PATTERN.test(id) ? id : '';
+}
+
+/** One parsed session file, whatever shape its record carries. The id is the file name. */
+type SessionRecord = { readonly id: string } & Record<string, unknown>;
+
 /** The roles one stored entry may carry. */
 const CHAT_ENTRY_ROLES = ['user', 'assistant', 'notice', 'error', 'tool'] as const;
 
@@ -62,9 +71,9 @@ export interface ChatEntry {
 
 /** The system prompt a chat bound on its first send. */
 export interface StoredSystemPrompt {
-  /** The id of the source that built the prompt. */
-  readonly sourceId: string;
-  /** The label of the source at bind time. It titles the collapsed prompt. */
+  /** The ids of the sources that built the prompt, in concatenation order. Empty for the none prompt. */
+  readonly sourceIds: readonly string[];
+  /** The labels of the sources at bind time, joined with " + ". It titles the collapsed prompt. */
   readonly title: string;
   /** The prompt text the chat sent. It stays for the life of the chat. */
   readonly text: string;
@@ -181,15 +190,16 @@ function readStoredSystemPrompt(value: unknown): StoredSystemPrompt | null {
     return null;
   }
   const candidate = value as Record<string, unknown>;
+  const sourceIds = candidate.sourceIds;
   if (
-    typeof candidate.sourceId !== 'string' ||
-    candidate.sourceId.length === 0 ||
+    !Array.isArray(sourceIds) ||
+    sourceIds.some((id) => typeof id !== 'string' || id.length === 0) ||
     typeof candidate.title !== 'string' ||
     typeof candidate.text !== 'string'
   ) {
     return null;
   }
-  return { sourceId: candidate.sourceId, title: candidate.title, text: candidate.text };
+  return { sourceIds: sourceIds as readonly string[], title: candidate.title, text: candidate.text };
 }
 
 /**
@@ -356,31 +366,11 @@ export class ChatSessionStore {
     }
     const sessions: StoredChatSession[] = [];
     for (const name of names) {
-      const id = name.endsWith('.json') ? name.slice(0, -'.json'.length) : '';
-      if (!SESSION_ID_PATTERN.test(id)) {
+      const id = sessionIdOf(name);
+      if (!id) {
         continue;
       }
-      const text = await readTextFile(joinPath(this.chatsPath, name));
-      // eslint-disable-next-line local/prefer-truthiness -- an empty session file is present but invalid, it must reach the shape warning
-      if (text === null) {
-        log.worker.warning(`the chat session file "${name}" could not be read. It is ignored.`);
-        continue;
-      }
-      let plain: string;
-      if (this.fileKey) {
-        try {
-          plain = await openRecord(FILE_SUITE, this.fileKey, name, text);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          log.worker.warning(`the chat session file "${name}" could not be opened. It is ignored: ${message}`);
-          continue;
-        }
-      } else {
-        plain = text;
-      }
-      // The file name is the session id, so a renamed or copied record cannot move a session elsewhere.
-      const parsed = safeParse(plain);
-      const session = readStoredChatSession(typeof parsed === 'object' && parsed ? { ...parsed, id } : null);
+      const session = readStoredChatSession(await this.readRecord(name, id));
       if (!session) {
         log.worker.warning(`the chat session file "${name}" carries an invalid shape. It is ignored.`);
         continue;
@@ -389,6 +379,57 @@ export class ChatSessionStore {
     }
     sessions.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
     return sessions;
+  }
+
+  /**
+   * Applies one upgrade to every session file and writes back each record the upgrade changes. The
+   * format migration of the core calls this once at boot, before the first session load: it reaches the
+   * records of every earlier shape, which the session reader refuses. A record that fails to write
+   * throws, so the step stops there.
+   *
+   * @param upgrade Changes one parsed record in place. True when the record changed.
+   */
+  async upgradeSessionRecords(upgrade: (record: Record<string, unknown>) => boolean): Promise<void> {
+    const names = await listDirectoryNames(this.chatsPath);
+    if (!names) {
+      return;
+    }
+    for (const name of names) {
+      const id = sessionIdOf(name);
+      if (!id) {
+        continue;
+      }
+      const record = await this.readRecord(name, id);
+      if (record && upgrade(record)) {
+        await this.writeSession(record);
+      }
+    }
+  }
+
+  /** Opens one session file to its parsed record. Null when the file fails to read, open, or parse.
+   * A failed read or open logs a warning. The record carries the id of its file name, so a renamed or
+   * copied record cannot move a session elsewhere. */
+  private async readRecord(name: string, id: string): Promise<SessionRecord | null> {
+    const text = await readTextFile(joinPath(this.chatsPath, name));
+    // eslint-disable-next-line local/prefer-truthiness -- an empty session file is present but invalid, it must reach the read warning
+    if (text === null) {
+      log.worker.warning(`the chat session file "${name}" could not be read. It is ignored.`);
+      return null;
+    }
+    let plain: string;
+    if (this.fileKey) {
+      try {
+        plain = await openRecord(FILE_SUITE, this.fileKey, name, text);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.worker.warning(`the chat session file "${name}" could not be opened. It is ignored: ${message}`);
+        return null;
+      }
+    } else {
+      plain = text;
+    }
+    const parsed = safeParse(plain);
+    return typeof parsed === 'object' && parsed ? { ...parsed, id } : null;
   }
 
   /**
@@ -415,8 +456,8 @@ export class ChatSessionStore {
     });
   }
 
-  /** Writes one session file, plain or sealed with the chat key. */
-  private async writeSession(session: StoredChatSession): Promise<void> {
+  /** Writes one session file from its parsed record, plain or sealed with the chat key. */
+  private async writeSession(session: { readonly id: string }): Promise<void> {
     // An encrypted workspace without its key writes nothing: a plain file would leak the conversation.
     if (this.encrypted && !this.fileKey) {
       return;

@@ -14,7 +14,8 @@ export type ChatEntry = CoreChatEntry;
 
 /** The system prompt a chat bound on its first send. */
 export interface StoredSystemPrompt {
-  readonly sourceId: string;
+  /** The ids of the sources that built the prompt, in concatenation order. Empty for the none prompt. */
+  readonly sourceIds: readonly string[];
   readonly title: string;
   readonly text: string;
 }

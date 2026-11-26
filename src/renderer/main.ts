@@ -31,6 +31,7 @@ import { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import { initializeTheme } from './theme.js';
 import { rememberMainWindowGeometry, restoreMainWindowGeometry } from './window-geometry.js';
 import { forceCloseWindow, onWindowEvent, resizeWindowResizable } from './window-ops.js';
+import { writeWorkspaceMarker } from './workspace-files.js';
 import { mountChatView } from './views/chat/view.js';
 import { mountSettingsView } from './views/settings/view.js';
 
@@ -46,6 +47,26 @@ registerBuiltinSystemPromptSetups(plugins);
 /** Reads the display label of the storage a workspace uses. */
 function storageLabelFor(settings: WorkspaceSettings): string {
   return plugins.getStorageSetup(settings.storageId)?.label ?? settings.storageId;
+}
+
+/**
+ * Stamps the workspace marker with the version the launcher stage chose. The core reported ready, so
+ * every step of the data format migration ran. A failed write logs a warning, and the workspace opens:
+ * the marker then keeps its loaded version, and the steps run again at the next open.
+ *
+ * @param payload The handoff payload from the launcher.
+ */
+async function stampWorkspaceMarker(payload: MainHandoffPayload): Promise<void> {
+  if (!payload.stampVersion) {
+    return;
+  }
+  const writeError = await writeWorkspaceMarker(payload.directory.path, {
+    ...payload.settings,
+    version: payload.stampVersion,
+  });
+  if (writeError) {
+    log.main.warning(`the migrated marker could not be written: ${writeError}`);
+  }
 }
 
 /**
@@ -93,6 +114,9 @@ async function startWorkspaceApp(payload: MainHandoffPayload): Promise<void> {
   // The storage of the workspace lives in the background core: the worker opens the settings
   // file while this window loads, and the page waits for its state before it reads anything.
   const backend: StorageBackend = await openCoreStorage(bridge);
+  // The core reported ready, so every step of the data format migration ran. The marker takes the
+  // running version now: until then it held the version it loaded with.
+  await stampWorkspaceMarker(payload);
   const store = new WorkspaceSettingsStore(backend);
   // The gate state lives in the worker core too: this proxy carries the checks of the file tools
   // and the agent tools into it, and the cards render from its pushed state.

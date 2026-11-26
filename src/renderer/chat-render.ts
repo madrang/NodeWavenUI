@@ -26,6 +26,7 @@ import {
 } from './chat-cards/render.js';
 import { renderMarkdown } from './text/render.js';
 import { NONE_SYSTEM_PROMPT_SETUP_ID } from './system-prompts.js';
+import { resolvePromptSelectors, withPromptSelectorChange } from '../shared/system-prompts.js';
 import type { TaskRecord } from '../shared/tasks.js';
 import { translateMessage } from './locale/index.js';
 
@@ -63,8 +64,8 @@ export interface Chat {
   readonly isMcpHostLog?: boolean;
   /** True while the tab sits in the background and took traffic the user has not seen. */
   unread?: boolean;
-  /** The system prompt source the menu holds while the chat has sent no message. */
-  pendingSystemPromptId?: string;
+  /** The system prompt sources the menu holds while the chat has sent no message, in concatenation order. */
+  pendingSystemPromptIds?: readonly string[];
   /** The system prompt the chat bound on its first send. It stays for the life of the chat. */
   boundSystemPrompt?: StoredSystemPrompt;
   /** The provider selection the status bar holds while the chat has sent no message. */
@@ -104,10 +105,12 @@ export interface ChatRendererContext {
   editing(): ChatEditState | null;
   /** Replaces the one open message editor. */
   setEditing(editing: ChatEditState | null): void;
-  /** The registered system prompt sources, for the chat menu. */
-  readonly promptSources: readonly SystemPromptSetup[];
-  /** The source id the chat menu holds: the pending selection, or the default of the workspace. */
-  selectedSystemPromptId(chat: Chat): string;
+  /** The system prompt sources of the chat menu, in menu order: the registered ones, then the prompt
+   * files of the instructions folder. */
+  promptSources(): readonly SystemPromptSetup[];
+  /** The source ids the chat menu holds, in concatenation order: the pending selection, or the default
+   * of the workspace. */
+  selectedSystemPromptIds(chat: Chat): readonly string[];
   /** True when the chat already carries a sent message, so its system prompt window has passed. */
   chatHasConversation(chat: Chat): boolean;
   /** Reads the draft task one chat waits for, or null. The first send of that chat dispatches the task. */
@@ -525,12 +528,12 @@ export class ChatRenderer {
    * sent message, the collapsed bound prompt after it. The none source and the host tab render nothing.
    * A chat that predates the prompt, or carries messages without one, renders nothing: its window passed. */
   private appendSystemPromptItem(chat: Chat, promptOpen: boolean): void {
-    if (chat.isMcpHostLog || this.context.promptSources.length === 0) {
+    if (chat.isMcpHostLog || this.context.promptSources().length === 0) {
       return;
     }
     const bound = chat.boundSystemPrompt;
     if (bound) {
-      if (bound.sourceId === NONE_SYSTEM_PROMPT_SETUP_ID || bound.text.length === 0) {
+      if (bound.sourceIds.length === 0 || bound.text.length === 0) {
         return;
       }
       const item = document.createElement('li');
@@ -555,29 +558,59 @@ export class ChatRenderer {
     if (this.context.chatHasConversation(chat)) {
       return;
     }
-    const selected = this.context.selectedSystemPromptId(chat);
+    // The id of the none option is no entry: a registered source of that id lists as none.
+    const sources = this.context.promptSources().filter((source) => source.id !== NONE_SYSTEM_PROMPT_SETUP_ID);
+    if (sources.length === 0) {
+      return;
+    }
     const item = document.createElement('li');
     // The menu variant carries its own emphasis: centered and accented before the first send.
     item.className = 'system-prompt-item system-prompt-menu';
     const label = document.createElement('span');
     label.className = 'system-prompt-menu-label';
     label.textContent = 'System prompt';
-    const select = document.createElement('select');
-    select.className = 'system-prompt-select';
-    select.title = 'The system prompt of the first message. The chat keeps it after the send.';
-    for (const source of this.context.promptSources) {
-      const option = document.createElement('option');
-      option.value = source.id;
-      option.textContent = source.label;
-      select.append(option);
-    }
-    select.value = this.context.promptSources.some((source) => source.id === selected) ?
-      selected :
-      (this.context.promptSources[0]?.id ?? '');
-    select.addEventListener('change', () => {
-      chat.pendingSystemPromptId = select.value;
-    });
-    item.append(label, select);
+    item.append(label);
+    // The selectors rebuild on every change: a source picked adds the selector of the next slot, and
+    // none ends the selection at its slot. The slot of the select the user worked takes the focus back.
+    const fill = (focused?: HTMLSelectElement): void => {
+      const { slots } = resolvePromptSelectors(sources, this.context.selectedSystemPromptIds(chat));
+      item.querySelectorAll('.system-prompt-select').forEach((select) => {
+        select.remove();
+      });
+      item.append(
+        ...slots.map(({ slot, selectedId, choices }) => {
+          const select = document.createElement('select');
+          select.className = 'system-prompt-select';
+          select.dataset.slot = String(slot);
+          select.title = 'The system prompt of the first message. The chat keeps it after the send.';
+          for (const source of choices) {
+            const option = document.createElement('option');
+            option.value = source.id;
+            option.textContent = source.label;
+            select.append(option);
+          }
+          const none = document.createElement('option');
+          none.value = NONE_SYSTEM_PROMPT_SETUP_ID;
+          none.textContent = 'None';
+          select.append(none);
+          select.value = selectedId ?? NONE_SYSTEM_PROMPT_SETUP_ID;
+          select.addEventListener('change', () => {
+            const held = resolvePromptSelectors(sources, this.context.selectedSystemPromptIds(chat));
+            chat.pendingSystemPromptIds = withPromptSelectorChange(
+              held.selected,
+              slot,
+              select.value === NONE_SYSTEM_PROMPT_SETUP_ID ? null : select.value,
+            );
+            fill(select);
+          });
+          return select;
+        }),
+      );
+      if (focused) {
+        item.querySelector<HTMLElement>(`.system-prompt-select[data-slot="${focused.dataset.slot}"]`)?.focus();
+      }
+    };
+    fill();
     this.chatMessages.append(item);
   }
 

@@ -34,7 +34,7 @@ describe('the chat session reader', () => {
         boundModel: 'gpt-test',
         contextTokens: 120,
         outputTokens: 340,
-        systemPrompt: { sourceId: 'agents-md', title: 'AGENTS.md', text: 'Be terse.' },
+        systemPrompt: { sourceIds: ['agents-md'], title: 'AGENTS.md', text: 'Be terse.' },
       }),
     );
     expect(read).to.not.equal(null);
@@ -42,7 +42,7 @@ describe('the chat session reader', () => {
     expect(read?.boundModel).to.equal('gpt-test');
     expect(read?.contextTokens).to.equal(120);
     expect(read?.outputTokens).to.equal(340);
-    expect(read?.systemPrompt).to.deep.equal({ sourceId: 'agents-md', title: 'AGENTS.md', text: 'Be terse.' });
+    expect(read?.systemPrompt).to.deep.equal({ sourceIds: ['agents-md'], title: 'AGENTS.md', text: 'Be terse.' });
   });
 
   it('reads every entry role and drops unknown fields', () => {
@@ -90,7 +90,26 @@ describe('the chat session reader', () => {
   it('reads null for damaged optionals, including the system prompt', () => {
     expect(readStoredChatSession(session({ contextTokens: '120' }))).to.equal(null);
     expect(readStoredChatSession(session({ boundModel: null }))).to.equal(null);
-    expect(readStoredChatSession(session({ systemPrompt: { sourceId: 'agents-md', title: 'AGENTS.md' } }))).to.equal(null);
-    expect(readStoredChatSession(session({ systemPrompt: { sourceId: '', title: 'x', text: '' } }))).to.equal(null);
+    expect(readStoredChatSession(session({ systemPrompt: { sourceIds: ['agents-md'], title: 'AGENTS.md' } }))).to.equal(null);
+    expect(readStoredChatSession(session({ systemPrompt: { sourceIds: [''], title: 'x', text: '' } }))).to.equal(null);
+  });
+
+  it('reads the source list of a prompt, empty for the none prompt', () => {
+    const many = { sourceIds: ['skills', 'rules'], title: 'Skills + Rules', text: 'Use the read tool.\n\nBe terse.' };
+    expect(readStoredChatSession(session({ systemPrompt: many }))?.systemPrompt).to.deep.equal(many);
+    const none = { sourceIds: [], title: 'No system prompt', text: '' };
+    expect(readStoredChatSession(session({ systemPrompt: none }))?.systemPrompt).to.deep.equal(none);
+  });
+
+  it('reads null for a damaged source list', () => {
+    expect(readStoredChatSession(session({ systemPrompt: { sourceIds: 'rules', title: 'Rules', text: 'a' } }))).to.equal(null);
+    expect(readStoredChatSession(session({ systemPrompt: { sourceIds: ['skills', 2], title: 'Rules', text: 'a' } }))).to.equal(null);
+  });
+
+  it('reads null for a prompt of an earlier version, which names one source id', () => {
+    // The format migration of the core upgrades such a record before any session loads.
+    expect(
+      readStoredChatSession(session({ systemPrompt: { sourceId: 'agents-md', title: 'AGENTS.md', text: 'Be terse.' } })),
+    ).to.equal(null);
   });
 });

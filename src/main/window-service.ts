@@ -229,6 +229,7 @@ export function registerWindowService(): void {
       directory: { path: string };
       settings?: { name?: unknown; storageId?: unknown; storageConfig?: unknown };
       password?: unknown;
+      dataVersion?: unknown;
     };
     startWorkspaceWorker({
       directoryPath: launch.directory.path,
@@ -237,6 +238,8 @@ export function registerWindowService(): void {
       storageConfig: launch.settings?.storageConfig,
       password: typeof launch.password === 'string' ? launch.password : null,
       appRoot: APP_ROOT,
+      dataVersion: typeof launch.dataVersion === 'string' ? launch.dataVersion : undefined,
+      appVersion: app.getVersion(),
     });
     // The workspace window closes only after every child closed: a surviving child would hold
     // the process alive and stall the launch loop. The close event is held once for the drain,

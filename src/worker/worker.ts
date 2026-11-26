@@ -22,7 +22,8 @@ import { PatchStore } from './patch-store.js';
 import { TaskStore } from './task-store.js';
 import { ChatSessionStore } from './chat-sessions.js';
 import { ChatEngine, type EngineMainCalls } from './chat-engine.js';
-import { workerSystemPromptSources } from './system-prompts.js';
+import { workerPromptFileLister, workerSystemPromptSources } from './system-prompts.js';
+import { migrateCoreWorkspaceData } from './workspace-migration.js';
 import { readTextFile } from './node-file-system.js';
 import { RemoteServer, type RemoteChatSession } from './remote-server.js';
 import type { RemoteServerConfig } from '../storage/settings-store.js';
@@ -280,6 +281,10 @@ async function openStorage(start: WorkerStart): Promise<void> {
     start.storageId === 'json-password',
   );
   await chatSessions.init();
+  // The format steps of the core run before the first session read: they reach the records of every
+  // earlier shape, which the session reader refuses. A failed step aborts the open. The marker keeps
+  // the version it held at load until this core reports ready, so every step runs again at the next open.
+  await migrateCoreWorkspaceData(start.dataVersion, start.appVersion, { chatSessions });
   // The harness documents ship with the renderer build. The worker holds no page origin to fetch
   // them from, so the read tool and the system prompt source read them from disk.
   const docsRoot = join(start.appRoot, 'dist', 'renderer');
@@ -310,6 +315,7 @@ async function openStorage(start: WorkerStart): Promise<void> {
     settings: settingsStore,
     storageShares,
     promptSources: workerSystemPromptSources(),
+    listPromptFiles: workerPromptFileLister(start.directoryPath),
     main: mainCallsSurface,
     createProvider: OpenAiInferenceProvider,
     emit: (event) => {

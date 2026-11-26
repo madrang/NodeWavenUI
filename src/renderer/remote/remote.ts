@@ -8,8 +8,8 @@
  * shows the reasoning and the tool calls like the workspace chat.
  * The tabs sit under the top bar, and both leave while a tab scrolls down.
  * A chat that sent nothing carries a setup card: the provider, the model, and the system prompt
- * source of its first message, and the card of the task it waits for. The tasks tab opens such a
- * chat for a draft task.
+ * sources of its first message, one selector per selected source, and the card of the task it waits
+ * for. The tasks tab opens such a chat for a draft task.
  */
 
 import { JsonViewerElement } from '../json-viewer-element.js';
@@ -27,6 +27,12 @@ import {
   type ToolPairChips,
 } from '../chat-cards/render.js';
 import type { CoreChatEntry } from '../../shared/core-api.js';
+import {
+  defaultSystemPromptIds,
+  NONE_SYSTEM_PROMPT_SETUP_ID,
+  resolvePromptSelectors,
+  withPromptSelectorChange,
+} from '../../shared/system-prompts.js';
 import { buildDiff, renderMarkdown } from '../text/render.js';
 
 interface PendingAsk {
@@ -66,7 +72,7 @@ interface ChatSessionDto {
    * and its tool calls, and a tool result carries the call it answers. */
   readonly entries: readonly CoreChatEntry[];
   /** The system prompt the chat bound on its first message, when it sent one. */
-  readonly systemPrompt?: { sourceId: string; title: string; text: string };
+  readonly systemPrompt?: { sourceIds: readonly string[]; title: string; text: string };
   /** The draft task the chat waits for. Its first send dispatches the task into the chat. */
   readonly waitingTaskId?: string;
   /** The provider account and the model the chat bound on its first message, when it sent one. */
@@ -117,8 +123,9 @@ let promptSources: readonly PromptSourceDto[] = [];
 /** The connection menu of the workspace. The chats tab reads it with the session list. */
 let connectionMenu: ConnectionMenuDto = EMPTY_CONNECTION_MENU;
 
-/** The source the menu of one chat holds before its first message, keyed by session id. */
-const heldPromptPicks = new Map<string, string>();
+/** The system prompt source ids the selectors of one chat hold before its first message, in
+ * concatenation order, keyed by session id. */
+const heldPromptPicks = new Map<string, readonly string[]>();
 
 /** The provider and the model the setup of one chat holds before its first message, keyed by session id. */
 const heldConnectionPicks = new Map<string, { providerId: string; model: string }>();
@@ -652,7 +659,9 @@ function openTaskChat(taskId: string): void {
 interface SetupControls {
   readonly provider: HTMLSelectElement | null;
   readonly model: HTMLSelectElement | null;
-  readonly prompt: HTMLSelectElement | null;
+  /** Reads the system prompt source ids the selectors hold, in concatenation order. Null while the
+   * page offers no choice. */
+  readonly prompt: (() => readonly string[]) | null;
 }
 
 /** The selects that are off, for a chat past its setup. */
@@ -686,20 +695,20 @@ function fillModels(select: HTMLSelectElement, accountId: string, held: string |
   select.value = wanted ?? '';
 }
 
-/** Builds one labeled select row of the setup card. The label wraps the select, so a tap on the
-   label reaches the select. */
-function setupRow(labelText: string, select: HTMLSelectElement): HTMLElement {
+/** Builds one labeled row of the setup card. The label wraps the control, so a tap on the
+ * label reaches the first select of the control. */
+function setupRow(labelText: string, control: HTMLElement): HTMLElement {
   const row = document.createElement('label');
   row.className = 'chat-setup-row';
   const label = document.createElement('span');
   label.className = 'chat-setup-label';
   label.textContent = labelText;
-  row.append(label, select);
+  row.append(label, control);
   return row;
 }
 
 /** Places the setup card of one chat that sent nothing, first in its message area: the provider,
-   the model, and the system prompt source of its first message. The card keeps only the rows the
+   the model, and the system prompt sources of its first message. The card keeps only the rows the
    page can offer. Answers the live selects. */
 function appendSetupCard(scroll: HTMLElement, session: ChatSessionDto): SetupControls {
   const card = document.createElement('div');
@@ -742,25 +751,52 @@ function appendSetupCard(scroll: HTMLElement, session: ChatSessionDto): SetupCon
     provider = providerSelect;
     model = modelSelect;
   }
-  let prompt: HTMLSelectElement | null = null;
-  if (promptSources.length > 0) {
-    const promptSelect = document.createElement('select');
-    promptSelect.className = 'chat-setup-select';
-    promptSelect.title = 'The system prompt of the first message. The chat keeps it after the send.';
-    for (const source of promptSources) {
-      const option = document.createElement('option');
-      option.value = source.id;
-      option.textContent = source.label;
-      promptSelect.append(option);
-    }
-    const heldPrompt = heldPromptPicks.get(session.id);
-    promptSelect.value =
-      heldPrompt && promptSources.some((source) => source.id === heldPrompt) ? heldPrompt : (promptSources[0]?.id ?? '');
-    promptSelect.addEventListener('change', () => {
-      heldPromptPicks.set(session.id, promptSelect.value);
-    });
-    card.append(setupRow('System prompt', promptSelect));
-    prompt = promptSelect;
+  let prompt: (() => readonly string[]) | null = null;
+  // The id of the none option is no entry: a registered source of that id lists as none.
+  const promptEntries = promptSources.filter((source) => source.id !== NONE_SYSTEM_PROMPT_SETUP_ID);
+  if (promptEntries.length > 0) {
+    const held = (): readonly string[] => heldPromptPicks.get(session.id) ?? defaultSystemPromptIds(promptSources);
+    const selectors = document.createElement('span');
+    selectors.className = 'chat-setup-selects';
+    // The selectors rebuild on every change: a source picked adds the selector of the next slot, and
+    // none ends the selection at its slot.
+    const fill = (): void => {
+      const { slots } = resolvePromptSelectors(promptEntries, held());
+      selectors.replaceChildren(
+        ...slots.map(({ slot, selectedId, choices }) => {
+          const promptSelect = document.createElement('select');
+          promptSelect.className = 'chat-setup-select';
+          promptSelect.title = 'The system prompt of the first message. The chat keeps it after the send.';
+          for (const source of choices) {
+            const option = document.createElement('option');
+            option.value = source.id;
+            option.textContent = source.label;
+            promptSelect.append(option);
+          }
+          const none = document.createElement('option');
+          none.value = NONE_SYSTEM_PROMPT_SETUP_ID;
+          none.textContent = 'None';
+          promptSelect.append(none);
+          promptSelect.value = selectedId ?? NONE_SYSTEM_PROMPT_SETUP_ID;
+          promptSelect.addEventListener('change', () => {
+            const { selected } = resolvePromptSelectors(promptEntries, held());
+            heldPromptPicks.set(
+              session.id,
+              withPromptSelectorChange(
+                selected,
+                slot,
+                promptSelect.value === NONE_SYSTEM_PROMPT_SETUP_ID ? null : promptSelect.value,
+              ),
+            );
+            fill();
+          });
+          return promptSelect;
+        }),
+      );
+    };
+    fill();
+    card.append(setupRow('System prompt', selectors));
+    prompt = held;
   }
   scroll.append(card);
   return { provider, model, prompt };
@@ -984,7 +1020,7 @@ function renderChat(session: ChatSessionDto): void {
     const picks = {
       ...(setup.provider ? { providerId: setup.provider.value } : {}),
       ...(setup.model ? { model: setup.model.value } : {}),
-      ...(setup.prompt ? { systemPromptId: setup.prompt.value } : {}),
+      ...(setup.prompt ? { systemPromptIds: setup.prompt() } : {}),
     };
     void api('/api/chat/send', { method: 'POST', body: JSON.stringify({ fileId: session.id, text, ...picks }) })
       .then(refreshChats)

@@ -7,13 +7,14 @@
  */
 
 import { expect } from 'chai';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ChatEngine, type ChatEngineDeps, type EngineGate, type EngineMainCalls } from '../../dist/worker/chat-engine.js';
 import { ChatSessionStore } from '../../dist/worker/chat-sessions.js';
 import { PatchStore } from '../../dist/worker/patch-store.js';
 import { TaskStore } from '../../dist/worker/task-store.js';
+import { workerPromptFileLister } from '../../dist/worker/system-prompts.js';
 import { WorkspaceSettingsStore } from '../../dist/storage/settings-store.js';
 import type { StorageBackend } from '../../dist/storage/storage.js';
 import type { OpenAiProviderConfig } from '../../dist/providers/openai.js';
@@ -349,7 +350,53 @@ describe('the chat engine', () => {
     });
     await turn('hello');
     expect(script.requests[0]?.messages[0]).to.deep.equal({ role: 'system', content: 'Be terse.' });
-    expect(engine.list()[0]?.systemPrompt).to.deep.equal({ sourceId: 'agents-md', title: 'AGENTS.md', text: 'Be terse.' });
+    expect(engine.list()[0]?.systemPrompt).to.deep.equal({ sourceIds: ['agents-md'], title: 'AGENTS.md', text: 'Be terse.' });
+  });
+
+  it('binds several sources in the order of the pick and joins their texts', async () => {
+    engine = await open({
+      promptSources: [
+        { id: 'rules', label: 'Rules', build: async () => 'Be terse.\n\n' },
+        { id: 'skills', label: 'Skills', build: async () => 'Use the read tool.' },
+      ],
+    });
+    const chat = engine.create();
+    const picks = { systemPromptIds: ['skills', 'rules'] };
+    expect(await engine.send({ chatId: chat.id, text: 'hello', images: [], ...picks })).to.equal(true);
+    await waitFor(() => !engine.isRunning(chat.id));
+    expect(script.requests[0]?.messages[0]).to.deep.equal({ role: 'system', content: 'Use the read tool.\n\nBe terse.' });
+    expect(engine.get(chat.id)?.systemPrompt).to.deep.equal({
+      sourceIds: ['skills', 'rules'],
+      title: 'Skills + Rules',
+      text: 'Use the read tool.\n\nBe terse.',
+    });
+  });
+
+  it('binds the none prompt for an empty pick', async () => {
+    engine = await open({ promptSources: [{ id: 'rules', label: 'Rules', build: async () => 'Be terse.' }] });
+    const chat = engine.create();
+    expect(await engine.send({ chatId: chat.id, text: 'hello', images: [], systemPromptIds: [] })).to.equal(true);
+    await waitFor(() => !engine.isRunning(chat.id));
+    // The request carries no system message.
+    expect(script.requests[0]?.messages[0]?.role).to.equal('user');
+    expect(engine.get(chat.id)?.systemPrompt).to.deep.equal({ sourceIds: [], title: 'No system prompt', text: '' });
+  });
+
+  it('lists the prompt files of the instructions folder fresh, and binds one', async () => {
+    engine = await open({ listPromptFiles: workerPromptFileLister(root) });
+    expect(await engine.promptSources()).to.deep.equal([]);
+    mkdirSync(join(root, 'instructions'));
+    writeFileSync(join(root, 'instructions', 'rules.md'), 'Be terse.');
+    expect(await engine.promptSources()).to.deep.equal([{ id: 'prompt-file:rules.md', label: 'rules.md' }]);
+    const chat = engine.create();
+    const picks = { systemPromptIds: ['prompt-file:rules.md'] };
+    expect(await engine.send({ chatId: chat.id, text: 'hello', images: [], ...picks })).to.equal(true);
+    await waitFor(() => !engine.isRunning(chat.id));
+    expect(engine.get(chat.id)?.systemPrompt).to.deep.equal({
+      sourceIds: ['prompt-file:rules.md'],
+      title: 'rules.md',
+      text: 'Be terse.',
+    });
   });
 
   it('binds the provider and model the first send picks', async () => {
@@ -401,12 +448,12 @@ describe('the chat engine', () => {
     script = scripted(completion(task.id), text('done'));
     engine = await open({ tasks, promptSources: [{ id: 'agents-md', label: 'AGENTS.md', build: async () => 'Be terse.' }] });
     const chat = engine.create(task.id);
-    const call = { chatId: chat.id, text: 'Start with the specs.', images: [], systemPromptId: 'agents-md' };
+    const call = { chatId: chat.id, text: 'Start with the specs.', images: [], systemPromptIds: ['agents-md'] };
     expect(await engine.send(call)).to.equal(true);
     await settleTask(tasks, task.id, chat.id);
     expect(engine.get(chat.id)?.entries[0]?.content.startsWith(`[task ${task.id}]`)).to.equal(true);
     expect(engine.get(chat.id)?.entries[1]?.content).to.equal('Start with the specs.');
-    expect(engine.get(chat.id)?.systemPrompt).to.deep.equal({ sourceId: 'agents-md', title: 'AGENTS.md', text: 'Be terse.' });
+    expect(engine.get(chat.id)?.systemPrompt).to.deep.equal({ sourceIds: ['agents-md'], title: 'AGENTS.md', text: 'Be terse.' });
     // The model reads the system prompt, then the brief, then the message.
     expect(script.requests[0]?.messages.map((message) => message.role)).to.deep.equal(['system', 'user', 'user']);
   });

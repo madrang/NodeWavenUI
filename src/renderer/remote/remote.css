@@ -457,6 +457,15 @@ main#remote > section {
   font-size: 13px;
 }
 
+/* The prompt selectors of the setup card, one per selected source: they stack in the column of the
+ * selects, and each one takes the width of the column. */
+.chat-setup-selects {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+
 .chat-setup-empty {
   grid-column: 1 / -1;
   margin: 0;

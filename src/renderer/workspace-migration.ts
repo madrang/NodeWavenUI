@@ -1,14 +1,29 @@
 /**
- * The data format migration of a workspace.
+ * The data format migration of a workspace, launcher stage.
  * The marker file carries the app version that last wrote the data, and this runner walks the migration
- * steps that fall between the detected version and the running app version. Only the first two numbers
- * of a version matter for the compare, so a patch release never migrates data. A marker without a
- * version predates versioning and counts as the oldest format.
+ * steps that fall between the loaded version and the running app version. The stage runs at workspace
+ * open, on the data that needs no key. The core stage (`src/worker/workspace-migration.ts`) runs the
+ * steps on the data only the core opens, and compares the same loaded version, which the start message
+ * carries (`src/shared/workspace-migration.ts` holds the compare).
+ * The stage writes no marker. The workspace page stamps the running version once the core reports
+ * ready, so the marker keeps its loaded version until both stages succeeded, and a failed step of
+ * either stage runs again at the next open.
  */
 
 import type { WorkspaceSettings } from '../shared/workspace.js';
-import { writeWorkspaceMarker } from './workspace-files.js';
+import {
+  type FormatMigrationStep as SharedFormatMigrationStep,
+  formatStepApplies,
+  formatVersionIsNewer,
+} from '../shared/workspace-migration.js';
+import { joinPath, makeDirectory, renamePath, statPath } from './file-system.js';
 import { readAppVersion } from './arguments.js';
+import { log } from './logger.js';
+import {
+  moveWorkspaceAgentsFile,
+  WORKSPACE_AGENTS_FILE,
+  WORKSPACE_INSTRUCTIONS_FOLDER,
+} from '../shared/system-prompts.js';
 
 /** What one migration step works on and reports back. */
 export interface FormatMigrationContext {
@@ -18,91 +33,93 @@ export interface FormatMigrationContext {
   readonly settings: WorkspaceSettings;
 }
 
-/** One migration step from one app-version prefix to the next. */
-export interface FormatMigrationStep {
-  /** The format prefix this step upgrades from, for example "0.1". */
-  readonly from: string;
-  /** The format prefix after this step, for example "0.2". */
-  readonly to: string;
-  /** What the step changes, for the log. */
-  readonly description: string;
+/** One migration step of the launcher stage, from one app-version prefix to the next. */
+export interface FormatMigrationStep extends SharedFormatMigrationStep {
   apply(context: FormatMigrationContext): Promise<WorkspaceSettings>;
 }
 
-/**
- * The migration steps in order. Each step covers one prefix range.
- * No step exists yet: the data format never changed since versioning began.
- */
-const FORMAT_MIGRATION_STEPS: readonly FormatMigrationStep[] = [];
-
-/**
- * Reads the compare prefix of a version: the first two numbers.
- *
- * @param version The version string, for example "0.1.0".
- * @returns The prefix, for example "0.1". A damaged version reads as "0.0".
- */
-export function formatPrefixOf(version: string): string {
-  const match = /^(\d+)\.(\d+)/.exec(version.trim());
-  return match ? `${match[1]}.${match[2]}` : '0.0';
+/** The answer of the launcher stage. */
+export interface FormatMigrationResult {
+  /** The workspace settings to open the workspace with: the ones a step changed, else the ones the
+   * marker held. The version stays the one of the marker. */
+  readonly settings: WorkspaceSettings;
+  /** The exact version the marker carried at start. Undefined when the marker carried none. Every
+   * later stage of the migration compares this version, whatever the marker holds now. */
+  readonly loadedVersion: string | undefined;
+  /** The running app version, when the marker holds another one: the workspace page writes it into the
+   * marker once the core reports ready. Undefined when nothing is to be written. */
+  readonly stampVersion: string | undefined;
 }
 
-/** Compares two format prefixes numerically: negative when the first is older, zero when equal. */
-function compareFormatPrefix(left: string, right: string): number {
-  const leftParts = left.split('.');
-  const rightParts = right.split('.');
-  const leftMajor = Number.parseInt(leftParts[0] ?? '0', 10);
-  const leftMinor = Number.parseInt(leftParts[1] ?? '0', 10);
-  const rightMajor = Number.parseInt(rightParts[0] ?? '0', 10);
-  const rightMinor = Number.parseInt(rightParts[1] ?? '0', 10);
-  if (leftMajor !== rightMajor) {
-    return leftMajor - rightMajor;
+/** Moves the AGENTS.md file of the workspace root into the instructions folder, where the system
+ * prompt menu lists the file with the other prompt files. A root without the file moves nothing. A
+ * failed move throws, so the runner stops and the marker keeps its version: the step runs again at
+ * the next open. */
+async function moveAgentsFile(context: FormatMigrationContext): Promise<WorkspaceSettings> {
+  const outcome = await moveWorkspaceAgentsFile(context.directoryPath, {
+    joinPath,
+    statPath,
+    makeDirectory,
+    renamePath,
+  });
+  if (outcome === 'kept') {
+    log.workspaceMigration.warning(
+      `[NodeWavenUI] the workspace "${context.directoryPath}" holds an ${WORKSPACE_AGENTS_FILE} file in its root and in its ` +
+        `${WORKSPACE_INSTRUCTIONS_FOLDER} folder. Both files stay in place.`,
+    );
   }
-  return leftMinor - rightMinor;
+  return context.settings;
 }
 
+/** The migration steps in order. Each step covers one prefix range. */
+const FORMAT_MIGRATION_STEPS: readonly FormatMigrationStep[] = [
+  {
+    from: '0.3',
+    to: '0.4',
+    description: `the ${WORKSPACE_AGENTS_FILE} file of the workspace root moves into the ${WORKSPACE_INSTRUCTIONS_FOLDER} folder`,
+    apply: moveAgentsFile,
+  },
+];
+
 /**
- * Runs the data format migration of one workspace.
- * Every step whose range falls between the marker version and the running app version applies, in order,
- * so a workspace that skips releases still meets every format change. The runner rewrites the marker only
- * when the version changed, so an up-to-date workspace stays untouched.
+ * Runs the format steps of the launcher stage on one workspace.
+ * Every step whose range falls between the loaded version and the running app version applies, in order,
+ * so a workspace that skips releases still meets every format change. The stage writes no marker: it
+ * names the version the workspace page stamps once the core reports ready, so an up-to-date workspace
+ * stays untouched and a failed step of either stage runs again at the next open.
  *
  * @param directoryPath The absolute workspace folder path.
  * @param settings The workspace settings from the marker.
- * @returns The updated settings, or null when nothing changed.
+ * @returns The settings to open the workspace with, the exact version the marker carried, and the
+ * version the workspace page stamps.
  */
 export async function migrateWorkspaceData(
   directoryPath: string,
   settings: WorkspaceSettings,
-): Promise<WorkspaceSettings | null> {
+): Promise<FormatMigrationResult> {
+  const loadedVersion = settings.version;
   const runningVersion = await readAppVersion();
-  const detectedPrefix = formatPrefixOf(settings?.version ?? '0.0');
-  const runningPrefix = formatPrefixOf(runningVersion);
-  if (compareFormatPrefix(detectedPrefix, runningPrefix) > 0) {
-    console.warn(
-      `[NodeWavenUI] the workspace "${directoryPath}" carries data version ${settings?.version ?? 'none'}, newer than app ${runningVersion}. No migration runs.`,
+  if (formatVersionIsNewer(loadedVersion, runningVersion)) {
+    log.workspaceMigration.warning(
+      `[NodeWavenUI] the workspace "${directoryPath}" carries data version ${loadedVersion ?? 'none'}, newer than app ${runningVersion}. No migration runs.`,
     );
-    return null;
+    return { settings, loadedVersion, stampVersion: undefined };
   }
   let current: WorkspaceSettings = settings;
   for (const step of FORMAT_MIGRATION_STEPS) {
-    const fromPrefix = formatPrefixOf(step.from);
-    const toPrefix = formatPrefixOf(step.to);
-    const inRange =
-      compareFormatPrefix(detectedPrefix, fromPrefix) <= 0 && compareFormatPrefix(fromPrefix, runningPrefix) < 0;
-    if (!inRange || compareFormatPrefix(toPrefix, runningPrefix) > 0) {
+    if (!formatStepApplies(step, loadedVersion, runningVersion)) {
       continue;
     }
-    console.info(`[NodeWavenUI] migrating workspace data ${step.from} to ${step.to}: ${step.description}`);
+    log.workspaceMigration.informative(
+      `[NodeWavenUI] migrating workspace data ${step.from} to ${step.to}: ${step.description}`,
+    );
     current = await step.apply({ directoryPath, settings: current });
   }
-  if ((current.version ?? '') === runningVersion) {
-    return null;
-  }
-  const migrated: WorkspaceSettings = { ...current, version: runningVersion };
-  const writeError = await writeWorkspaceMarker(directoryPath, migrated);
-  if (writeError) {
-    console.warn(`[NodeWavenUI] the migrated marker could not be written: ${writeError}`);
-    return null;
-  }
-  return migrated;
+  // The marker keeps its version here. The workspace page stamps the running version once the core
+  // reports ready, so a failed step of the core stage runs again at the next open.
+  return {
+    settings: current,
+    loadedVersion,
+    stampVersion: (current.version ?? '') === runningVersion ? undefined : runningVersion,
+  };
 }

@@ -21,6 +21,12 @@ export interface MainHandoffPayload {
   /** The workspace password. Null when the storage setup needs none. */
   readonly password: string | null;
   readonly frameMode: FrameModeId;
+  /** The exact workspace data version the launcher read in the marker at start. Undefined when the
+   * marker carried none. The format migration of the core compares this version. */
+  readonly dataVersion: string | undefined;
+  /** The workspace data version this page writes into the marker once the core reports ready. Undefined
+   * when nothing is to be written: the marker is up to date, or a step of the launcher stage failed. */
+  readonly stampVersion: string | undefined;
 }
 
 /** The callbacks the workspace window answers the handoff with. */
@@ -53,6 +59,8 @@ export function isMainHandoffPayload(value: unknown): value is MainHandoffPayloa
     isWorkspaceDirectory(candidate.directory) &&
     isWorkspaceSettings(candidate.settings) &&
     (candidate.password === null || typeof candidate.password === 'string') &&
-    isKnownFrameMode(candidate.frameMode)
+    isKnownFrameMode(candidate.frameMode) &&
+    (candidate.dataVersion === undefined || typeof candidate.dataVersion === 'string') &&
+    (candidate.stampVersion === undefined || typeof candidate.stampVersion === 'string')
   );
 }

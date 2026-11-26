@@ -37,8 +37,7 @@ import type {
   CoreEvent,
   CoreSystemPromptSourceInfo,
 } from '../shared/core-api.js';
-import { NONE_SYSTEM_PROMPT_SETUP_ID, defaultSystemPromptSetup } from '../shared/system-prompts.js';
-import type { SystemPromptSource } from '../shared/system-prompts.js';
+import { joinSystemPromptTexts, resolveSystemPromptSources, type SystemPromptSource } from '../shared/system-prompts.js';
 import type { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import {
   agentToolDefinition,
@@ -93,8 +92,12 @@ export interface ChatEngineDeps {
   readonly settings: WorkspaceSettingsStore;
   /** The storage sharing of the workspace, for the storage reads of the read tool. */
   readonly storageShares: AgentStorageShares;
-  /** The system prompt sources a first send binds, in menu order. */
+  /** The registered system prompt sources a first send binds, in menu order. */
   readonly promptSources: readonly SystemPromptSource[];
+  /** Lists the prompt files of the instructions folder of the workspace. The engine reads the folder on
+   * every bind and on every list, so a file the folder gained or lost shows at once. Absent in a context
+   * that reads no workspace folder. */
+  readonly listPromptFiles?: () => Promise<readonly SystemPromptSource[]>;
   /** The services of the main process. */
   readonly main: EngineMainCalls;
   /** Builds the inference provider of one account. The specs inject a fake. */
@@ -385,7 +388,7 @@ export class ChatEngine {
     }
     if (this.chatNeedsSystemPrompt(chat)) {
       // A fork draft at the head of its tab is a first message, so the menu choice binds here too.
-      if (!(await this.bindChatSystemPrompt(chat, call.systemPromptId))) {
+      if (!(await this.bindChatSystemPrompt(chat, call.systemPromptIds))) {
         return;
       }
     }
@@ -466,9 +469,16 @@ export class ChatEngine {
     return tools.map(({ name, description }) => ({ name, description }));
   }
 
-  /** Reads the system prompt sources a first send binds, in menu order: the list the phone page offers. */
-  promptSources(): readonly CoreSystemPromptSourceInfo[] {
-    return this.deps.promptSources.map(({ id, label }) => ({ id, label }));
+  /** Lists the system prompt sources a first send binds, in menu order: the list the phone page offers. */
+  async promptSources(): Promise<readonly CoreSystemPromptSourceInfo[]> {
+    const sources = await this.promptSourceList();
+    return sources.map(({ id, label }) => ({ id, label }));
+  }
+
+  /** Lists every system prompt source a first send binds, in menu order: the registered sources, then
+   * the prompt files of the instructions folder, read fresh. */
+  private async promptSourceList(): Promise<readonly SystemPromptSource[]> {
+    return [...this.deps.promptSources, ...((await this.deps.listPromptFiles?.()) ?? [])];
   }
 
   /** Reads the connection menu a first send picks from: every account with its models, and the
@@ -664,8 +674,8 @@ export class ChatEngine {
     // Only a chat without messages binds a prompt. An old chat keeps running without one.
     // The bind sits past the rejected-send guards, so a send that never reaches the transcript leaves the menu open.
     if (this.chatNeedsSystemPrompt(chat)) {
-      // The first send binds the prompt source and snapshots its text, so the chat keeps what it sent.
-      if (!(await this.bindChatSystemPrompt(chat, picks?.systemPromptId))) {
+      // The first send binds the prompt sources and snapshots their text, so the chat keeps what it sent.
+      if (!(await this.bindChatSystemPrompt(chat, picks?.systemPromptIds))) {
         return false;
       }
     }
@@ -693,39 +703,36 @@ export class ChatEngine {
     return !chat.boundSystemPrompt && !this.chatHasConversation(chat);
   }
 
-  /** Binds the system prompt of a chat that sits before its first message: the menu choice snapshots
-   * its text into the chat, so the chat keeps what it sent. A chat that picks no source binds the
-   * none prompt.
+  /** Binds the system prompt of a chat that sits before its first message: the sources the menu holds
+   * build one text each, joined in the order of the menu, and the chat snapshots that text, so the chat
+   * keeps what it sent. A chat that picks no source binds the none prompt.
    *
    * @param chat The chat that sends its first message.
-   * @param sourceId The source the menu holds, or undefined for the default of the workspace.
-   * @returns True when the chat holds a prompt. False when the source build failed; its error entry landed.
+   * @param picked The source ids the menu holds, or undefined for the default of the workspace.
+   * @returns True when the chat holds a prompt. False when a source build failed; its error entry landed.
    */
-  private async bindChatSystemPrompt(chat: EngineChat, sourceId?: string): Promise<boolean> {
-    // The source the menu holds: the given pick, or the default. The none source binds no prompt.
-    const sources = this.deps.promptSources;
-    const wanted = sourceId || defaultSystemPromptSetup(sources)?.id || NONE_SYSTEM_PROMPT_SETUP_ID;
-    const setup =
-      wanted === NONE_SYSTEM_PROMPT_SETUP_ID ?
-        null :
-        (sources.find((source) => source.id === wanted) ?? defaultSystemPromptSetup(sources));
-    if (!setup) {
-      chat.boundSystemPrompt = { sourceId: NONE_SYSTEM_PROMPT_SETUP_ID, title: 'No system prompt', text: '' };
-      this.metaChanged(chat);
-      return true;
+  private async bindChatSystemPrompt(chat: EngineChat, picked?: readonly string[]): Promise<boolean> {
+    const sources = resolveSystemPromptSources(picked, await this.promptSourceList());
+    const bound: { readonly id: string; readonly label: string; readonly text: string }[] = [];
+    for (const source of sources) {
+      let text: string;
+      try {
+        text = await source.build({ workspacePath: this.deps.workspacePath });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.pushEntry(chat, {
+          role: 'error',
+          content: `The system prompt source "${source.label}" failed: ${message}`,
+        });
+        return false;
+      }
+      bound.push({ id: source.id, label: source.label, text });
     }
-    let promptText: string;
-    try {
-      promptText = await setup.build({ workspacePath: this.deps.workspacePath });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.pushEntry(chat, {
-        role: 'error',
-        content: `The system prompt source "${setup.label}" failed: ${message}`,
-      });
-      return false;
-    }
-    chat.boundSystemPrompt = { sourceId: setup.id, title: setup.label, text: promptText };
+    chat.boundSystemPrompt = {
+      sourceIds: bound.map((part) => part.id),
+      title: bound.length > 0 ? bound.map((part) => part.label).join(' + ') : 'No system prompt',
+      text: joinSystemPromptTexts(bound.map((part) => part.text)),
+    };
     this.metaChanged(chat);
     return true;
   }
@@ -1222,7 +1229,7 @@ export class ChatEngine {
   private agentMessages(chat: EngineChat, vision: boolean): ChatMessage[] {
     const messages: ChatMessage[] = [];
     const system = chat.boundSystemPrompt;
-    if (system && system.sourceId !== NONE_SYSTEM_PROMPT_SETUP_ID && system.text.length > 0) {
+    if (system && system.sourceIds.length > 0 && system.text.length > 0) {
       messages.push({ role: 'system', content: system.text });
     }
     // Tool images travel as one user message after the tool batch, because tool messages carry text only.

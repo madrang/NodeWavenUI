@@ -36,7 +36,8 @@ import type { ChatEntry } from './chat-sessions.js';
 import type { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import type { StorageShareRegistry } from '../storage/share-registry.js';
 import type { PluginFolderController } from './plugin-folders.js';
-import { NONE_SYSTEM_PROMPT_SETUP_ID, defaultSystemPromptSetup } from './system-prompts.js';
+import { listWorkspacePromptFiles } from './system-prompts.js';
+import { defaultSystemPromptIds } from '../shared/system-prompts.js';
 import { ChatClient, type ChatChange } from './chat-client.js';
 import { modelDisplayName, SettingsView } from './settings.js';
 import { log } from './logger.js';
@@ -94,7 +95,11 @@ export class MainApp implements McpSessionSink {
   private readonly notificationHub: NotificationHub;
   private readonly workspacePath: string;
   private readonly storageShares: StorageShareRegistry;
-  private readonly promptSources: readonly SystemPromptSetup[];
+  /** The registered system prompt sources: the built-ins and the contributions of the plugins. */
+  private readonly registeredPromptSources: readonly SystemPromptSetup[];
+  /** The sources of the chat menu, in menu order: the registered ones, then the prompt files of the
+   * instructions folder of the workspace. The list reads again when the window returns. */
+  private promptSources: readonly SystemPromptSetup[];
   /** The settings pane of the center workspace. It owns the settings state of the workspace. */
   private readonly settingsView: SettingsView;
   /** The chats of the workspace, owned by the engine of the worker core. */
@@ -173,6 +178,7 @@ export class MainApp implements McpSessionSink {
     this.notificationHub = notificationHub;
     this.workspacePath = workspacePath;
     this.storageShares = storageShares;
+    this.registeredPromptSources = promptSources;
     this.promptSources = promptSources;
     const bridge = readBridge();
     if (!bridge) {
@@ -201,8 +207,8 @@ export class MainApp implements McpSessionSink {
       setEditing: (editing) => {
         this.editing = editing;
       },
-      promptSources: this.promptSources,
-      selectedSystemPromptId: (chat) => this.selectedSystemPromptId(chat),
+      promptSources: () => this.promptSources,
+      selectedSystemPromptIds: (chat) => this.selectedSystemPromptIds(chat),
       chatHasConversation: (chat) => this.chatHasConversation(chat),
       waitingTask: (chat) => this.waitingTask(chat),
       pinChatToBottom: () => this.pinChatToBottom(),
@@ -363,6 +369,12 @@ export class MainApp implements McpSessionSink {
       this.fire('the agent tool list', this.refreshAgentTools());
     });
     await this.refreshAgentTools();
+    // The prompt files of the instructions folder join the menu sources before the first chat renders.
+    await this.refreshPromptSources();
+    // A file the folder gained or lost while the window sat back shows in the menu when the window returns.
+    window.addEventListener('focus', () => {
+      void this.refreshPromptSources();
+    });
     await this.restoreChats();
   }
 
@@ -605,13 +617,13 @@ export class MainApp implements McpSessionSink {
     }
   }
 
-  /** The connection picks of one first send: the provider, the model, and the system prompt the
+  /** The connection picks of one first send: the provider, the model, and the system prompt sources the
    * status bar and the chat menu hold while the chat sent nothing. */
   private connectionPicks(chat: Chat): CoreChatPicks {
     return {
       ...(chat.pendingProviderId ? { providerId: chat.pendingProviderId } : {}),
       ...(chat.pendingModel ? { model: chat.pendingModel } : {}),
-      systemPromptId: this.selectedSystemPromptId(chat),
+      systemPromptIds: this.selectedSystemPromptIds(chat),
     };
   }
 
@@ -890,6 +902,8 @@ export class MainApp implements McpSessionSink {
   /** Opens one fresh chat in the core and activates its tab. A task id names the draft task the
    * chat waits for: its first send dispatches the task. */
   private async newChat(taskId?: string): Promise<void> {
+    // A prompt file the instructions folder gained joins the menu of the fresh chat.
+    await this.refreshPromptSources();
     const chat = await this.chats.create(taskId);
     this.activateChat(chat.id);
   }
@@ -936,6 +950,8 @@ export class MainApp implements McpSessionSink {
     this.messages.render();
     this.renderPermissionRequests();
     this.renderChatStatus();
+    // The menu of the tab reads the prompt files of the instructions folder again.
+    void this.refreshPromptSources();
     if (!sessionLog) {
       this.chatInput.focus();
     }
@@ -1155,11 +1171,37 @@ export class MainApp implements McpSessionSink {
     this.chatStatus.append(providerSelect, modelSelect, this.buildThinkingSelect(chat), usage);
   }
 
-  /** The source id the chat menu holds: the pending selection, or the default of the workspace. */
-  private selectedSystemPromptId(chat: Chat): string {
-    if (chat.pendingSystemPromptId) {
-      return chat.pendingSystemPromptId;
+  /** The source ids the chat menu holds, in concatenation order: the pending selection, or the default
+   * of the workspace. */
+  private selectedSystemPromptIds(chat: Chat): readonly string[] {
+    if (chat.pendingSystemPromptIds) {
+      return chat.pendingSystemPromptIds;
     }
-    return defaultSystemPromptSetup(this.promptSources)?.id ?? NONE_SYSTEM_PROMPT_SETUP_ID;
+    return defaultSystemPromptIds(this.promptSources);
+  }
+
+  /** Reads the prompt files of the instructions folder of the workspace again, so a file the folder
+   * gained or lost shows in the chat menu. A chat that sent nothing keeps the picks the folder still holds. */
+  private async refreshPromptSources(): Promise<void> {
+    const next = [...this.registeredPromptSources, ...(await listWorkspacePromptFiles(this.workspacePath))];
+    const ids = (sources: readonly SystemPromptSetup[]): string => JSON.stringify(sources.map((source) => source.id));
+    if (ids(next) === ids(this.promptSources)) {
+      return;
+    }
+    this.promptSources = next;
+    const known = new Set(next.map((source) => source.id));
+    for (const chat of this.chats.list()) {
+      // An empty list is the none pick, and it needs no source: it stays.
+      if (!chat.pendingSystemPromptIds?.length) {
+        continue;
+      }
+      const kept = chat.pendingSystemPromptIds.filter((id) => known.has(id));
+      if (kept.length > 0) {
+        chat.pendingSystemPromptIds = kept;
+      } else {
+        delete chat.pendingSystemPromptIds;
+      }
+    }
+    this.messages.render();
   }
 }

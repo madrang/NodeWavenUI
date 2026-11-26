@@ -22,6 +22,7 @@ import type {
   CoreSystemPromptSourceInfo,
 } from '../shared/core-api.js';
 import { BodyLimitError, readRequestBody } from '../shared/http-body.js';
+import { readSystemPromptIds } from '../shared/system-prompts.js';
 import { log } from './logger.js';
 
 /** Generates the self-signed certificate of the remote server. */
@@ -58,8 +59,9 @@ export interface RemoteStateProviders {
   /** Opens one fresh chat in the engine. Its session file lands with its first message. A task id
    * names the draft task the chat waits for. */
   createChat(taskId?: string): RemoteChatSession;
-  /** The system prompt sources a first send binds, in menu order. */
-  chatPromptSources(): readonly CoreSystemPromptSourceInfo[];
+  /** Lists the system prompt sources a first send binds, in menu order. The engine reads the folder of
+   * the prompt files on every call. */
+  chatPromptSources(): Promise<readonly CoreSystemPromptSourceInfo[]>;
   /** The connection menu a first send picks from. No key and no address ride along. */
   chatConnections(): Promise<CoreConnectionMenu>;
   resolvePermission(id: number, approve: boolean, remember: boolean): Promise<void>;
@@ -70,7 +72,7 @@ export interface RemoteStateProviders {
   returnTask(id: string): Promise<unknown>;
   cancelTask(id: string): Promise<unknown>;
   /** Lands one message in the chat of the session file. The picks reach a first send: the provider,
-   * the model, and the system prompt source. A missing pick keeps the default of the workspace. */
+   * the model, and the system prompt sources. A missing pick keeps the default of the workspace. */
   sendChat(fileId: string | null, text: string, picks?: CoreChatPicks): void;
   /** Closes the chat of the session file, the way the close of a tab does. An unknown id closes nothing. */
   closeChat(fileId: string): void;
@@ -461,7 +463,9 @@ export class RemoteServer {
 
   /** Serves one static file of the phone page. The `text`, `chat-cards`, `libs`, and `themes`
    * folders of the renderer build join the page folder, with the json-viewer element module, so
-   * the phone carries the text stack, the chat cards, Prism, and the default theme like the app. */
+   * the phone carries the text stack, the chat cards, Prism, and the default theme like the app.
+   * The system prompt module of the shared build joins the same way, with the harness document
+   * module it reads: the setup card shapes its prompt selectors with the helpers of the app. */
   private serveStatic(urlPath: string, response: ServerResponse): boolean {
     const relative = urlPath === '/' ? 'index.html' : urlPath.slice(1);
     const base = join(this.appRoot, 'dist', 'renderer', 'remote');
@@ -471,7 +475,8 @@ export class RemoteServer {
       relative.startsWith('libs/') ||
       relative.startsWith('themes/') ||
       relative === 'json-viewer-element.js';
-    const root = shared ? join(this.appRoot, 'dist', 'renderer') : base;
+    const core = relative === 'shared/system-prompts.js' || relative === 'shared/harness-docs.js';
+    const root = core ? join(this.appRoot, 'dist') : shared ? join(this.appRoot, 'dist', 'renderer') : base;
     const resolved = normalize(join(root, relative));
     if (!resolved.startsWith(`${root}/`) || !existsSync(resolved)) {
       return false;
@@ -510,11 +515,13 @@ export class RemoteServer {
       return;
     }
     if (request.method === 'GET' && path === '/api/state') {
+      // The folder of the prompt files reads before the head of the response, so a read error answers 500.
+      const prompts = await this.state.chatPromptSources();
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(
         JSON.stringify({
           name: this.state.workspaceName(),
-          prompts: this.state.chatPromptSources(),
+          prompts,
           permission: this.state.permission(),
           patches: this.state.patches(),
           tasks: this.state.tasks(),
@@ -533,6 +540,8 @@ export class RemoteServer {
       return;
     }
     if (request.method === 'GET' && path === '/api/events') {
+      // The folder of the prompt files reads before the head of the response, so a read error answers 500.
+      const prompts = await this.state.chatPromptSources();
       response.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
@@ -540,7 +549,7 @@ export class RemoteServer {
       response.write('retry: 3000\n\n');
       response.write(`event: state\ndata: ${JSON.stringify({
         name: this.state.workspaceName(),
-        prompts: this.state.chatPromptSources(),
+        prompts,
         permission: this.state.permission(),
         patches: this.state.patches(),
         tasks: this.state.tasks(),
@@ -632,10 +641,13 @@ export class RemoteServer {
           throw new Error('The send call needs a text.');
         }
         // The picks reach a first send. A missing one keeps the default of the workspace.
+        // The system prompt pick is the list of the source ids: an empty list is the none pick, and a
+        // list that holds no string reads as no pick.
+        const systemPromptIds = readSystemPromptIds(call.systemPromptIds);
         this.state.sendChat(
           typeof call.fileId === 'string' ? call.fileId : null,
           text,
-          stringPicks(['providerId', 'model', 'systemPromptId']),
+          { ...stringPicks(['providerId', 'model']), ...(systemPromptIds ? { systemPromptIds } : {}) },
         );
         this.answerJson(response, { ok: true });
         return;
