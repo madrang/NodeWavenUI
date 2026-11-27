@@ -20,6 +20,7 @@ import { nodeJsonFileFs } from './node-fs.js';
 import { WorkerPermissionGate } from './permission-gate.js';
 import { PatchStore } from './patch-store.js';
 import { TaskStore } from './task-store.js';
+import { TaskTemplateStore } from './task-templates.js';
 import { ChatSessionStore } from './chat-sessions.js';
 import { ChatEngine, type EngineMainCalls } from './chat-engine.js';
 import { workerPromptFileLister, workerSystemPromptSources } from './system-prompts.js';
@@ -52,6 +53,7 @@ import {
   readChatSessionPayload,
   readSettingsKeyPayload,
   readSettingsSetPayload,
+  readTaskAnswerPayload,
   readTaskBindPayload,
   readTaskCompletePayload,
   readTaskCreatePayload,
@@ -102,6 +104,9 @@ let patches: PatchStore | null = null;
 
 /** The task store of the workspace. Null until the start message opened the storage. */
 let tasks: TaskStore | null = null;
+
+/** The task templates of the workspace, in the `templates/` folder. Null until the start message opened the storage. */
+let templates: TaskTemplateStore | null = null;
 
 /** The chat session store of the workspace. Null until the start message opened the storage. */
 let chatSessions: ChatSessionStore | null = null;
@@ -172,12 +177,16 @@ function emitPatchState(): void {
   remote?.broadcast('patches', state);
 }
 
-/** Sends the task state to every surface. */
+/** Sends the task state to every surface: the live records, the archived records, and the templates. */
 function emitTaskState(): void {
   if (!tasks) {
     return;
   }
-  const state: CoreTaskState = { records: tasks.list() };
+  const state: CoreTaskState = {
+    records: tasks.list(),
+    archived: tasks.archived(),
+    templates: templates?.list() ?? [],
+  };
   send({ kind: 'event', event: { channel: 'task.event', payload: state } });
   remote?.broadcast('tasks', state);
 }
@@ -271,6 +280,9 @@ async function openStorage(start: WorkerStart): Promise<void> {
   tasks = new TaskStore(start.directoryPath);
   await tasks.load();
   tasks.subscribe(emitTaskState);
+  templates = new TaskTemplateStore(start.directoryPath);
+  await templates.load();
+  templates.subscribe(emitTaskState);
   tasks.onSettle((task) => {
     send({ kind: 'event', event: { channel: 'task.settle', payload: task } });
   });
@@ -311,6 +323,7 @@ async function openStorage(start: WorkerStart): Promise<void> {
     gate,
     patches,
     tasks,
+    templates,
     chatSessions,
     settings: settingsStore,
     storageShares,
@@ -324,7 +337,8 @@ async function openStorage(start: WorkerStart): Promise<void> {
   });
   await engine.restore();
   // Denials and returns leave for the agent of their chat. Every record change pumps the queue,
-  // and a settle reaches the origin chat that did not cause it.
+  // and a settle reaches the origin chat that did not cause it. A cancel from outside also stops
+  // the turn of the session that ran the task.
   patches.onNotice((notice) => {
     engine?.deliverPatchNotice(notice);
   });
@@ -332,8 +346,10 @@ async function openStorage(start: WorkerStart): Promise<void> {
     engine?.pumpTasks();
   });
   tasks.onSettle((task) => {
-    engine?.deliverTaskSettle(task);
+    engine?.handleTaskSettle(task);
   });
+  // The records that lived before a restart resume: a running task hears one notice, and the queue pumps.
+  engine?.recoverTasks();
   const settingsForRemote = new WorkspaceSettingsStore(backend);
   remote = new RemoteServer(
     settingsForRemote,
@@ -359,10 +375,16 @@ async function openStorage(start: WorkerStart): Promise<void> {
       acceptTask: (id) => requireTasks().accept(id),
       returnTask: (id) => requireTasks().returnToSession(id),
       cancelTask: (id) => requireTasks().cancel(id, null),
+      // The phone answers the question of a blocked task through the engine, like the board does.
+      answerTask: (id, text) => requireEngine().answerTask(id, text),
+      // The phone retries a task the same way: the engine returns it and its failed children to the queue.
+      retryTask: (id, mode, sessionFileId) => requireEngine().retryTask(id, mode, sessionFileId),
       // The phone sends into the chat engine of this core, the same engine the workspace page uses.
       sendChat: (fileId, text, picks) => {
         requireEngine().remoteSend(fileId, text, picks);
       },
+      // The phone sends a queued message now the same way: the engine hands the entry to the running turn.
+      sendChatNow: (fileId, index) => requireEngine().remoteSendNow(fileId, index),
       // The phone closes a chat the same way: the chat of the session file leaves the engine.
       closeChat: (fileId) => {
         requireEngine().remoteClose(fileId);
@@ -626,7 +648,11 @@ async function serveRequest(id: number, channel: string, payload: unknown): Prom
         replyError(id, 'The worker core holds no task store.');
         return;
       }
-      replyValue(id, { records: tasks.list() } satisfies CoreTaskState);
+      replyValue(id, {
+        records: tasks.list(),
+        archived: tasks.archived(),
+        templates: templates?.list() ?? [],
+      } satisfies CoreTaskState);
       return;
     }
     case 'task.create': {
@@ -702,6 +728,16 @@ async function serveRequest(id: number, channel: string, payload: unknown): Prom
       replyValue(id, await tasks.returnToSession(call.id));
       return;
     }
+    case 'task.answer': {
+      // The board and the phone answer the question of a blocked task here, and the engine runs the task on.
+      const call = readTaskAnswerPayload(payload);
+      if (!call) {
+        replyError(id, 'The task.answer call needs a task id and an answer.');
+        return;
+      }
+      replyValue(id, await requireEngine().answerTask(call.id, call.answer));
+      return;
+    }
     case 'task.reopen': {
       const call = readTaskStringIdPayload(payload);
       if (!call || !tasks) {
@@ -709,6 +745,17 @@ async function serveRequest(id: number, channel: string, payload: unknown): Prom
         return;
       }
       replyValue(id, await tasks.reopen(call.id));
+      return;
+    }
+    case 'task.retry': {
+      // The board and the tasks tool retry a failed record: it returns to the queue with the
+      // children it failed, on the session the call names.
+      const call = readTaskDispatchPayload(payload);
+      if (!call) {
+        replyError(id, 'The task.retry call needs a task id and a dispatch mode.');
+        return;
+      }
+      replyValue(id, await requireEngine().retryTask(call.id, call.mode, call.sessionFileId));
       return;
     }
     case 'task.relink': {
@@ -737,6 +784,46 @@ async function serveRequest(id: number, channel: string, payload: unknown): Prom
         return;
       }
       await tasks.remove(call.id);
+      replyValue(id, null);
+      return;
+    }
+    case 'task.archive': {
+      // A settled record moves to the `archive/` folder and leaves the live lists.
+      const call = readTaskStringIdPayload(payload);
+      if (!call || !tasks) {
+        replyError(id, 'The task.archive call needs an open task store and a task id.');
+        return;
+      }
+      replyValue(id, await tasks.archive(call.id));
+      return;
+    }
+    case 'task.restore': {
+      const call = readTaskStringIdPayload(payload);
+      if (!call || !tasks) {
+        replyError(id, 'The task.restore call needs an open task store and a task id.');
+        return;
+      }
+      replyValue(id, await tasks.restore(call.id));
+      return;
+    }
+    case 'task.template.save': {
+      // The board saves a record as a template: the template copies the brief of the record.
+      const call = readTaskStringIdPayload(payload);
+      const record = call ? requireTasks().get(call.id) : null;
+      if (!call || !record || !templates) {
+        replyError(id, 'The task.template.save call needs an open template store and the id of a task.');
+        return;
+      }
+      replyValue(id, await templates.save(record));
+      return;
+    }
+    case 'task.template.remove': {
+      const call = readTaskStringIdPayload(payload);
+      if (!call || !templates) {
+        replyError(id, 'The task.template.remove call needs an open template store and a template id.');
+        return;
+      }
+      await templates.remove(call.id);
       replyValue(id, null);
       return;
     }
@@ -893,10 +980,16 @@ async function serveRequest(id: number, channel: string, payload: unknown): Prom
       return;
     }
     case 'chat.dispatch': {
-      // The task board dispatches: the turn of the session runs on its own, past the request.
+      // The task board dispatches: the record joins the queue first, the way the tasks tool does
+      // it, and the turn of the session then runs on its own, past the request.
       const call = readTaskDispatchPayload(payload);
-      if (!call) {
-        replyError(id, 'The chat.dispatch call needs a task id and a dispatch mode.');
+      if (!call || !tasks) {
+        replyError(id, 'The chat.dispatch call needs an open task store, a task id, and a dispatch mode.');
+        return;
+      }
+      const queued = await tasks.dispatch(call.id, call.mode, call.sessionFileId);
+      if (!queued) {
+        replyError(id, `The task ${call.id} cannot move to queued. It sits in state ${tasks.get(call.id)?.status ?? 'unknown'}.`);
         return;
       }
       replyValue(id, await requireEngine().dispatch(call.id, call.mode, call.sessionFileId, false));

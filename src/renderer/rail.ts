@@ -273,7 +273,8 @@ export class AppRail {
     }
     return store.list().map((task) => {
       const live = task.status === 'draft' || task.status === 'queued' || task.status === 'running';
-      const waiting = task.status === 'review';
+      // A review and a question of a session both wait for the user.
+      const waiting = task.status === 'review' || task.status === 'blocked';
       const stamp = Date.parse(task.settledAt ?? task.dispatchedAt ?? task.createdAt) || 0;
       const origin = task.origin === 'user' ? 'user' : `agent · ${task.parentTaskId ? 'child of ' + task.parentTaskId.slice(0, 8) : 'top'}`;
       return {
@@ -486,8 +487,15 @@ export class AppRail {
       empty.textContent = 'No task record exists.';
       this.taskList.append(empty);
     }
-    const waiting = rows.filter((event) => event.state === 'pending').length;
-    this.taskCount.textContent = waiting === 1 ? '1 in review' : `${waiting} in review`;
+    // The count names the reviews and the open questions, because both wait for the user.
+    const records = this.deps.taskStore?.list() ?? [];
+    const reviews = records.filter((task) => task.status === 'review').length;
+    const questions = records.filter((task) => task.status === 'blocked').length;
+    this.taskCount.textContent =
+      [
+        reviews > 0 ? (reviews === 1 ? '1 in review' : `${reviews} in review`) : '',
+        questions > 0 ? (questions === 1 ? '1 to answer' : `${questions} to answer`) : '',
+      ].filter(Boolean).join(', ') || '0 in review';
   }
 
   /**

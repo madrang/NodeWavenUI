@@ -22,7 +22,17 @@ import type { McpCallResult, McpNativeTool } from '../shared/mcp-endpoints.js';
 import { presetOfAccount } from '../shared/provider-presets/index.js';
 import { effectiveDefaultAccount, effectiveDefaultModel, modelDisplayName, modelVision } from '../shared/workspace.js';
 import type { ProviderAccount, ProviderRegistry } from '../shared/workspace.js';
-import type { TaskDispatchMode, TaskRecord } from '../shared/tasks.js';
+import {
+  taskBudgetLimit,
+  taskBudgetState,
+  taskIsLive,
+  taskPlanLines,
+  type TaskEvidence,
+  type TaskConnection,
+  type TaskDispatchMode,
+  type TaskEndCause,
+  type TaskRecord,
+} from '../shared/tasks.js';
 import type { McpToolResult } from '../shared/window-tools.js';
 import type {
   CoreAgentToolInfo,
@@ -38,6 +48,7 @@ import type {
   CoreSystemPromptSourceInfo,
 } from '../shared/core-api.js';
 import { joinSystemPromptTexts, resolveSystemPromptSources, type SystemPromptSource } from '../shared/system-prompts.js';
+import { sleep } from '../shared/retry.js';
 import type { WorkspaceSettingsStore } from '../storage/settings-store.js';
 import {
   agentToolDefinition,
@@ -54,7 +65,8 @@ import type { ChatEntry, ChatSessionStore, StoredChatSession, StoredSystemPrompt
 import { log } from './logger.js';
 import type { PatchNotice, PatchStore } from './patch-store.js';
 import type { TaskStore } from './task-store.js';
-import type { TaskToolDeps } from './task-tools.js';
+import type { TaskTemplateStore } from './task-templates.js';
+import type { EvidenceVerification, TaskToolDeps } from './task-tools.js';
 
 /** The gate the engine needs: the permission check of the tools, and the rules the tool layer reads. */
 export interface EngineGate extends PermissionCheck {
@@ -86,6 +98,8 @@ export interface ChatEngineDeps {
   readonly patches: PatchStore;
   /** The task store of the worker core. */
   readonly tasks: TaskStore;
+  /** The task templates of the worker core, for the create action of the task tool. */
+  readonly templates: TaskTemplateStore;
   /** The chat session store of the worker core, which persists every chat. */
   readonly chatSessions: ChatSessionStore;
   /** The settings store of the workspace: the provider registry, the turn limit, and the path rules. */
@@ -102,6 +116,9 @@ export interface ChatEngineDeps {
   readonly main: EngineMainCalls;
   /** Builds the inference provider of one account. The specs inject a fake. */
   readonly createProvider: new (config: OpenAiProviderConfig) => InferenceProvider;
+  /** The wait before the first retry of a round that failed a task session. The engine default is
+   * three seconds. The specs shorten it. */
+  readonly taskRetryDelayMs?: number;
   /** Pushes one core event to every surface. */
   readonly emit: (event: CoreEvent) => void;
 }
@@ -130,6 +147,9 @@ interface EngineChat {
   taskId?: string;
   /** The draft task the chat was opened for, set at its creation. Its first send dispatches the task. */
   waitingTaskId?: string;
+  /** The wrap-up that waits for the running turn to stop: the wall-clock cap of the task passed
+   * mid-turn, and the turn that stops starts the wrap-up itself. */
+  wrapupAfterTurn?: TaskWrapup;
   /** Counts the state changes of the chat. Every pushed change carries it, so a surface drops a repeat. */
   revision: number;
 }
@@ -151,6 +171,91 @@ interface ChatConnection {
   readonly vision: boolean;
 }
 
+/** The tools a task session keeps once a limit wraps its task up: it writes its work back and
+ * settles the task. */
+const TASK_WRITEBACK_TOOLS: readonly string[] = ['tasks', 'write', 'files'];
+
+/** The rounds a wrap-up may spend before the limit ends the task. */
+const TASK_WRAPUP_ROUNDS = 3;
+
+/** The wrap-up of one task: the limit that started it, the status it ends with, and the words the
+ * session reads. */
+interface TaskWrapup {
+  readonly status: 'exhausted' | 'timeout';
+  readonly cause: TaskEndCause;
+  readonly text: string;
+}
+
+/** The words of the wrap-up that a budget starts. */
+const TASK_BUDGET_WRAPUP =
+  '[task budget] The token or turn budget of this task ran low. Run no more commands. Write back the work you have not ' +
+  'persisted yet: propose your patches with the write tool, then call the tasks tool with action complete (id, result, ' +
+  'evidence), or action fail (id, reason). An answer in plain text ends the task as exhausted.';
+
+/** The words of the wrap-up that the wall clock starts. */
+const TASK_TIMEOUT_WRAPUP =
+  '[task timeout] The time limit of this task passed. Run no more commands. Write back the work you have not ' +
+  'persisted yet: propose your patches with the write tool, then call the tasks tool with action complete (id, result, ' +
+  'evidence), or action fail (id, reason). An answer in plain text ends the task as timeout.';
+
+/** The wrap-up the wall clock starts. */
+const TIMEOUT_WRAPUP: TaskWrapup = { status: 'timeout', cause: 'timeout', text: TASK_TIMEOUT_WRAPUP };
+
+/** The wrap-up that the budget of one record starts: the record sits at its reserve, or past it. */
+function budgetWrapupOf(task: TaskRecord): TaskWrapup {
+  return { status: 'exhausted', cause: taskBudgetLimit(task) ?? 'token-budget', text: TASK_BUDGET_WRAPUP };
+}
+
+/** The retries a task session spends on a round its provider failed, when its record names no count. */
+const TASK_RETRIES_DEFAULT = 2;
+
+/** The wait before the first retry of a failed round. Each further retry waits twice as long. */
+const TASK_RETRY_DELAY_MS = 3000;
+
+/** The recovery of a task session after its provider failed a round. */
+interface ProviderRecovery {
+  /** The wait before the next turn starts. */
+  readonly delayMs: number;
+  /** The connection the chat moves to before the next turn. Null keeps the bound connection. */
+  readonly connection: TaskConnection | null;
+  /** True when no retry and no connection remain: the task fails by its provider. */
+  readonly exhausted: boolean;
+  /** The message of the failure, for the record. */
+  readonly message: string;
+}
+
+/** The retries and the chain of one running record whose provider failed a round. */
+interface RetryState {
+  attempts: number;
+  /** The place of the next connection in the chain. */
+  chain: number;
+  /** The connections to try when the retries on one connection run out: the list of the record, or
+   * the other accounts of the registry. The list is built once, from the connection the chat held at
+   * the first failure of its rounds. */
+  readonly connections: readonly TaskConnection[];
+}
+
+/** The most characters the read action of the task tool answers for one transcript. The latest part
+ * of a longer transcript stays. */
+const TRANSCRIPT_CAP = 12_000;
+
+/** Reads the command of one run call argument text. Empty when the text carries none. */
+function runCommandOf(arguments_: string): string {
+  try {
+    const parsed: unknown = JSON.parse(arguments_);
+    const command = (parsed as { command?: unknown } | null)?.command;
+    return typeof command === 'string' ? command : '';
+  } catch {
+    return '';
+  }
+}
+
+/** True when the tool entry of one `run` call answers a command that exited with code zero. The
+ * first line of the result names the exit code. */
+function commandPassed(content: string): boolean {
+  return content === 'exit code: 0' || content.startsWith('exit code: 0\n');
+}
+
 /** Runs the chats of the workspace: the turns, the tools, the queue, and the task sessions. */
 export class ChatEngine {
   private readonly deps: ChatEngineDeps;
@@ -164,6 +269,14 @@ export class ChatEngine {
   private readonly taskDispatching = new Set<string>();
   /** The nudge counts per task id: one nudge per running stretch, so a silent agent hears once. */
   private readonly taskNudges = new Map<string, number>();
+  /** The wall-clock timers of the running records that carry a cap, keyed by task id. */
+  private readonly taskTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** The retries and the chain position of each running record whose provider failed a round. A
+   * round that succeeds clears the entry. */
+  private readonly taskRetries = new Map<string, RetryState>();
+  /** The chats whose tool calls run, innermost last. A tool call of a session can settle the task
+   * of that session, and the settle listeners read the stack to tell that session from another. */
+  private readonly toolCallChats: number[] = [];
 
   constructor(deps: ChatEngineDeps) {
     this.deps = deps;
@@ -171,8 +284,9 @@ export class ChatEngine {
 
   /** Restores the stored sessions as chats in creation order, and re-links the runtime chat ids of
    * the bound task records: the persisted session files keep their binding, the numeric chat ids
-   * start fresh. A live record whose session file never came back keeps its stale id and shows on
-   * the board for a re-dispatch. Call once at boot, before any surface lists the chats. */
+   * start fresh, and each restored chat takes back the task its session runs. A live record whose
+   * session file never came back keeps its stale id and shows on the board for a re-dispatch. Call
+   * once at boot, before any surface lists the chats. */
   async restore(): Promise<void> {
     const sessions = await this.deps.chatSessions.loadSessions();
     for (const session of sessions) {
@@ -205,6 +319,18 @@ export class ChatEngine {
       const chat = this.chatByFileId(task.sessionFileId);
       if (chat) {
         await this.deps.tasks.relink(task.id, chat.id);
+      }
+    }
+    // A restored chat takes back the task its session runs: the live record bound to its file, or
+    // the last one dispatched there. The turn that follows it pumps and nudges like before the restart.
+    const bound = this.deps.tasks.list();
+    for (const chat of this.chats) {
+      const owned = bound
+        .filter((task) => task.sessionFileId === chat.fileId)
+        .sort((left, right) => (left.dispatchedAt ?? '').localeCompare(right.dispatchedAt ?? ''));
+      const current = owned.find((task) => taskIsLive(task.status)) ?? owned.at(-1) ?? null;
+      if (current) {
+        chat.taskId = current.id;
       }
     }
   }
@@ -268,8 +394,10 @@ export class ChatEngine {
     this.deps.chatSessions.deleteSession(chat.fileId);
     if (chat.taskId) {
       const task = this.deps.tasks.get(chat.taskId);
-      if (task && (task.status === 'running' || task.status === 'queued') && task.sessionFileId === chat.fileId) {
-        void this.deps.tasks.cancel(task.id, 'The session tab closed.');
+      // A blocked task cancels too: its session is gone, so no answer can reach it.
+      const live = task && (task.status === 'running' || task.status === 'queued' || task.status === 'blocked');
+      if (live && task.sessionFileId === chat.fileId) {
+        void this.deps.tasks.cancel(task.id, 'The session tab closed.', 'session-closed');
       }
     }
     // No surface renders the closed chat, so its turn must not spend provider calls on it.
@@ -292,7 +420,14 @@ export class ChatEngine {
     if (!chat || (call.text.length === 0 && call.images.length === 0 && !waiting)) {
       return false;
     }
-    if (this.isRunning(chat.id)) {
+    // A session that waits on its own question takes the message as the answer to it.
+    const parked = chat.taskId ? this.deps.tasks.get(chat.taskId) : null;
+    if (parked?.status === 'blocked' && (call.text.trim().length > 0 || call.images.length > 0)) {
+      await this.answerTask(parked.id, call.text.trim(), call.images);
+      return true;
+    }
+    // A record that waits in the queue for a slot holds its messages with the answer, and they deliver when a slot takes it.
+    if (this.isRunning(chat.id) || parked?.status === 'queued') {
       // The agent of this chat runs: the message waits as a dimmed entry and delivers when the run ends.
       this.pushEntry(chat, {
         role: 'user',
@@ -315,7 +450,13 @@ export class ChatEngine {
     if (!chat || (text.trim().length === 0 && !waiting)) {
       return;
     }
-    if (this.isRunning(chat.id)) {
+    // A session that waits on its own question takes the message as the answer to it.
+    const parked = chat.taskId ? this.deps.tasks.get(chat.taskId) : null;
+    if (parked?.status === 'blocked' && text.trim().length > 0) {
+      this.unattended(`the answer of task ${parked.id}`, this.answerTask(parked.id, text.trim()));
+      return;
+    }
+    if (this.isRunning(chat.id) || parked?.status === 'queued') {
       this.pushEntry(chat, { role: 'user', content: text, queued: true });
       return;
     }
@@ -330,6 +471,13 @@ export class ChatEngine {
     if (chat) {
       this.close(chat.id);
     }
+  }
+
+  /** Lands one send-now of the phone: the chat of the named session file sends its queued entry at
+   * the index at once, the way the button of the page does. An unknown session file sends nothing. */
+  remoteSendNow(fileId: string, index: number): Promise<void> {
+    const chat = this.chatByFileId(fileId);
+    return chat ? this.sendNow(chat.id, index) : Promise.resolve();
   }
 
   /** Stops the running turn of one chat. The streamed part stays, and a `Stopped.` notice lands. */
@@ -528,8 +676,14 @@ export class ChatEngine {
     if (!store.ready(task)) {
       return `The task waits for its blockedBy tasks: ${task.blockedBy.join(', ')}.`;
     }
+    // The claim comes before the first await. The cap check and the store writes yield, and a
+    // second caller that wakes then, the queue pump for example, must see the task taken.
     this.taskDispatching.add(id);
     try {
+      if (!(await this.hasTaskRoom())) {
+        // The cap of the workspace is reached. The settle of a running record pumps the queue again.
+        return 'The task stays queued: the workspace caps its parallel task sessions, and as many run now. One of them settles, and the queue pumps again.';
+      }
       let chat: EngineChat;
       let outcome: string;
       if (mode === 'session') {
@@ -546,14 +700,26 @@ export class ChatEngine {
         chat = this.openTaskChat(task);
         outcome = 'A new chat session opened for the task.';
       }
-      await this.handTaskOver(chat, task);
+      // The picks of the origin chat ride along: a session the dispatch opens binds its prompt
+      // sources and its connection the way a first send with those picks does.
+      const picks = this.inheritedPicks(task);
+      if (!(await this.handTaskOver(chat, task, picks?.systemPromptIds))) {
+        // A prompt source that failed to build fails the record, and its note names the cause.
+        const failed = store.get(task.id);
+        return failed?.status === 'failed' ?
+          `The task ${id} failed before its session started: ${failed.note}` :
+          `The task ${id} left the queued state before its session took it.`;
+      }
+      // A record that returns to its chat after a question can hold messages there. The held answer
+      // starts the turn, so the session reads it before it works.
+      await this.drainQueued(chat);
       if (this.isRunning(chat.id)) {
         return outcome;
       }
       if (waitsForTurn) {
-        await this.runChatTurn(chat);
+        await this.runChatTurn(chat, undefined, picks);
       } else {
-        this.unattended(`the turn of chat ${chat.id}`, this.runChatTurn(chat));
+        this.unattended(`the turn of chat ${chat.id}`, this.runChatTurn(chat, undefined, picks));
       }
       return outcome;
     } finally {
@@ -570,12 +736,82 @@ export class ChatEngine {
     if (!returned || !chat) {
       return;
     }
+    // The return starts a new running stretch, so the wall-clock cap starts again.
+    this.armTaskTimeout(returned);
     this.unattended(
       `the return of task ${id}`,
       this.deliverTaskNotice(
         chat,
         `[task ${id}] The user returned the task with a comment:${comment ? `\n${comment}` : ''}\nAddress the comment, then call the tasks tool with action complete again.`,
       ),
+    );
+  }
+
+  /**
+   * Returns one record that failed, or ended by a limit, and the children it failed to the queue,
+   * on the session the caller names. The record reopens first, so the retry starts with a full
+   * budget, a fresh clock, and an open checklist. Each child keeps the dispatch it had and waits on
+   * the record again. A child of a session that closed returns to draft, because that session can
+   * no longer take it. The queue pump starts the record when a slot of the workspace frees.
+   *
+   * @param id The record id.
+   * @param mode How the retry binds the session of the record.
+   * @param sessionFileId The chat session file, on session mode.
+   * @returns The outcome text the board or the agent reads.
+   */
+  async retryTask(id: string, mode: TaskDispatchMode, sessionFileId: string | null): Promise<string> {
+    const store = this.deps.tasks;
+    const task = store.get(id);
+    if (!task) {
+      return 'The task does not exist.';
+    }
+    if (task.status !== 'failed' && task.status !== 'exhausted' && task.status !== 'timeout') {
+      return `The task holds state ${task.status}. Only a task that failed, or ended by a limit, retries.`;
+    }
+    const bound = mode === 'session' ? this.chatByFileId(sessionFileId ?? '') : null;
+    if (mode === 'session' && !bound) {
+      // The retry would leave the record queued on a session that can never take it.
+      return `The chat session ${sessionFileId ?? '(none)'} holds no open tab. The task stays failed.`;
+    }
+    // The children that failed through this record return with it, the grandchildren included. The
+    // loop visits each entry it appends, so the walk reaches the end of the line.
+    const failed = store.list().filter((record) => record.status === 'failed' && record.endCause === 'cascade');
+    const line: TaskRecord[] = [task];
+    for (const current of line) {
+      for (const child of failed) {
+        if (child.blockedBy.includes(current.id) && !line.includes(child)) {
+          line.push(child);
+        }
+      }
+    }
+    const reopened = await store.reopen(task.id);
+    const queued = reopened ? await store.dispatch(task.id, mode, sessionFileId) : null;
+    if (!queued) {
+      return `The task ${id} left the failed state before its retry.`;
+    }
+    let requeued = 0;
+    let drafted = 0;
+    for (const child of line.slice(1)) {
+      await store.reopen(child.id);
+      // A child keeps the dispatch it had. Its session must still be open to take it.
+      const open =
+        child.dispatchMode === 'new-session' || Boolean(child.sessionFileId && this.chatByFileId(child.sessionFileId));
+      const back =
+        child.dispatchMode && open ? await store.dispatch(child.id, child.dispatchMode, child.sessionFileId) : null;
+      if (back) {
+        requeued += 1;
+      } else {
+        drafted += 1;
+      }
+    }
+    this.pumpTasks();
+    const target = mode === 'session' ? `the session "${bound?.title ?? sessionFileId}"` : 'a new session';
+    const returns = (count: number, where: string, why: string): string =>
+      ` ${count} failed ${count === 1 ? 'child returns' : 'children return'} to ${where}${why}.`;
+    return (
+      `The task ${id} returns to the queue on ${target}.` +
+      (requeued > 0 ? returns(requeued, 'the queue', ' with it') : '') +
+      (drafted > 0 ? returns(drafted, 'draft', `, because the ${drafted === 1 ? 'session that ran it' : 'sessions that ran them'} closed`) : '')
     );
   }
 
@@ -608,6 +844,13 @@ export class ChatEngine {
       head = `The user accepted task ${task.id}.`;
     } else if (task.status === 'failed') {
       head = `The session failed task ${task.id}${task.note ? `: ${task.note}` : '.'}`;
+    } else if (task.status === 'exhausted') {
+      head = `The session ran task ${task.id} out of its ${task.endCause === 'turn-budget' ? 'turn' : 'token'} budget.`;
+    } else if (task.status === 'timeout') {
+      head = `Task ${task.id} ended: its time limit passed.`;
+    } else if (task.status === 'blocked') {
+      // The question of the session reaches the origin chat, so a parent answers or waits.
+      head = `The session asks about task ${task.id}: ${task.question ?? ''}\nAnswer with the tasks tool, action send (id, message), or on the task board.`;
     }
     const text = `[task settle] ${head}${task.result ? `\nResult: ${task.result}` : ''}`;
     if (this.isRunning(origin.id)) {
@@ -617,6 +860,87 @@ export class ChatEngine {
       return;
     }
     this.unattended(`the settle notice of task ${task.id}`, this.deliverTaskNotice(origin, text));
+  }
+
+  /** Handles one record settle for the chats of the engine: the wall-clock timer of the record
+   * ends, a cancel from outside stops the turn of its session, and the origin chat that did not
+   * cause the settle hears the outcome. A block counts: its question reaches the origin chat. */
+  handleTaskSettle(task: TaskRecord): void {
+    this.clearTaskTimeout(task.id);
+    this.stopCancelledTask(task);
+    this.deliverTaskSettle(task);
+  }
+
+  /** Answers the question of a blocked task. The record runs again with the clock it had, the
+   * answer lands in its session as the next message, and the turn starts on its own. A task that
+   * is not blocked takes the text as a plain send. When the workspace has no slot for the record,
+   * the record returns to the queue with the answer held in its session, and the pump dispatches
+   * it when a slot frees. */
+  async answerTask(id: string, answer: string, images: readonly ChatImage[] = []): Promise<string> {
+    const task = this.deps.tasks.get(id);
+    if (!task || task.status !== 'blocked') {
+      return this.sendTask(id, answer);
+    }
+    const chat = this.chatOfTask(task);
+    if (!chat) {
+      return 'The task holds no open session tab.';
+    }
+    const entry = {
+      role: 'user' as const,
+      content: `[task ${id}] The operator answered: ${answer}`,
+      ...(images.length > 0 ? { images } : {}),
+    };
+    if (!(await this.hasTaskRoom())) {
+      // The workspace caps its parallel task sessions, and as many run now. The record waits in
+      // the queue, and the dispatch that takes it delivers the held answer first.
+      if (!(await this.deps.tasks.requeue(id))) {
+        return `The task ${id} left the blocked state before the answer landed.`;
+      }
+      this.pushEntry(chat, { ...entry, queued: true });
+      this.persistChat(chat);
+      return 'The answer entered the session. The task waits in the queue for a free slot of the workspace, and runs then.';
+    }
+    const resumed = await this.deps.tasks.unblock(id);
+    if (!resumed) {
+      return `The task ${id} left the blocked state before the answer landed.`;
+    }
+    this.armTaskTimeout(resumed);
+    this.taskNudges.delete(id);
+    // A turn that still runs takes the answer as a queued entry, and it delivers when that turn
+    // ends. A closing reply would otherwise swallow the answer, because its request went out first.
+    const busy = this.isRunning(chat.id);
+    this.pushEntry(chat, busy ? { ...entry, queued: true } : entry);
+    this.persistChat(chat);
+    if (!busy) {
+      this.unattended(`the turn of chat ${chat.id}`, this.runChatTurn(chat));
+      return 'The answer entered the session, and the task runs again.';
+    }
+    return 'The answer queued behind the turn of the session, and it delivers when that turn ends.';
+  }
+
+  /** Handles the session side of a cancel: the running turn of the session stops when the cancel
+   * came from outside, so the agent spends nothing on a dead task, and the session reads why. A
+   * session that cancels its own task keeps its turn: the tool result and the entry end it, and an
+   * abort would only add a stop notice. Any other settle returns at once. */
+  private stopCancelledTask(task: TaskRecord): void {
+    if (task.status !== 'cancelled') {
+      return;
+    }
+    const chat = this.chatOfTask(task);
+    if (!chat) {
+      return;
+    }
+    if (this.toolCallChats.at(-1) !== chat.id) {
+      this.runningTurns.get(chat.id)?.abort();
+    }
+    // The entry is user text, so the next request of the chat carries the cancel to the model.
+    this.pushEntry(chat, {
+      role: 'user',
+      content:
+        `[task ${task.id}] The task was cancelled${task.note ? `: ${task.note}` : '.'}\n` +
+        'It needs no more work: do not call the tasks tool for it again.',
+    });
+    this.persistChat(chat);
   }
 
   /** Persists one chat as its session file. A chat without entries holds nothing worth a file, and
@@ -675,7 +999,8 @@ export class ChatEngine {
     // The bind sits past the rejected-send guards, so a send that never reaches the transcript leaves the menu open.
     if (this.chatNeedsSystemPrompt(chat)) {
       // The first send binds the prompt sources and snapshots their text, so the chat keeps what it sent.
-      if (!(await this.bindChatSystemPrompt(chat, picks?.systemPromptIds))) {
+      const failure = await this.bindChatSystemPrompt(chat, picks?.systemPromptIds);
+      if (failure) {
         return false;
       }
     }
@@ -709,9 +1034,10 @@ export class ChatEngine {
    *
    * @param chat The chat that sends its first message.
    * @param picked The source ids the menu holds, or undefined for the default of the workspace.
-   * @returns True when the chat holds a prompt. False when a source build failed; its error entry landed.
+   * @returns Null when the chat holds a prompt. Else the text of the failure, which also landed as
+   * an error entry.
    */
-  private async bindChatSystemPrompt(chat: EngineChat, picked?: readonly string[]): Promise<boolean> {
+  private async bindChatSystemPrompt(chat: EngineChat, picked?: readonly string[]): Promise<string | null> {
     const sources = resolveSystemPromptSources(picked, await this.promptSourceList());
     const bound: { readonly id: string; readonly label: string; readonly text: string }[] = [];
     for (const source of sources) {
@@ -720,11 +1046,9 @@ export class ChatEngine {
         text = await source.build({ workspacePath: this.deps.workspacePath });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.pushEntry(chat, {
-          role: 'error',
-          content: `The system prompt source "${source.label}" failed: ${message}`,
-        });
-        return false;
+        const failure = `The system prompt source "${source.label}" failed: ${message}`;
+        this.pushEntry(chat, { role: 'error', content: failure });
+        return failure;
       }
       bound.push({ id: source.id, label: source.label, text });
     }
@@ -734,7 +1058,7 @@ export class ChatEngine {
       text: joinSystemPromptTexts(bound.map((part) => part.text)),
     };
     this.metaChanged(chat);
-    return true;
+    return null;
   }
 
   /** Reads the settings one turn reads, fresh from the store so an edit of the pane applies to the next turn. */
@@ -785,8 +1109,14 @@ export class ChatEngine {
    * @param chat The chat that runs the turn.
    * @param preloaded The settings of the turn, when the caller read them already.
    * @param picks The connection picks of a first send. A later turn reads the bound provider and model.
+   * @param wrapup The wrap-up the turn runs, when a limit started one.
    */
-  private async runChatTurn(chat: EngineChat, preloaded?: TurnSettings, picks?: CoreChatPicks): Promise<void> {
+  private async runChatTurn(
+    chat: EngineChat,
+    preloaded?: TurnSettings,
+    picks?: CoreChatPicks,
+    wrapup?: TaskWrapup,
+  ): Promise<void> {
     const settings = preloaded ?? await this.loadTurnSettings();
     const connection = this.resolveChatConnection(chat, settings, picks);
     if (!connection) {
@@ -815,6 +1145,7 @@ export class ChatEngine {
     this.runningTurns.set(chat.id, abort);
     this.metaChanged(chat);
     let stopped = false;
+    let recovery: ProviderRecovery | null = null;
     try {
       await this.runAgentTurn(
         chat,
@@ -824,12 +1155,13 @@ export class ChatEngine {
         settings,
         chat.thinkingLevel ?? settings.thinkingDefault ?? undefined,
         abort.signal,
+        wrapup,
       );
     } catch (error) {
       if (abort.signal.aborted) {
         stopped = true;
         // The aborted streaming slot keeps whatever streamed. An empty one drops, queued entries included in the search.
-        for (let index = chat.entries.length - 1; index >= 0; index -= 1) {
+        for (let index = chat.entries.length - 1; index >= 0; index--) {
           const candidate = chat.entries[index];
           if (candidate && candidate.role === 'assistant') {
             if (!candidate.content && !candidate.reasoning && !candidate.toolCalls) {
@@ -840,10 +1172,10 @@ export class ChatEngine {
         }
         this.pushEntry(chat, { role: 'notice', content: 'Stopped.' });
       } else {
-        this.pushEntry(chat, {
-          role: 'error',
-          content: error instanceof Error ? error.message : String(error),
-        });
+        const message = error instanceof Error ? error.message : String(error);
+        this.pushEntry(chat, { role: 'error', content: message });
+        // A chat that runs a task recovers on its own: a plain chat waits for its user.
+        recovery = this.planProviderRecovery(chat, settings.registry, message);
       }
     } finally {
       if (this.runningTurns.get(chat.id) === abort) {
@@ -854,11 +1186,117 @@ export class ChatEngine {
       this.metaChanged(chat);
     }
     // A stop leaves the queue in place: the user halted the agent, so nothing follows on its own.
+    // The stop a wall-clock cap asked for is the exception: the turn starts the wrap-up itself.
     if (stopped) {
+      const wrapupAfter = chat.wrapupAfterTurn;
+      delete chat.wrapupAfterTurn;
+      if (wrapupAfter && chat.taskId && this.deps.tasks.get(chat.taskId)?.status === 'running') {
+        this.unattended(`the wrap-up of task ${chat.taskId}`, this.runChatTurn(chat, settings, undefined, wrapupAfter));
+      }
       return;
     }
-    await this.drainQueued(chat);
+    if (recovery) {
+      this.unattended(`the recovery of task ${chat.taskId}`, this.recoverFromProviderError(chat, recovery));
+      return;
+    }
+    // A question of the session parks the task, and an answer that waits for a slot parks it in
+    // the queue. A queued message waits with it: the dispatch that takes the record delivers the
+    // held messages first.
+    const status = this.deps.tasks.get(chat.taskId ?? '')?.status;
+    if (status !== 'blocked' && status !== 'queued') {
+      await this.drainQueued(chat);
+    }
     await this.afterTaskTurn(chat);
+  }
+
+  /** Plans the recovery of a task session after its provider failed a round. The retries of the
+   * record come first, each on the same connection. Then the fallback chain moves the chat to its
+   * next connection: the list of the record, or the other accounts of the registry with their
+   * default models. The chain is built once and walked in order, and each of its connections takes
+   * the retries of the record. Null when the chat runs no task that still runs.
+   */
+  private planProviderRecovery(chat: EngineChat, registry: ProviderRegistry, message: string): ProviderRecovery | null {
+    const task = chat.taskId ? this.deps.tasks.get(chat.taskId) : null;
+    if (!task || task.status !== 'running') {
+      return null;
+    }
+    const state: RetryState = this.taskRetries.get(task.id) ?? {
+      attempts: 0,
+      chain: 0,
+      // The chain of the record, or the other accounts of the registry with their default models.
+      connections:
+        task.fallbacks.length > 0 ?
+          task.fallbacks :
+          registry.accounts
+            .filter((account) => account.id !== chat.boundProviderId)
+            .map((account) => ({
+              providerId: account.id,
+              model: effectiveDefaultModel(registry, account) ?? account.models[0]?.id ?? '',
+            })),
+    };
+    if (state.attempts < (task.retries ?? TASK_RETRIES_DEFAULT)) {
+      state.attempts += 1;
+      this.taskRetries.set(task.id, state);
+      return {
+        delayMs: (this.deps.taskRetryDelayMs ?? TASK_RETRY_DELAY_MS) * 2 ** (state.attempts - 1),
+        connection: null,
+        exhausted: false,
+        message,
+      };
+    }
+    // The chain is walked once, in order. Each connection takes the retries of the record before the next one.
+    while (state.chain < state.connections.length) {
+      const next = state.connections[state.chain];
+      state.chain += 1;
+      // A connection that names no account or no model of the registry can never run.
+      const known =
+        next &&
+        registry.accounts.some(
+          (account) => account.id === next.providerId && account.models.some((model) => model.id === next.model),
+        );
+      if (known) {
+        state.attempts = 0;
+        this.taskRetries.set(task.id, state);
+        return { delayMs: 0, connection: next, exhausted: false, message };
+      }
+    }
+    this.taskRetries.delete(task.id);
+    return { delayMs: 0, connection: null, exhausted: true, message };
+  }
+
+  /** Runs the recovery of a task session after its provider failed a round: the wait, the move to
+   * the next connection, and the new turn. A record with no retry and no connection left fails by
+   * its provider. A record that settled while the engine waited recovers nothing. */
+  private async recoverFromProviderError(chat: EngineChat, recovery: ProviderRecovery): Promise<void> {
+    const task = chat.taskId ? this.deps.tasks.get(chat.taskId) : null;
+    if (!task) {
+      return;
+    }
+    if (recovery.exhausted) {
+      await this.deps.tasks.fail(
+        task.id,
+        `The provider failed, and no retry and no fallback remain: ${recovery.message}`,
+        'provider',
+      );
+      return;
+    }
+    if (recovery.delayMs > 0) {
+      await sleep(recovery.delayMs);
+    }
+    // A turn that started meanwhile, a send of the user for example, carries the task on.
+    if (this.deps.tasks.get(task.id)?.status !== 'running' || this.isRunning(chat.id)) {
+      return;
+    }
+    if (recovery.connection) {
+      chat.boundProviderId = recovery.connection.providerId;
+      chat.boundModel = recovery.connection.model;
+      this.pushEntry(chat, {
+        role: 'notice',
+        content: `The provider failed: ${recovery.message}\nThe task continues on the next connection of its chain, with the model ${recovery.connection.model}.`,
+      });
+      this.metaChanged(chat);
+    }
+    await this.runChatTurn(chat);
   }
 
   /** Lets one engine promise run on its own, so a failure outside a request reaches the log. */
@@ -873,6 +1311,44 @@ export class ChatEngine {
    * ready queued task. */
   pumpTasks(): void {
     this.unattended('the task queue pump', this.pumpQueuedTasks());
+  }
+
+  /** Resumes the task records after a restart. The turn of a running record died with the previous
+   * app run, so its session reads one restart notice and takes the task up again. The queue pump
+   * then hands the queued records over. Call once after `restore`, before any surface sends. */
+  recoverTasks(): void {
+    this.unattended('the task recovery', this.resumeInterruptedTasks());
+  }
+
+  /** Sends the restart notice to every running record whose session came back, then pumps the queue.
+   * The turns start on their own, so one long task holds no other back. */
+  private async resumeInterruptedTasks(): Promise<void> {
+    for (const task of this.deps.tasks.list()) {
+      if (task.status !== 'running') {
+        continue;
+      }
+      const chat = this.chatOfTask(task);
+      if (!chat || this.isRunning(chat.id)) {
+        continue;
+      }
+      // A record whose wall-clock cap passed while the app was down goes straight to its wrap-up.
+      if (this.taskTimeLeft(task) <= 0) {
+        this.unattended(`the wrap-up of task ${task.id}`, this.runChatTurn(chat, undefined, undefined, TIMEOUT_WRAPUP));
+        continue;
+      }
+      this.armTaskTimeout(task);
+      // The notice stands as the one nudge of this running stretch: a silent answer hears no second one.
+      this.taskNudges.set(task.id, 1);
+      this.pushEntry(chat, {
+        role: 'user',
+        content:
+          `[task ${task.id}] The app restarted while the task ran. Continue the task from the session history, then call the tasks tool ` +
+          'with action complete (id, result, evidence), or action fail (id, reason).',
+      });
+      this.persistChat(chat);
+      this.unattended(`the turn of chat ${chat.id}`, this.runChatTurn(chat));
+    }
+    await this.pumpQueuedTasks();
   }
 
   /** Delivers the first waiting message of a chat after a finished run: one still queued, or a
@@ -935,8 +1411,12 @@ export class ChatEngine {
     const chatId = chat?.id ?? 0;
     return {
       store: this.deps.tasks,
+      templates: this.deps.templates,
       dispatch: (id, mode, sessionFileId) => this.dispatch(id, mode, sessionFileId),
+      retry: (id, mode, sessionFileId) => this.retryTask(id, mode, sessionFileId),
       send: (id, message) => this.sendTask(id, message),
+      verifyEvidence: (task, evidence) => this.verifyTaskEvidence(task, evidence),
+      readEntries: (task) => this.taskTranscript(task),
       setTaskName: async (title, description, amend) => {
         if (!amend && !title) {
           throw new Error('A new task needs a title. Pass amend true to change the open task.');
@@ -964,7 +1444,9 @@ export class ChatEngine {
     }
   }
 
-  /** Builds the brief entry one session reads when it takes a task. */
+  /** Builds the brief entry one session reads when it takes a task. The plan and the checklist of
+   * the record ride along when its creator wrote them. A checklist changes the closing words: the
+   * session proves each goal before it completes the task. */
   private taskBrief(task: TaskRecord): string {
     const rows = [`[task ${task.id}] ${task.title}`];
     if (task.description) {
@@ -973,8 +1455,98 @@ export class ChatEngine {
     if (task.goal) {
       rows.push(`Goal: ${task.goal}`);
     }
-    rows.push('Work only this task. Verify the goal before you finish, then call the tasks tool with action complete (id, result, evidence), or action fail (id, reason) when it does not hold.');
+    if (task.plan.length > 0) {
+      rows.push(`Plan:\n${taskPlanLines(task).join('\n')}`);
+    }
+    if (task.goals.length > 0) {
+      rows.push(`Goals to prove:\n${task.goals.map((goal, index) => `  ${index + 1}. ${goal.text}`).join('\n')}`);
+    }
+    rows.push(
+      task.goals.length > 0 ?
+        'Work only this task. Prove each goal with the tasks tool, action prove (id, goal, proof): the proof is a list, and each item names a patch this session proposed (kind patch, id) or a command this session ran (kind command, command). ' +
+        'When every goal is met, call action complete (id, result, evidence), or action fail (id, reason) when a goal does not hold.' :
+        'Work only this task. Verify the goal before you finish, then call the tasks tool with action complete (id, result, evidence), or action fail (id, reason) when it does not hold.',
+    );
     return rows.join('\n');
+  }
+
+  /** Verifies the evidence of a goal proof against what the session of the task did. A patch holds
+   * when the patch store holds that record for the session, and a command holds when the session
+   * made a run call with that command and the result of the call names exit code zero. */
+  private verifyTaskEvidence(task: TaskRecord, evidence: readonly TaskEvidence[]): EvidenceVerification {
+    const verified: TaskEvidence[] = [];
+    const refused: string[] = [];
+    const chat = this.chatOfTask(task);
+    for (const reference of evidence) {
+      if (reference.kind === 'patch') {
+        const patch = this.deps.patches.patch(reference.id);
+        const owned =
+          patch &&
+          (patch.sessionFileId && task.sessionFileId ?
+            patch.sessionFileId === task.sessionFileId :
+            patch.chatId === task.sessionChatId);
+        if (owned) {
+          verified.push(reference);
+        } else {
+          refused.push(`patch ${reference.id} is no patch the session of the task proposed`);
+        }
+        continue;
+      }
+      // The result holds when a run of the command went out in the foreground and exited with code
+      // zero. A refused call, a failed command, a timed out one, or a background start proves
+      // nothing, so a later passing run of the same command is the one that counts.
+      const entries = chat?.entries ?? [];
+      const callIds = new Set(
+        entries
+          .flatMap((entry) => entry.toolCalls ?? [])
+          .filter((candidate) => candidate.name === 'run' && runCommandOf(candidate.arguments) === reference.command)
+          .map((candidate) => candidate.id),
+      );
+      const landed = entries.some(
+        (entry) => entry.role === 'tool' && callIds.has(entry.toolCallId ?? '') && commandPassed(entry.content),
+      );
+      if (landed) {
+        verified.push(reference);
+      } else {
+        refused.push(`the session of the task ran no command "${reference.command}" that exited with code zero`);
+      }
+    }
+    return { verified, refused };
+  }
+
+  /** Renders the transcript of the session of one task for the read action of the task tool: the
+   * requests, the replies, and the tool calls with their results. Null when the session holds no
+   * open tab in this app run. A long transcript keeps its latest part under a size cap. */
+  private taskTranscript(task: TaskRecord): string | null {
+    const chat = this.chatOfTask(task);
+    if (!chat) {
+      return null;
+    }
+    const lines: string[] = [];
+    for (const entry of chat.entries) {
+      if (entry.role === 'user') {
+        if (!entry.queued) {
+          lines.push(`user: ${entry.content}`);
+        }
+      } else if (entry.role === 'assistant') {
+        if (entry.content) {
+          lines.push(`assistant: ${entry.content}`);
+        }
+        for (const call of entry.toolCalls ?? []) {
+          lines.push(`tool call: ${call.name} ${call.arguments}`);
+        }
+      } else if (entry.role === 'tool') {
+        lines.push(`tool result: ${entry.content}`);
+      } else if (entry.role === 'error' || entry.role === 'notice') {
+        // A failed provider round or a stop explains why a session stalled, so the transcript keeps them.
+        lines.push(`${entry.role}: ${entry.content}`);
+      }
+    }
+    const text = lines.join('\n');
+    if (text.length <= TRANSCRIPT_CAP) {
+      return text;
+    }
+    return `[the earlier part of the transcript sits out of this read]\n${text.slice(-TRANSCRIPT_CAP)}`;
   }
 
   /** Opens the chat a new-session dispatch runs in, named after the task. */
@@ -1034,32 +1606,98 @@ export class ChatEngine {
         this.metaChanged(chat);
         return false;
       }
-      await this.handTaskOver(chat, queued);
-      return true;
+      return this.handTaskOver(chat, queued);
     } finally {
       this.taskDispatching.delete(task.id);
     }
   }
 
   /** Binds one chat to a task, names its work, and pushes the brief. The turn of the session starts
-   * with the dispatch that called this. */
-  private async handTaskOver(chat: EngineChat, task: TaskRecord): Promise<void> {
+   * with the dispatch that called this. A session that holds no prompt yet binds the given sources,
+   * or the default of the workspace, so the session agent reads the harness prompt and the
+   * instructions the way a chat does on its first send.
+   *
+   * @param chat The chat that takes the task.
+   * @param task The queued record.
+   * @param systemPromptIds The prompt sources the session inherits. Undefined binds the default.
+   * @returns True when the brief landed. False when the record left the queued state first, or when
+   * a prompt source failed: then the record fails with the cause, and a notice or error entry
+   * explains it.
+   */
+  private async handTaskOver(
+    chat: EngineChat,
+    task: TaskRecord,
+    systemPromptIds?: readonly string[],
+  ): Promise<boolean> {
     chat.taskId = task.id;
     this.metaChanged(chat);
-    await this.deps.tasks.bindSession(task.id, chat.id, chat.fileId);
+    const bound = await this.deps.tasks.bindSession(task.id, chat.id, chat.fileId);
+    if (!bound) {
+      // The record left the queued state while the dispatch ran, a cancel for example.
+      this.pushEntry(chat, {
+        role: 'notice',
+        content: `The task ${task.id} left the queue before this chat took it. Nothing was sent.`,
+      });
+      this.persistChat(chat);
+      return false;
+    }
+    // A session that ran this record before lets go of it here: one record has one session.
+    for (const other of this.chats) {
+      if (other !== chat && other.taskId === task.id) {
+        delete other.taskId;
+        this.metaChanged(other);
+      }
+    }
+    this.armTaskTimeout(bound);
+    const failure = this.chatNeedsSystemPrompt(chat) ? await this.bindChatSystemPrompt(chat, systemPromptIds) : null;
+    if (failure) {
+      // The session cannot start without its prompt. The record fails with the cause its entry names,
+      // and the queued children it held fail with it.
+      await this.deps.tasks.fail(task.id, `The session could not start. ${failure}`, 'session-start');
+      return false;
+    }
     // The session names its work after the record, so the patches of the run group under the task
     // title and the tab reads it.
     await this.deps.patches.setTask(chat.id, task.title, task.description, false);
-    this.pushEntry(chat, { role: 'user', content: this.taskBrief(task) });
+    // A session that read the brief of this record reads it once: a record that returns to its chat
+    // after a question picks up where it left off.
+    const head = `[task ${task.id}] ${task.title}`;
+    const briefed = chat.entries.some(
+      (entry) => entry.role === 'user' && (entry.content === head || entry.content.startsWith(`${head}\n`)),
+    );
+    if (!briefed) {
+      this.pushEntry(chat, { role: 'user', content: this.taskBrief(task) });
+    }
     this.persistChat(chat);
+    return true;
   }
 
-  /** Opens sessions and hands idle chats their next ready queued task. Runs on every record change. */
+  /** The picks a task session inherits: the provider, the model, and the prompt sources of the chat
+   * whose agent created the task, when that chat lives in this app run. Undefined means the defaults
+   * of the workspace. */
+  private inheritedPicks(task: TaskRecord): CoreChatPicks | undefined {
+    const origin = task.originChatId ? this.chatById(task.originChatId) : null;
+    if (!origin) {
+      return undefined;
+    }
+    return {
+      ...(origin.boundProviderId ? { providerId: origin.boundProviderId } : {}),
+      ...(origin.boundModel ? { model: origin.boundModel } : {}),
+      ...(origin.boundSystemPrompt ? { systemPromptIds: [...origin.boundSystemPrompt.sourceIds] } : {}),
+    };
+  }
+
+  /** Opens sessions and hands idle chats their next ready queued task. Runs on every record change.
+   * The queue order is the priority of the records, and the cap of the workspace on its parallel
+   * task sessions holds the rest until a running record settles. */
   private async pumpQueuedTasks(): Promise<void> {
     const store = this.deps.tasks;
-    for (const task of store.list()) {
-      if (task.status !== 'queued' || this.taskDispatching.has(task.id) || !store.ready(task)) {
+    for (const task of store.queued()) {
+      if (this.taskDispatching.has(task.id) || !store.ready(task)) {
         continue;
+      }
+      if (!(await this.hasTaskRoom())) {
+        return;
       }
       if (task.dispatchMode === 'new-session' && !task.sessionFileId) {
         await this.dispatch(task.id, 'new-session', null);
@@ -1086,6 +1724,10 @@ export class ChatEngine {
       return;
     }
     if (task.status === 'running') {
+      // A turn that runs carries the task on: the drain of this chat may have just started one.
+      if (this.isRunning(chat.id)) {
+        return;
+      }
       const nudged = this.taskNudges.get(task.id) ?? 0;
       if (nudged < 1) {
         this.taskNudges.set(task.id, nudged + 1);
@@ -1105,15 +1747,26 @@ export class ChatEngine {
     return task.sessionChatId ? (this.chatById(task.sessionChatId) ?? null) : null;
   }
 
-  /** Sends one message into the session of a task. A busy session queues the entry for its drain. */
+  /** Sends one message into the session of a task. A busy session queues the entry for its drain.
+   * A blocked task takes the message as the answer to its question. A record that waits in the
+   * queue for a slot holds the message with its answer. */
   private async sendTask(id: string, message: string): Promise<string> {
     const task = this.deps.tasks.get(id);
     if (!task) {
       return 'The task does not exist.';
     }
+    if (task.status === 'blocked') {
+      return this.answerTask(id, message);
+    }
     const chat = this.chatOfTask(task);
     if (!chat) {
       return 'The task holds no open session tab.';
+    }
+    if (task.status === 'queued') {
+      // The record waits for a slot with its answer held in the session: the message waits with it.
+      this.pushEntry(chat, { role: 'user', content: `[task ${id}] ${message}`, queued: true });
+      this.persistChat(chat);
+      return 'The task waits for a free slot of the workspace. The message queued in its session with the answer, and it delivers when a slot takes it.';
     }
     if (this.isRunning(chat.id)) {
       this.pushEntry(chat, { role: 'user', content: `[task ${id}] ${message}`, queued: true });
@@ -1130,7 +1783,11 @@ export class ChatEngine {
     return buildAgentTools(this.agentToolDeps(settings, await this.deps.main.nativeTools(), chat));
   }
 
-  /** Runs the tool-calling loop of one user message, until the model answers in text or hits the round limit. */
+  /** Runs the tool-calling loop of one user message, until the model answers in text or hits the
+   * round limit. The loop charges every round to the task of the chat. A budget that runs low, or a
+   * wrap-up the caller passes, narrows the tools to the write-back ones and ends the task by its
+   * limit when the agent no longer settles it. A turn that starts while the budget sits at its
+   * reserve runs as that wrap-up. A question of the session ends the loop after a closing reply. */
   private async runAgentTurn(
     chat: EngineChat,
     provider: InferenceProvider,
@@ -1139,18 +1796,36 @@ export class ChatEngine {
     settings: TurnSettings,
     thinkingLevel: string | undefined,
     signal: AbortSignal,
+    forced?: TaskWrapup,
   ): Promise<void> {
     let turn = 0;
     const limit = settings.turnLimit;
+    // The wrap-up of the task of the chat: a limit started it, or its budget already sits at the reserve.
+    let wrapup: TaskWrapup | null = forced ?? this.pendingWrapup(chat);
+    let wrapupRounds = 0;
+    let announced = false;
     while (typeof limit !== 'number' || turn < limit) {
       turn += 1;
+      // A round counts as a wrap-up round when its request went out after the wrap-up began.
+      const inWrapup = wrapup !== null;
+      if (wrapup && !announced) {
+        // The words land as user text, so the model reads them in this round and in every later one.
+        announced = true;
+        this.pushEntry(chat, { role: 'user', content: wrapup.text });
+        this.persistChat(chat);
+      }
       const tools = await this.agentTools(chat, settings);
+      // The messages build before the streaming slot opens, so the slot never reaches the model.
       const messages = this.agentMessages(chat, vision);
+      // A question of the session parks the task: the turn may close in text, and it offers no tool while the task waits.
+      const parked = this.deps.tasks.get(chat.taskId ?? '')?.status === 'blocked';
+      // A wrap-up keeps the write-back tools only, so the session settles the task and nothing else.
+      const offered = parked ? [] : wrapup ? tools.filter((tool) => TASK_WRITEBACK_TOOLS.includes(tool.name)) : tools;
       const streaming = this.beginStreamingEntry(chat);
       const result = await provider.complete({
         model,
         messages,
-        tools: tools.map(agentToolDefinition),
+        tools: offered.map(agentToolDefinition),
         ...(thinkingLevel ? { thinkingLevel } : {}),
         onDelta: streaming.onDelta,
         signal,
@@ -1160,23 +1835,75 @@ export class ChatEngine {
         chat.outputTokens = (chat.outputTokens ?? 0) + result.usage.completionTokens;
         this.metaChanged(chat);
       }
-      if (result.toolCalls && result.toolCalls.length > 0) {
-        streaming.settle({
-          role: 'assistant',
-          content: result.content,
-          ...(result.reasoning ? { reasoning: result.reasoning } : {}),
-          toolCalls: result.toolCalls,
-        });
-        for (const call of result.toolCalls) {
-          await this.runAgentToolCall(chat, tools, call);
-        }
-        continue;
+      // A round that came back clears the retries of the task.
+      if (chat.taskId) {
+        this.taskRetries.delete(chat.taskId);
+      }
+      const charged = chat.taskId ?
+        await this.deps.tasks.charge(
+          chat.taskId,
+          result.usage?.promptTokens ?? 0,
+          result.usage?.completionTokens ?? 0,
+        ) :
+        null;
+      const calls = result.toolCalls ?? [];
+      // The caps bind a record that runs. A round of a record in review counts, but it wraps nothing up.
+      if (!wrapup && charged && charged.status === 'running' && taskBudgetState(charged) !== 'run') {
+        // The budget ran low. The calls of this round that are no write-back refuse, and the next
+        // round wraps up.
+        wrapup = budgetWrapupOf(charged);
       }
       streaming.settle({
         role: 'assistant',
         content: result.content,
         ...(result.reasoning ? { reasoning: result.reasoning } : {}),
+        ...(calls.length > 0 ? { toolCalls: calls } : {}),
       });
+      const refusal = wrapup ? wrapup.text : undefined;
+      // The refusals of this round carry the words of the wrap-up, so the next round needs no second copy.
+      if (refusal && calls.some((call) => !TASK_WRITEBACK_TOOLS.includes(call.name))) {
+        announced = true;
+      }
+      for (const call of calls) {
+        // A parked task holds no tool for the session: a call that comes anyway meets no tool.
+        await this.runAgentToolCall(chat, parked ? [] : tools, call, refusal);
+      }
+      if (parked) {
+        return;
+      }
+      const latest = this.deps.tasks.get(chat.taskId ?? '');
+      if (wrapup && inWrapup) {
+        wrapupRounds += 1;
+        // The agent settled the task, answered in text, or used the rounds of the wrap-up: the limit
+        // ends the task that still runs.
+        if (
+          !latest ||
+          latest.status !== 'running' ||
+          calls.length === 0 ||
+          wrapupRounds >= TASK_WRAPUP_ROUNDS ||
+          taskBudgetState(latest) === 'out'
+        ) {
+          await this.endTaskByLimit(chat, wrapup);
+          return;
+        }
+        continue;
+      }
+      if (wrapup && latest?.status !== 'running') {
+        // The calls of the round that reached the reserve settled the task: no wrap-up follows it.
+        return;
+      }
+      if (calls.length === 0) {
+        // The round that reached the reserve ended in plain text. The next round is the wrap-up, so
+        // the session reads its words and writes its work back.
+        if (wrapup) {
+          continue;
+        }
+        return;
+      }
+    }
+    if (wrapup) {
+      // The round limit of the workspace ended the wrap-up first.
+      await this.endTaskByLimit(chat, wrapup);
       return;
     }
     this.pushEntry(chat, {
@@ -1185,8 +1912,100 @@ export class ChatEngine {
     });
   }
 
-  /** Runs one tool call of the agent and appends the result entry the next request retransmits. */
-  private async runAgentToolCall(chat: EngineChat, tools: readonly AgentTool[], call: ToolCall): Promise<void> {
+  /** Ends the task of one chat by the limit that wrapped it up. The record settles with the cause
+   * of the limit, unless the agent settled it first, and the session reads the end. */
+  private async endTaskByLimit(chat: EngineChat, wrapup: TaskWrapup): Promise<void> {
+    if (!chat.taskId || !(await this.deps.tasks.endRun(chat.taskId, wrapup.status, wrapup.cause))) {
+      return;
+    }
+    this.pushEntry(chat, {
+      role: 'notice',
+      content: wrapup.status === 'timeout' ?
+        `The task ${chat.taskId} ended as timeout: its time limit passed.` :
+        `The task ${chat.taskId} ended as exhausted: its budget ran out.`,
+    });
+    this.persistChat(chat);
+  }
+
+  /** The wrap-up a turn starts in when the budget of the task of the chat already sits at its
+   * reserve, or past it. Null while the chat runs no running task, or while its budget runs. */
+  private pendingWrapup(chat: EngineChat): TaskWrapup | null {
+    const task = chat.taskId ? this.deps.tasks.get(chat.taskId) : null;
+    return task && task.status === 'running' && taskBudgetState(task) !== 'run' ? budgetWrapupOf(task) : null;
+  }
+
+  /** True when the workspace sets no cap on its task sessions, or when fewer records run than the
+   * cap allows. A record counts while its status is running. */
+  private async hasTaskRoom(): Promise<boolean> {
+    const cap = await this.deps.settings.loadTaskConcurrency();
+    if (!cap) {
+      return true;
+    }
+    return this.deps.tasks.list().filter((task) => task.status === 'running').length < cap;
+  }
+
+  /** The milliseconds left before the wall-clock cap of one record passes. Infinity without a cap,
+   * and infinity before the record started. */
+  private taskTimeLeft(task: TaskRecord): number {
+    return task.timeoutMs && task.startedAt ? Date.parse(task.startedAt) + task.timeoutMs - Date.now() : Infinity;
+  }
+
+  /** Arms the wall-clock cap of one running record: when it passes, the session wraps the task up
+   * and the record ends as timeout. A record without a cap, or one that no longer runs, arms nothing. */
+  private armTaskTimeout(task: TaskRecord): void {
+    this.clearTaskTimeout(task.id);
+    const left = this.taskTimeLeft(task);
+    if (left === Infinity || task.status !== 'running') {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.taskTimers.delete(task.id);
+      this.onTaskTimeout(task.id);
+    }, Math.max(0, left));
+    // The timer never keeps the process alive on its own.
+    timer.unref();
+    this.taskTimers.set(task.id, timer);
+  }
+
+  /** Ends the wall-clock timer of one record, when one runs. */
+  private clearTaskTimeout(id: string): void {
+    const timer = this.taskTimers.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      this.taskTimers.delete(id);
+    }
+  }
+
+  /** Handles the wall-clock cap of one record when it passes. The turn that runs stops and starts
+   * the wrap-up itself, so the two never overlap. A session that sits idle starts the wrap-up at once. */
+  private onTaskTimeout(id: string): void {
+    const task = this.deps.tasks.get(id);
+    const chat = task ? this.chatOfTask(task) : null;
+    if (!task || task.status !== 'running' || !chat) {
+      return;
+    }
+    if (this.isRunning(chat.id)) {
+      chat.wrapupAfterTurn = TIMEOUT_WRAPUP;
+      this.runningTurns.get(chat.id)?.abort();
+      return;
+    }
+    this.unattended(`the wrap-up of task ${id}`, this.runChatTurn(chat, undefined, undefined, TIMEOUT_WRAPUP));
+  }
+
+  /** Runs one tool call of the agent and appends the result entry the next request retransmits.
+   *
+   * @param chat The chat whose turn runs the call.
+   * @param tools The tools of the turn.
+   * @param call The call of the model.
+   * @param refusal The words that answer a call that is no write-back, while a limit wraps the task
+   * of the chat up. The call does not run.
+   */
+  private async runAgentToolCall(
+    chat: EngineChat,
+    tools: readonly AgentTool[],
+    call: ToolCall,
+    refusal?: string,
+  ): Promise<void> {
     let args: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(call.arguments);
@@ -1196,13 +2015,21 @@ export class ChatEngine {
     }
     let output: AgentToolOutput;
     const tool = tools.find((candidate) => candidate.name === call.name);
-    if (!tool) {
+    if (refusal && !TASK_WRITEBACK_TOOLS.includes(call.name)) {
+      // A limit wrapped the task up: a call that is no write-back refuses, and the model reads why.
+      output = { text: refusal };
+    } else if (!tool) {
       output = { text: `Error: no tool named "${call.name}" exists.` };
     } else {
       try {
+        // The stack names the chat whose tool call runs, so a settle that the call causes tells its
+        // own session from another.
+        this.toolCallChats.push(chat.id);
         output = await tool.run(args);
       } catch (error) {
         output = { text: `Error: ${error instanceof Error ? error.message : String(error)}` };
+      } finally {
+        this.toolCallChats.pop();
       }
     }
     // A JSON object or array reply rides along as a payload, so the tab shows it in the viewer.
@@ -1279,7 +2106,7 @@ export class ChatEngine {
       }
     }
     flushToolImages();
-    return messages;
+    return orderToolBatches(messages);
   }
 
   /** Opens one in-flight assistant entry that streams the reply, and settles it with the final entry.
@@ -1408,4 +2235,35 @@ export class ChatEngine {
   private chatByFileId(fileId: string): EngineChat | null {
     return this.chats.find((chat) => chat.fileId === fileId) ?? null;
   }
+}
+
+/** Puts every tool result right under the tool call it answers. A message that sends now lands
+ * after the reply that called the tools and before their results, because the results append after
+ * it. A request that carries a user message between a call and its results is refused by strict
+ * providers, so the held user messages send after the batch. The entries of the chat keep their
+ * order: only the wire moves. */
+function orderToolBatches(messages: readonly ChatMessage[]): ChatMessage[] {
+  const ordered = [...messages];
+  for (let call = 0; call < ordered.length; call++) {
+    if (!ordered[call]?.toolCalls?.length) {
+      continue;
+    }
+    let end = call + 1;
+    while (end < ordered.length && (ordered[end]?.role === 'tool' || ordered[end]?.role === 'user')) {
+      end += 1;
+    }
+    // The run that follows a tool-call reply holds the results of the batch and the held messages.
+    const run = ordered.slice(call + 1, end);
+    const firstUser = run.findIndex((message) => message.role === 'user');
+    if (firstUser < 0 || !run.slice(firstUser + 1).some((message) => message.role === 'tool')) {
+      continue;
+    }
+    ordered.splice(
+      call + 1,
+      run.length,
+      ...run.filter((message) => message.role === 'tool'),
+      ...run.filter((message) => message.role === 'user'),
+    );
+  }
+  return ordered;
 }

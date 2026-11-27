@@ -329,3 +329,53 @@ export function appendToolCalls(
     container.append(cardItem(buildToolReplyCard(reply), tag));
   }
 }
+
+/** The typed answer of one ask card. A surface that rebuilds its cards passes it, so the field
+ * starts with the typed text and reports each change. */
+export interface TaskAskDraft {
+  readonly text: string;
+  readonly keep: (text: string) => void;
+}
+
+/** Builds the ask card of a blocked task: the question of its session, and the field that answers
+ * it. Every surface that lists the task builds the same card, and the answer callback of the
+ * surface carries the text to the engine. */
+export function buildTaskAskCard(
+  question: string,
+  answer: (text: string) => void,
+  draft?: TaskAskDraft,
+): HTMLElement {
+  const card = document.createElement('div');
+  card.className = 'task-ask-card';
+  const label = document.createElement('span');
+  label.className = 'task-ask-label';
+  label.textContent = 'The session asks';
+  const text = document.createElement('p');
+  text.className = 'task-ask-question';
+  text.textContent = question;
+  const form = document.createElement('form');
+  form.className = 'task-ask-form';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'task-ask-input';
+  input.placeholder = 'Your answer';
+  input.required = true;
+  input.value = draft?.text ?? '';
+  const send = document.createElement('button');
+  send.type = 'submit';
+  send.className = 'task-ask-send';
+  send.textContent = 'Answer';
+  form.append(input, send);
+  input.addEventListener('input', () => {
+    draft?.keep(input.value);
+  });
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const trimmed = input.value.trim();
+    if (trimmed) {
+      answer(trimmed);
+    }
+  });
+  card.append(label, text, form);
+  return card;
+}

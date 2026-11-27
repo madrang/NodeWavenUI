@@ -31,6 +31,7 @@ const THEME_KEY = 'theme';
 const FRAME_MODE_KEY = 'window-frame';
 const LANGUAGE_KEY = 'language';
 const AGENT_TURN_LIMIT_KEY = 'agent-turn-limit';
+const TASK_CONCURRENCY_KEY = 'task-concurrency-limit';
 const AGENT_THINKING_KEY = 'agent-thinking';
 const CHAT_KEY_KEY = 'chat-key';
 const AGENT_TOOL_DEFAULTS_KEY = 'agent-tool-defaults';
@@ -404,6 +405,37 @@ export class WorkspaceSettingsStore {
    */
   async saveAgentTurnLimit(limit: number | null): Promise<void> {
     await this.backend.set(AGENT_TURN_LIMIT_KEY, JSON.stringify(limit));
+  }
+
+  /**
+   * Reads the cap of the workspace on the task sessions that run at the same time.
+   *
+   * @returns The cap, or null when the workspace sets none. A missing or invalid record means no cap.
+   * @throws StorageError when the store fails.
+   */
+  async loadTaskConcurrency(): Promise<number | null> {
+    const raw = await this.backend.get(TASK_CONCURRENCY_KEY);
+    if (!raw) {
+      return null;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      console.warn('[NodeWavenUI] the stored task concurrency cap is damaged and ignored. The workspace sets no cap.');
+      return null;
+    }
+    return typeof parsed === 'number' && Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  /**
+   * Writes the cap of the workspace on the task sessions that run at the same time.
+   *
+   * @param limit The cap to persist, or null for no cap.
+   * @throws StorageError when the store fails.
+   */
+  async saveTaskConcurrency(limit: number | null): Promise<void> {
+    await this.backend.set(TASK_CONCURRENCY_KEY, JSON.stringify(limit));
   }
 
   /**

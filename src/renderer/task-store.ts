@@ -8,7 +8,7 @@
 import { readBridge, type NodeWavenBridge } from '../shared/bridge.js';
 import { isRecord } from '../shared/records.js';
 import type { CoreTaskCreateInput, CoreTaskState, CoreTaskUpdateInput } from '../shared/core-api.js';
-import type { TaskRecord } from '../shared/tasks.js';
+import type { TaskRecord, TaskTemplate } from '../shared/tasks.js';
 
 /** The input of one create call. */
 export type TaskCreateInput = CoreTaskCreateInput;
@@ -16,18 +16,25 @@ export type TaskCreateInput = CoreTaskCreateInput;
 /** The editable fields of one record. An absent field keeps its stored value, and an empty string clears it. */
 export type TaskUpdateInput = CoreTaskUpdateInput;
 
-/** Reads one pushed or answered task state. Returns null on an invalid shape. */
+/** Reads one pushed or answered task state. Returns null on an invalid shape. The archived records
+ * and the templates ride along when the state carries them. */
 function readTaskState(value: unknown): CoreTaskState | null {
   if (!isRecord(value) || !Array.isArray(value.records)) {
     return null;
   }
-  return { records: value.records as readonly TaskRecord[] };
+  return {
+    records: value.records as readonly TaskRecord[],
+    ...(Array.isArray(value.archived) ? { archived: value.archived as readonly TaskRecord[] } : {}),
+    ...(Array.isArray(value.templates) ? { templates: value.templates as readonly TaskTemplate[] } : {}),
+  };
 }
 
 /** The task store client of the workspace page. Every record lives in the worker core. */
 export class TaskStore {
   private readonly bridge: NodeWavenBridge | null;
   private records: readonly TaskRecord[] = [];
+  private archivedRecords: readonly TaskRecord[] = [];
+  private templateList: readonly TaskTemplate[] = [];
   private readonly listeners = new Set<() => void>();
   private readonly settleListeners = new Set<(task: TaskRecord) => void>();
 
@@ -36,7 +43,7 @@ export class TaskStore {
     this.bridge?.workspace.onWorkspaceEvent('task.event', (payload) => {
       const state = readTaskState(payload);
       if (state) {
-        this.records = state.records;
+        this.take(state);
         this.emit();
       }
     });
@@ -49,12 +56,31 @@ export class TaskStore {
     });
   }
 
-  /** Reads every stored record into the cache. Call once at boot, before any tool runs. */
+  /** Reads every stored record, archived record, and template into the cache. Call once at boot,
+   * before any tool runs. */
   async load(): Promise<void> {
     const state = readTaskState(await this.request('task.list'));
     if (state) {
-      this.records = state.records;
+      this.take(state);
     }
+  }
+
+  /** Keeps the lists of one state of the core. A state that carries no archive and no templates
+   * keeps the page with empty lists of them. */
+  private take(state: CoreTaskState): void {
+    this.records = state.records;
+    this.archivedRecords = state.archived ?? [];
+    this.templateList = state.templates ?? [];
+  }
+
+  /** Reads the archived records, newest first. */
+  archived(): readonly TaskRecord[] {
+    return [...this.archivedRecords].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  /** Reads the task templates, newest first. */
+  templates(): readonly TaskTemplate[] {
+    return [...this.templateList].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
   /** Subscribes to every record change. The listener holds no arguments: it re-reads the lists. */
@@ -108,6 +134,19 @@ export class TaskStore {
    */
   async dispatch(id: string, mode: 'new-session' | 'session', sessionFileId: string | null): Promise<TaskRecord | null> {
     return (await this.request('task.dispatch', { id, mode, sessionFileId })) as TaskRecord | null;
+  }
+
+  /**
+   * Returns one failed record and the children it failed to the queue in the worker core, on the
+   * session the call names.
+   *
+   * @param id The record id.
+   * @param mode How the retry binds the session.
+   * @param sessionFileId The chat session file, on session mode. Null on new-session mode.
+   * @returns The outcome text of the engine.
+   */
+  async retry(id: string, mode: 'new-session' | 'session', sessionFileId: string | null): Promise<string> {
+    return (await this.request('task.retry', { id, mode, sessionFileId })) as string;
   }
 
   /**
@@ -225,6 +264,59 @@ export class TaskStore {
    */
   async remove(id: string): Promise<void> {
     await this.request('task.remove', { id });
+  }
+
+  /**
+   * Answers the question of a blocked record in the worker core: the record runs again, and the
+   * answer lands in its session as the next message.
+   *
+   * @param id The record id.
+   * @param answer The answer of the operator.
+   * @returns The outcome text of the engine.
+   */
+  async answer(id: string, answer: string): Promise<string> {
+    return (await this.request('task.answer', { id, answer })) as string;
+  }
+
+  /**
+   * Puts one settled record away in the worker core: its file moves to the `archive/` folder, and
+   * the record leaves the live lists.
+   *
+   * @param id The record id.
+   * @returns The record, or null when it is absent or still lives.
+   */
+  async archive(id: string): Promise<TaskRecord | null> {
+    return (await this.request('task.archive', { id })) as TaskRecord | null;
+  }
+
+  /**
+   * Brings one archived record back to the live lists, with the state it left with.
+   *
+   * @param id The record id.
+   * @returns The record, or null when the archive holds none of that id.
+   */
+  async restore(id: string): Promise<TaskRecord | null> {
+    return (await this.request('task.restore', { id })) as TaskRecord | null;
+  }
+
+  /**
+   * Saves one record as a task template: the template keeps its brief, its checklist, its plan,
+   * and its category.
+   *
+   * @param id The record id.
+   * @returns The template.
+   */
+  async saveTemplate(id: string): Promise<TaskTemplate> {
+    return (await this.request('task.template.save', { id })) as TaskTemplate;
+  }
+
+  /**
+   * Removes one task template. The tasks that came from it stay as they are.
+   *
+   * @param id The template id.
+   */
+  async removeTemplate(id: string): Promise<void> {
+    await this.request('task.template.remove', { id });
   }
 
   /** Runs one core request of the task contract. */

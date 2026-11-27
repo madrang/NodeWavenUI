@@ -1,7 +1,22 @@
 <form class="task-board-create">
+  <div class="task-create-template-row">
+    <select class="task-create-template" title="${tasks.createTemplateTitle}"></select>
+    <button type="button" class="task-board-button task-template-remove">${tasks.templateRemove}</button>
+  </div>
   <input class="task-create-title" type="text" placeholder="${tasks.createTitlePlaceholder}" required>
   <textarea class="task-create-brief" placeholder="${tasks.createBriefPlaceholder}"></textarea>
   <input class="task-create-goal" type="text" placeholder="${tasks.createGoalPlaceholder}">
+  <textarea class="task-create-goals" placeholder="${tasks.createGoalsPlaceholder}"></textarea>
+  <input class="task-create-category" type="text" placeholder="${tasks.createCategoryPlaceholder}">
+  <div class="task-create-caps">
+    <input class="task-create-tokens" type="number" min="1" step="1" placeholder="${tasks.createTokensPlaceholder}">
+    <input class="task-create-turns" type="number" min="1" step="1" placeholder="${tasks.createTurnsPlaceholder}">
+    <input class="task-create-timeout" type="number" min="1" step="1" placeholder="${tasks.createTimeoutPlaceholder}">
+    <select class="task-create-priority" title="${tasks.createPriorityTitle}"></select>
+  </div>
   <button type="submit" class="task-board-button primary">${tasks.createSubmit}</button>
 </form>
+<div class="task-board-filter">
+  <select class="task-category-filter" title="${tasks.categoryFilterTitle}"></select>
+</div>
 <div class="task-board-groups"></div>

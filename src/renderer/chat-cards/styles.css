@@ -313,3 +313,51 @@ json-viewer {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+
+/* The ask card of a blocked task: the question of its session, and the field that answers it. */
+.task-ask-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent, var(--border));
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.task-ask-label {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.task-ask-question {
+  margin: 0;
+  color: var(--text);
+}
+
+.task-ask-form {
+  display: flex;
+  gap: 6px;
+}
+
+.task-ask-form input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.task-ask-send {
+  font: inherit;
+  font-size: 11px;
+  padding: 4px 10px;
+  border: 1px solid var(--accent-strong);
+  border-radius: 6px;
+  background: var(--accent-strong);
+  color: var(--on-accent);
+}

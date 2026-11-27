@@ -367,6 +367,24 @@ main#remote > section {
   white-space: pre-wrap;
 }
 
+/* A queued request waits for the running turn, so it reads dimmed until it delivers. */
+.entry.user.queued {
+  opacity: 0.55;
+}
+
+.queued-marker {
+  margin-left: 6px;
+  font-size: 11px;
+}
+
+/* The send-now control of a queued request: quiet until hovered, like the app. */
+.queued-send-now {
+  margin-left: 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 1px 7px;
+}
+
 .entry.assistant {
   align-self: stretch;
   max-width: none;
@@ -546,6 +564,35 @@ main#remote > section {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 11px;
+}
+
+/* The plan of one task card: each step carries the mark of its state in place of a number. */
+.task-card-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+
+.task-card-plan li::before {
+  display: inline-block;
+  width: 14px;
+  content: '☐';
+}
+
+.task-card-plan li[data-state='in_progress']::before {
+  content: '▶';
+}
+
+.task-card-plan li[data-state='completed'] {
+  text-decoration: line-through;
+}
+
+.task-card-plan li[data-state='completed']::before {
+  content: '✔';
 }
 
 /* The collapsed prompt: the source title as the summary, the text under a rule. */

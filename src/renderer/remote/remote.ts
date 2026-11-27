@@ -18,6 +18,7 @@ import {
   appendReasoning,
   appendToolCalls,
   buildImageStrip,
+  buildTaskAskCard,
   buildToolPair,
   buildToolReplyCard,
   type EntrySlot,
@@ -62,6 +63,16 @@ interface TaskItem {
   readonly description?: string;
   readonly goal?: string;
   readonly result: string | null;
+  readonly tokensIn?: number;
+  readonly tokensOut?: number;
+  readonly turns?: number;
+  readonly plan?: readonly { text: string; state: string }[];
+  readonly goals?: readonly { text: string; met: boolean }[];
+  readonly question?: string | null;
+  /** The note of an ended task: the reason it ended. */
+  readonly note?: string | null;
+  /** The chat session that ran the task, so a retry can name it. */
+  readonly sessionFileId?: string | null;
 }
 
 interface ChatSessionDto {
@@ -154,6 +165,8 @@ const state = {
   patches: { patches: [] as PatchItem[], tasks: [] as { id: number; title: string; closedAt: string | null }[] },
   tasks: { records: [] as TaskItem[] },
 };
+/** The chat sessions of the last read, so the card of an ended task can offer them to a retry. */
+let chatSessions: readonly ChatSessionDto[] = [];
 
 /** Runs one API call with the bearer. Throws with the answer text on a failure. */
 async function api(path: string, init?: RequestInit): Promise<unknown> {
@@ -451,10 +464,73 @@ function taskCardBody(task: TaskItem): HTMLElement {
     goal.textContent = `Goal: ${task.goal}`;
     body.append(goal);
   }
+  // The plan the session agent wrote shows like the board shows it.
+  if (task.plan && task.plan.length > 0) {
+    const plan = document.createElement('ol');
+    plan.className = 'task-card-plan';
+    for (const step of task.plan) {
+      const item = document.createElement('li');
+      item.dataset.state = step.state;
+      item.textContent = step.text;
+      plan.append(item);
+    }
+    body.append(plan);
+  }
+  // The checklist shows the same way: an open goal and a met one.
+  if (task.goals && task.goals.length > 0) {
+    const goals = document.createElement('ol');
+    goals.className = 'task-card-plan';
+    for (const entry of task.goals) {
+      const item = document.createElement('li');
+      item.dataset.state = entry.met ? 'completed' : 'pending';
+      item.textContent = entry.text;
+      goals.append(item);
+    }
+    body.append(goals);
+  }
+  // A task whose session ran shows its spend, like the board.
+  if (task.turns) {
+    const spend = document.createElement('p');
+    spend.className = 'task-card-goal';
+    spend.textContent = `Spend: ${(task.tokensIn ?? 0) + (task.tokensOut ?? 0)} tokens, ${task.turns} rounds`;
+    body.append(spend);
+  }
+  // The note of an ended task names why it ended, like the board shows it.
+  if (task.note) {
+    const note = document.createElement('p');
+    note.className = 'task-card-goal';
+    note.textContent = `Note: ${task.note}`;
+    body.append(note);
+  }
   return body;
 }
 
-/** Renders the tasks view: the draft tasks with their new-session action, then the reviews. */
+/** Builds the retry control of one ended task: the session picker and its button. A new session
+ * comes first, and the chat of the ended run stays selected while that chat is open. */
+function buildRetryControl(task: TaskItem): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const select = document.createElement('select');
+  select.append(new Option('New session', ''));
+  for (const session of chatSessions) {
+    select.append(new Option(session.title, session.id));
+  }
+  if (task.sessionFileId && chatSessions.some((session) => session.id === task.sessionFileId)) {
+    select.value = task.sessionFileId;
+  }
+  const retry = document.createElement('button');
+  retry.className = 'primary';
+  retry.textContent = 'Retry';
+  retry.addEventListener('click', () => {
+    const body = JSON.stringify({ id: task.id, mode: select.value ? 'session' : 'new-session', sessionFileId: select.value || null });
+    void api('/api/task/retry', { method: 'POST', body }).then(refreshChats).catch(showError);
+  });
+  row.append(select, retry);
+  return row;
+}
+
+/** Renders the tasks view: the draft tasks with their new-session action, the ended tasks with
+ * their retry control, then the reviews. */
 function renderTasks(): void {
   const view = document.querySelector<HTMLElement>('#view-tasks');
   if (!view) {
@@ -462,13 +538,29 @@ function renderTasks(): void {
   }
   view.replaceChildren();
   const drafts = state.tasks.records.filter((task) => task.status === 'draft');
+  const blocked = state.tasks.records.filter((task) => task.status === 'blocked' && task.question);
+  const ended = state.tasks.records.filter((task) => task.status === 'failed' || task.status === 'exhausted' || task.status === 'timeout');
   const reviews = state.tasks.records.filter((task) => task.status === 'review');
-  if (drafts.length === 0 && reviews.length === 0) {
+  if (drafts.length === 0 && blocked.length === 0 && ended.length === 0 && reviews.length === 0) {
     const empty = document.createElement('p');
     empty.className = 'status';
-    empty.textContent = 'No draft task and no review wait.';
+    empty.textContent = 'No draft task, no question, no ended task, and no review wait.';
     view.append(empty);
     return;
+  }
+  // A blocked task asks its question here, like the task board does.
+  for (const task of blocked) {
+    const card = document.createElement('div');
+    card.className = 'card task-card';
+    card.append(taskCardBody(task));
+    card.append(
+      buildTaskAskCard(task.question ?? '', (answer) => {
+        void api('/api/task/answer', { method: 'POST', body: JSON.stringify({ id: task.id, answer }) })
+          .then(refreshChats)
+          .catch(showError);
+      }),
+    );
+    view.append(card);
   }
   for (const task of drafts) {
     const card = document.createElement('div');
@@ -484,6 +576,14 @@ function renderTasks(): void {
     });
     row.append(start);
     card.append(row);
+    view.append(card);
+  }
+  // A task that failed, or ended by a limit, retries here on the session its picker names, like the task board.
+  for (const task of ended) {
+    const card = document.createElement('div');
+    card.className = 'card task-card';
+    card.append(taskCardBody(task));
+    card.append(buildRetryControl(task));
     view.append(card);
   }
   for (const task of reviews) {
@@ -625,7 +725,15 @@ function readConnectionMenu(value: unknown): ConnectionMenuDto {
 function refreshChats(): Promise<void> {
   return Promise.all([api('/api/chat/sessions'), api('/api/chat/connections')]).then(([sessions, connections]) => {
     connectionMenu = readConnectionMenu(connections);
-    renderChats(sessions as readonly ChatSessionDto[]);
+    const next = sessions as readonly ChatSessionDto[];
+    // The pickers of the task cards follow the list, so the tasks view redraws when a chat opened or closed.
+    const changed =
+      next.length !== chatSessions.length || next.some((session, index) => session.id !== chatSessions[index]?.id);
+    chatSessions = next;
+    renderChats(chatSessions);
+    if (changed) {
+      renderTasks();
+    }
   });
 }
 
@@ -881,8 +989,9 @@ function appendTaskCard(scroll: HTMLElement, task: TaskItem): void {
 
 /** Places one entry of one chat: the bubble of a request, a reply, or a quiet line, or the card of
  * a tool reply that lost its call. A reply carries its reasoning disclosure and its answer like the
- * app. A persisted empty reply renders nothing. */
-function appendEntry(scroll: HTMLElement, slot: EntrySlot): void {
+ * app. A persisted empty reply renders nothing. A queued request reads dimmed with its marker and
+ * its Send now button, like the app. */
+function appendEntry(scroll: HTMLElement, session: ChatSessionDto, slot: EntrySlot): void {
   const { index, entry } = slot;
   if (entry.role === 'tool' || (entry.toolName && entry.role !== 'user')) {
     scroll.append(buildToolReplyCard(entry));
@@ -903,8 +1012,25 @@ function appendEntry(scroll: HTMLElement, slot: EntrySlot): void {
     return;
   }
   const line = document.createElement('div');
-  line.className = `entry ${entry.role}`;
+  line.className = `entry ${entry.role}${entry.queued ? ' queued' : ''}`;
   line.textContent = entry.content;
+  if (entry.queued) {
+    // The message waits for the running turn. Send now hands it to the next step of that turn.
+    const marker = document.createElement('span');
+    marker.className = 'queued-marker';
+    marker.textContent = '(queued)';
+    const sendNow = document.createElement('button');
+    sendNow.type = 'button';
+    sendNow.className = 'queued-send-now';
+    sendNow.textContent = 'Send now';
+    sendNow.addEventListener('click', () => {
+      void api('/api/chat/send-now', { method: 'POST', body: JSON.stringify({ fileId: session.id, index }) })
+        .then(refreshChats)
+        .catch(showError);
+    });
+    marker.append(' ', sendNow);
+    line.append(marker);
+  }
   if (entry.images && entry.images.length > 0) {
     line.append(buildImageStrip(entry.images));
   }
@@ -939,7 +1065,7 @@ function appendEntries(scroll: HTMLElement, session: ChatSessionDto): void {
       continue;
     }
     if (group.kind === 'single') {
-      appendEntry(scroll, group.slot);
+      appendEntry(scroll, session, group.slot);
     } else if (group.kind === 'agent') {
       appendAgentTurn(scroll, group);
     } else {

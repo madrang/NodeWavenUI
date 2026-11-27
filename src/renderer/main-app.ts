@@ -249,7 +249,7 @@ export class MainApp implements McpSessionSink {
     await this.patchStore.load();
     this.taskStore = new TaskStore();
     await this.taskStore.load();
-    // The record changes redraw the tabs with their task badges. The queue pump runs in the engine.
+    // The record changes redraw the tabs and the task card of the active chat. The queue pump runs in the engine.
     this.taskStore.subscribe(() => {
       this.renderTabs();
       // The task card of the active chat follows its record: it leaves when the record leaves the draft state.
@@ -793,7 +793,21 @@ export class MainApp implements McpSessionSink {
     }
     void openTaskBoardView({
       store,
-      dispatch: (id, mode, sessionFileId) => this.chats.dispatch(id, mode, sessionFileId),
+      dispatch: (id, mode, sessionFileId) => {
+        // A refusal of the dispatch reaches the log. The board holds no status line.
+        this.fire(`the dispatch of task ${id}`, this.chats.dispatch(id, mode, sessionFileId));
+      },
+      retry: (id, mode, sessionFileId) => {
+        this.fire(`the retry of task ${id}`, store.retry(id, mode, sessionFileId));
+      },
+      subscribeSessions: (listener) =>
+        this.chats.subscribe((change) => {
+          // A chat that opens or closes changes the sessions the board offers. A running change
+          // or a new entry of a chat does not.
+          if (change.kind === 'chat' || change.kind === 'closed') {
+            listener();
+          }
+        }),
       openTaskChat: (taskId) => {
         void this.newChat(taskId);
       },
@@ -804,6 +818,21 @@ export class MainApp implements McpSessionSink {
         this.chats.list().map((chat) => ({ fileId: chat.fileId, title: chat.title })),
       returnTask: (id, comment) => {
         this.fire(`the return of task ${id}`, this.chats.returnTask(id, comment));
+      },
+      answerTask: (id, answer) => {
+        this.fire(`the answer of task ${id}`, store.answer(id, answer));
+      },
+      saveTemplate: (id) => {
+        this.fire(`the template save of task ${id}`, store.saveTemplate(id));
+      },
+      removeTemplate: (id) => {
+        this.fire(`the removal of template ${id}`, store.removeTemplate(id));
+      },
+      archive: (id) => {
+        this.fire(`the archive of task ${id}`, store.archive(id));
+      },
+      restore: (id) => {
+        this.fire(`the restore of task ${id}`, store.restore(id));
       },
     }, focusId ?? null);
   }

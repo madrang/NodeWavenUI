@@ -8,7 +8,14 @@
 import { isRecord } from './records.js';
 import type { BridgePermissionCheck, ChatImageShape } from './bridge.js';
 import { isPermissionRule, type PermissionRule } from './permissions.js';
-import { isTaskStatus, type TaskRecord, type TaskStatus } from './tasks.js';
+import {
+  isTaskStatus,
+  readTaskPriority,
+  type TaskConnection,
+  type TaskRecord,
+  type TaskStatus,
+  type TaskTemplate,
+} from './tasks.js';
 import { readSystemPromptIds } from './system-prompts.js';
 
 /** One request a surface sends to the core. The id ties the reply to the request. */
@@ -94,7 +101,13 @@ export const CORE_REQUEST_CHANNELS = [
   'task.cancel',
   'task.accept',
   'task.return',
+  'task.answer',
+  'task.archive',
+  'task.restore',
+  'task.template.save',
+  'task.template.remove',
   'task.reopen',
+  'task.retry',
   'task.relink',
   'task.update',
   'task.remove',
@@ -517,7 +530,7 @@ export function patchCounts(patch: string): { added: number; removed: number } {
   return { added, removed };
 }
 
-/** The input of one task create call. */
+/** The input of one task create call. An absent cap means none. */
 export interface CoreTaskCreateInput {
   readonly title: string;
   readonly description: string;
@@ -526,20 +539,48 @@ export interface CoreTaskCreateInput {
   readonly originChatId: number | null;
   readonly parentTaskId: string | null;
   readonly blockedBy: readonly string[];
+  /** The group of the record. An empty string means none. */
+  readonly category?: string;
+  readonly maxTokens?: number | null;
+  readonly maxTurns?: number | null;
+  readonly timeoutMs?: number | null;
+  /** How many times the session retries a failed round on the same connection. */
+  readonly retries?: number | null;
+  /** The connections the session tries in order when its own fails. */
+  readonly fallbacks?: readonly TaskConnection[];
+  /** The place of the record in the queue, from 0 to the maximum. Absent means the default. */
+  readonly priority?: number;
+  /** The steps of the plan of the record, in order. Each starts pending. */
+  readonly plan?: readonly string[];
+  /** The checklist of the record: the goals a proof must meet. */
+  readonly goals?: readonly string[];
 }
 
 /** The editable fields of one task record. The status is the hand override of the user edit: it
- * accepts every status and settles or revives the record fields, outside the transition table. */
+ * accepts every status and settles or revives the record fields, outside the transition table. An
+ * absent cap keeps its stored value, and null clears it. */
 export interface CoreTaskUpdateInput {
   readonly title?: string;
   readonly description?: string;
   readonly goal?: string;
   readonly status?: TaskStatus;
+  readonly maxTokens?: number | null;
+  readonly maxTurns?: number | null;
+  readonly timeoutMs?: number | null;
+  readonly priority?: number;
+  /** The checklist of the record. A goal whose text stays the same keeps its proof. */
+  readonly goals?: readonly string[];
+  /** The group of the record. An empty string clears it. */
+  readonly category?: string;
 }
 
-/** The full task state of the core: every dispatchable record. */
+/** The full task state of the core: every dispatchable record, the archived records, and the task
+ * templates. The archived records and the templates ride along as optional fields, so an older
+ * core that sends none still reads. */
 export interface CoreTaskState {
   readonly records: readonly TaskRecord[];
+  readonly archived?: readonly TaskRecord[];
+  readonly templates?: readonly TaskTemplate[];
 }
 
 /**
@@ -969,6 +1010,48 @@ export function readPatchTaskSetPayload(
   return { chatId: value.chatId, title, description, amend: value.amend };
 }
 
+/** Reads one cap of a task payload: a whole number above zero, or null when the payload names none. */
+function readTaskCap(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+}
+
+/** Reads the fallback chain of a task payload: the connections that name a provider and a model, in
+ * order. Null when the payload holds no list. */
+function readTaskConnections(value: unknown): TaskConnection[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const connections: TaskConnection[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const { providerId, model } = item as Record<string, unknown>;
+    if (typeof providerId === 'string' && providerId && typeof model === 'string' && model) {
+      connections.push({ providerId, model });
+    }
+  }
+  return connections;
+}
+
+/** Reads the plan or the checklist of a task payload: the texts, in order. A payload without a list
+ * names none, and an item that is no text drops out. */
+function readTaskPlan(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((text): text is string => typeof text === 'string' && text.length > 0) : [];
+}
+
+/** The caps one task update payload names. A cap the payload leaves out stays out of the result, so
+ * the store keeps its stored value. */
+function readTaskCaps(input: Record<string, unknown>): Pick<CoreTaskUpdateInput, 'maxTokens' | 'maxTurns' | 'timeoutMs'> {
+  const caps: { maxTokens?: number | null; maxTurns?: number | null; timeoutMs?: number | null } = {};
+  for (const key of ['maxTokens', 'maxTurns', 'timeoutMs'] as const) {
+    if (Object.hasOwn(input, key)) {
+      caps[key] = readTaskCap(input[key]);
+    }
+  }
+  return caps;
+}
+
 /**
  * Reads one `task.create` payload.
  *
@@ -997,6 +1080,15 @@ export function readTaskCreatePayload(value: unknown): CoreTaskCreateInput | nul
     originChatId,
     parentTaskId,
     blockedBy: value.blockedBy,
+    maxTokens: readTaskCap(value.maxTokens),
+    maxTurns: readTaskCap(value.maxTurns),
+    timeoutMs: readTaskCap(value.timeoutMs),
+    retries: typeof value.retries === 'number' && Number.isFinite(value.retries) && value.retries >= 0 ? Math.floor(value.retries) : null,
+    fallbacks: readTaskConnections(value.fallbacks) ?? [],
+    priority: readTaskPriority(value.priority),
+    plan: readTaskPlan(value.plan),
+    goals: readTaskPlan(value.goals),
+    category: typeof value.category === 'string' ? value.category : '',
   };
 }
 
@@ -1080,6 +1172,19 @@ export function readTaskRelinkPayload(value: unknown): { readonly id: string; re
 }
 
 /**
+ * Reads one `task.answer` payload: the answer of the operator to the question of a blocked task.
+ *
+ * @param value The value to check. It can have any type.
+ * @returns The call, or null on an invalid shape.
+ */
+export function readTaskAnswerPayload(value: unknown): { readonly id: string; readonly answer: string } | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.answer !== 'string' || value.answer.length === 0) {
+    return null;
+  }
+  return { id: value.id, answer: value.answer };
+}
+
+/**
  * Reads one `task.update` payload.
  *
  * @param value The payload of the request. It can have any type.
@@ -1096,11 +1201,20 @@ export function readTaskUpdatePayload(
   const description = typeof input.description === 'string' ? input.description : undefined;
   const goal = typeof input.goal === 'string' ? input.goal : undefined;
   const status = isTaskStatus(input.status) ? input.status : undefined;
+  // A priority the payload names is read and capped. One it leaves out, or one that arrives in
+  // another shape, keeps the stored value.
+  const priority = typeof input.priority === 'number' ? readTaskPriority(input.priority) : undefined;
+  // A checklist that arrives as no list names no change: only a list replaces the stored one.
+  const goals = Array.isArray(input.goals) ? readTaskPlan(input.goals) : undefined;
   const changes: CoreTaskUpdateInput = {
     ...(title ? { title } : {}),
     ...(typeof description === 'string' ? { description } : {}),
     ...(typeof goal === 'string' ? { goal } : {}),
     ...(status ? { status } : {}),
+    ...(typeof priority === 'number' ? { priority } : {}),
+    ...(goals ? { goals } : {}),
+    ...(typeof input.category === 'string' ? { category: input.category } : {}),
+    ...readTaskCaps(input),
   };
   return { id: value.id, input: changes };
 }

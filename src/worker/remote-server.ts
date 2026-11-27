@@ -71,9 +71,17 @@ export interface RemoteStateProviders {
   acceptTask(id: string): Promise<unknown>;
   returnTask(id: string): Promise<unknown>;
   cancelTask(id: string): Promise<unknown>;
+  /** Answers the question of a blocked task. The answer lands in its session, and the task runs on. */
+  answerTask(id: string, text: string): Promise<string>;
+  /** Returns a task that failed, or ended by a limit, and the children it failed to the queue, on the
+   * named session. */
+  retryTask(id: string, mode: 'new-session' | 'session', sessionFileId: string | null): Promise<unknown>;
   /** Lands one message in the chat of the session file. The picks reach a first send: the provider,
    * the model, and the system prompt sources. A missing pick keeps the default of the workspace. */
   sendChat(fileId: string | null, text: string, picks?: CoreChatPicks): void;
+  /** Sends one queued message of the chat at once, the way the Send now button of the page does.
+   * An unknown session file sends nothing. */
+  sendChatNow(fileId: string, index: number): Promise<void>;
   /** Closes the chat of the session file, the way the close of a tab does. An unknown id closes nothing. */
   closeChat(fileId: string): void;
 }
@@ -630,6 +638,25 @@ export class RemoteServer {
         this.answerJson(response, { ok: true });
         return;
       }
+      if (path === '/api/task/answer') {
+        // The answer of the operator goes to the engine, which hands it to the session of the task.
+        if (typeof call.id !== 'string' || call.id.length === 0 || typeof call.answer !== 'string' || call.answer.length === 0) {
+          throw new Error('The answer call needs a task id and an answer.');
+        }
+        await this.state.answerTask(call.id, call.answer);
+        this.answerJson(response, { ok: true });
+        return;
+      }
+      if (path === '/api/task/retry') {
+        if (typeof call.id !== 'string' || call.id.length === 0 || (call.mode !== 'session' && call.mode !== 'new-session')) {
+          throw new Error('The retry call needs a task id and a dispatch mode.');
+        }
+        // The phone retries a task on the session the call names. The engine returns the task and
+        // the children it failed to the queue.
+        await this.state.retryTask(call.id, call.mode, typeof call.sessionFileId === 'string' ? call.sessionFileId : null);
+        this.answerJson(response, { ok: true });
+        return;
+      }
       if (path === '/api/chat/create') {
         this.answerJson(response, this.state.createChat(typeof call.taskId === 'string' ? call.taskId : undefined));
         return;
@@ -649,6 +676,15 @@ export class RemoteServer {
           text,
           { ...stringPicks(['providerId', 'model']), ...(systemPromptIds ? { systemPromptIds } : {}) },
         );
+        this.answerJson(response, { ok: true });
+        return;
+      }
+      if (path === '/api/chat/send-now') {
+        // The entry index is the index of the entry in the session the page rendered.
+        if (typeof call.fileId !== 'string' || call.fileId.length === 0 || typeof call.index !== 'number') {
+          throw new Error('The send-now call needs a session file id and an entry index.');
+        }
+        await this.state.sendChatNow(call.fileId, call.index);
         this.answerJson(response, { ok: true });
         return;
       }

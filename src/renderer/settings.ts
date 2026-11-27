@@ -79,6 +79,8 @@ export class SettingsView {
   private pathRuleList: readonly PathRule[] = [];
   /** How many provider rounds one message may spend on tool calls. Null means no limit. */
   private turnLimit: number | null = null;
+  /** The cap of the workspace on the task sessions that run at the same time. Null means no cap. */
+  private taskConcurrency: number | null = null;
   /** The default reasoning effort of the chats. Null means the endpoint default. */
   private thinkingDefault: ThinkingLevel | null = null;
 
@@ -157,6 +159,11 @@ export class SettingsView {
   /** How many provider rounds one message may spend on tool calls. Null means no limit. */
   get agentTurnLimit(): number | null {
     return this.turnLimit;
+  }
+
+  /** The cap of the workspace on its parallel task sessions. Null means no cap. */
+  get taskConcurrencyLimit(): number | null {
+    return this.taskConcurrency;
   }
 
   /** The default reasoning effort of the chats. Null means the endpoint default. */
@@ -1254,6 +1261,21 @@ export class SettingsView {
       this.store.saveAgentTurnLimit(this.turnLimit).catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
         log.settings.warning(`the agent round limit could not be saved: ${message}`);
+      });
+    });
+    try {
+      this.taskConcurrency = await this.store.loadTaskConcurrency();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      log.settings.warning(`the stored task concurrency cap could not be read, no cap applies: ${message}`);
+    }
+    const sessionsSelect = requireElement<HTMLSelectElement>('#task-sessions-select');
+    sessionsSelect.value = this.taskConcurrency ? String(this.taskConcurrency) : '';
+    sessionsSelect.addEventListener('change', () => {
+      this.taskConcurrency = sessionsSelect.value === '' ? null : Number(sessionsSelect.value);
+      this.store.saveTaskConcurrency(this.taskConcurrency).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        log.settings.warning(`the task concurrency cap could not be saved: ${message}`);
       });
     });
     try {
